@@ -1,0 +1,228 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Conversation {
+  id          String       @id @default(cuid())
+  title       String       @default("New Mission")
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  messages    Message[]
+  runs        Run[]
+  suggestions Suggestion[]
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String // user | assistant
+  content        String
+  runId          String?
+  createdAt      DateTime     @default(now())
+}
+
+model Run {
+  id               String       @id @default(cuid())
+  conversationId   String
+  conversation     Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userMessage      String
+  status           String       @default("planning") // planning | executing | synthesizing | done | error | stopped
+  phase            String       @default("plan") // plan | execute | synthesize | done
+  planJson         String       @default("{}")
+  convoJson        String       @default("[]") // execution conversation turns (JSON)
+  stepIndex        Int          @default(-1)
+  stepStateJson    String       @default("{}")
+  toolCallCount    Int          @default(0)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  events           RunEvent[]
+}
+
+model RunEvent {
+  id        String   @id @default(cuid())
+  runId     String
+  run       Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  seq       Int      @default(0)
+  type      String // plan | capability | step_start | step_done | subagent_spawn | thought | tool_call | tool_result | final | memory_saved | error
+  data      String   @default("{}") // JSON payload
+  createdAt DateTime @default(now())
+
+  @@index([runId, seq])
+}
+
+model Plugin {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String
+  category    String   @default("general")
+  icon        String   @default("puzzle")
+  source      String   @default("builtin") // builtin | marketplace | custom
+  installed   Boolean  @default(false)
+  enabled     Boolean  @default(true)
+  configJson  String   @default("{}") // { type: "llm"|"http"|"builtin", instructions?, endpoint?, inputHint? }
+  toolSlug    String? // tool provided by this plugin
+  usageCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+}
+
+model Skill {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String
+  category    String   @default("general")
+  icon        String   @default("sparkles")
+  prompt      String   @default("") // injected into agent context when loaded
+  enabled     Boolean  @default(true)
+  usageCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+}
+
+model Tool {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String
+  source      String   @default("builtin") // builtin | plugin:<slug> | mcp:<slug>
+  enabled     Boolean  @default(true)
+  usageCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+}
+
+model McpServer {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String
+  status      String   @default("connected") // connected | disconnected
+  mode        String   @default("builtin") // builtin | simulated
+  toolsJson   String   @default("[]") // [{ slug, name, description }]
+  configJson  String   @default("{}")
+  enabled     Boolean  @default(true)
+  usageCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+}
+
+// A memory in the brain's store. Human-brain fields (Generative Agents +
+// Bjork's New Theory of Disuse):
+//   kind        episodic (event) | semantic (distilled fact) | procedural (how-to)
+//   importance  LLM-scored salience 1-10 at write time (amygdala tagging)
+//   strength    storage strength SS — grows on every successful recall, never decays
+//   accessCount / lastAccessedAt — retrieval history for RS (retrieval strength)
+model Memory {
+  id             String   @id @default(cuid())
+  content        String
+  type           String   @default("note") // fact | preference | insight | note | lesson | decision
+  kind           String   @default("episodic") // episodic | semantic | procedural
+  source         String   @default("agent") // agent | user | coach
+  runId          String?
+  conversationId String?
+  importance     Int      @default(3)
+  strength       Float    @default(0.1)
+  accessCount    Int      @default(0)
+  lastAccessedAt DateTime?
+  createdAt      DateTime @default(now())
+  entityLinks    MemoryEntityLink[]
+  /** free-form metadata (lessons: { fromGoal, weight, timesUsed }) */
+  metaJson       String   @default("{}")
+
+  // ---- GBRAIN port fields (gbrain page model) ----
+  /** one-line compiled truth — what this page boils down to */
+  truth          String?
+  /** core-memory tier (gbrain always_load): rendered into every prompt */
+  alwaysLoad     Boolean  @default(false)
+  /** render order inside the core tier (lower first) */
+  corePriority   Int?
+}
+
+// ---- GRAPH MEMORY (HippoRAG / graphify inspired) ----
+// Every memory is indexed into an entity-relation graph so recall walks the
+// graph (spreading activation / Personalized PageRank) instead of scanning
+// and re-reading every memory — fast, and only the activated subgraph's
+// tokens ever enter a prompt.
+
+// An entity extracted from memory text (deterministic parse, no LLM).
+// GBRAIN port: name variants (aliases) + origin (brain-created vs manual).
+model MemoryEntity {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  /** known aliases / name variants (JSON array) — gbrain entity aliases */
+  variants  String   @default("[]")
+  /** auto = the brain created it from memory text; manual = a person did */
+  origin    String   @default("auto") // auto | manual
+  createdAt DateTime @default(now())
+  links     MemoryEntityLink[]
+  outEdges  MemoryEdge[] @relation("sourceEdges")
+  inEdges   MemoryEdge[] @relation("targetEdges")
+}
+
+// Which memory mentions which entity (memory ↔ entity incidence).
+model MemoryEntityLink {
+  entityId  String
+  entity    MemoryEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  memoryId  String
+  memory    Memory @relation(fields: [memoryId], references: [id], onDelete: Cascade)
+
+  @@id([entityId, memoryId])
+  @@index([memoryId])
+}
+
+// A typed triple between two entities, with graphify-style provenance:
+// EXTRACTED (parsed straight out of a sentence) vs INFERRED (co-occurrence).
+model MemoryEdge {
+  id       String @id @default(cuid())
+  sourceId String
+  source   MemoryEntity @relation("sourceEdges", fields: [sourceId], references: [id], onDelete: Cascade)
+  targetId String
+  target   MemoryEntity @relation("targetEdges", fields: [targetId], references: [id], onDelete: Cascade)
+  relation String // uses | prefers | relates-to | part-of | about ...
+  kind     String  @default("INFERRED") // EXTRACTED | INFERRED
+  weight   Float   @default(1)
+  createdAt DateTime @default(now())
+
+  @@index([sourceId])
+  @@index([targetId])
+}
+
+// Singleton row (id = "brain") holding the state of the pluggable NEXUS brain
+// (the "spirit" overlay). Disconnected = the app's own spine brain keeps the
+// app fully alive (LLM routing, tools, planning, memory); you only lose the
+// overlay intelligence (recall with citations, graph, dream, app control).
+model BrainState {
+  id             String    @id
+  connected      Boolean   @default(true)
+  personality    String    @default("NEXUS") // persona label exposed by the brain
+  appPrefsJson   String    @default("{}") // brain-issued app directives: { tone, missionVerbosity, autoDream }
+  connectedAt    DateTime?
+  disconnectedAt DateTime?
+  updatedAt      DateTime  @updatedAt
+}
+
+// Next-step suggestions attached to a finished mission answer.
+model Suggestion {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  runId          String?
+  title          String
+  description    String
+  kind           String   @default("next") // next | tool | improve
+  createdAt      DateTime @default(now())
+}
+
+// Log of brain dream cycles (gbrain-inspired memory consolidation).
+model DreamCycle {
+  id             String   @id @default(cuid())
+  summary        String
+  mergedCount    Int      @default(0)
+  relationsFound Int      @default(0)
+  totalMemories  Int      @default(0)
+  createdAt      DateTime @default(now())
+}

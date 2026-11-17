@@ -1,0 +1,95 @@
+{
+  "id": "nexus-brain",
+  "name": "Nexus Brain",
+  "version": "3.1.0",
+  "description": "The smart overlay brain for agent apps (two-brain architecture). Plug it in and the app gets SMARTER — reflex routing, graph memory with spreading-activation recall, a self-teaching coach, prompt refinement, context caching, dream cycles, whole-app directives AND the full gbrain memory model (pages with compiled truths, typed facts with conflict supersede, entity name-variant resolution, an always-loaded core memory tier, a retrieval ledger, interactive graph ops). Unplug it and the app's own spine brain keeps everything working like a normal LLM agent app (gbrain + graphify + HippoRAG + Generative Agents + Reflexion inspired).",
+  "personality": "NEXUS",
+  "pluggable": true,
+  "architecture": "two-brain: the host app keeps its own spine brain (LLM routing, planning, tools — always on); this module is the spirit overlay that makes it smarter while connected",
+  "requires": {
+    "host": {
+      "llm.complete": "language model access (the neurons)",
+      "state.get/set": "durable storage for the brain connection state + app directives",
+      "capabilities()": "snapshot of tools/skills/plugins/mcps installed in the host body",
+      "now()": "clock access (the brain has no sense of time on its own)"
+    }
+  },
+  "provides": {
+    "status()": "connected / disconnected + personality + app directives",
+    "connect()": "plug the brain in — overlay intelligence returns",
+    "disconnect()": "unplug the overlay — the host spine keeps the app fully alive (LLM routing, tools, planning, memory); only overlay features pause",
+    "snapshot()": "brain status + reachable capability inventory",
+    "setAppPrefs()": "issue app directives: chat tone, mission verbosity, auto-dream (honored app-wide while connected)",
+    "think()": "front door ROUTING for every message: chat (streamed answer next) or agent mission — never writes the answer itself",
+    "answerMessages()": "the persona prompt for the STREAMED chat answer (memories, recall citations, tone directive) — the host streams it token-by-token so answers appear as if typed"
+  },
+  "cognition": {
+    "frontDoor": "reflexes + a small fast router turn decide chat vs task; the streamed answer is composed separately so it can type out live",
+    "deterministicReflexes": [
+      "image/drawing/logo/poster generation requests always escalate to agent mode",
+      "tts/voice, translation, code-execution and file requests always escalate",
+      "real-time research questions always escalate (except pure clock questions — answered from the prompt's own date line)"
+    ]
+  },
+  "appControl": {
+    "levers": ["tone: concise|balanced|thorough (streamed chat answers)", "missionVerbosity: brief|balanced|detailed (mission reports)", "autoDream: allow automatic dream cycles"],
+    "philosophy": "the brain steers HOW the app thinks and speaks — never destructive, always reversible by disconnecting"
+  },
+  "memory": {
+    "recall": "human-brain scoring (Generative Agents): recency 0.995^Δh × importance (salience 1-10 tagged at write) × relevance (multi-query keyword fusion + graph activation), min-max normalized; Bjork storage/retrieval strength separation — successful hard recalls strengthen memory most (desirable difficulty); priming map carries activation across turns; pattern completion completes weak cues from matched key terms (CA3)",
+    "graphMemory": "every memory is indexed into an entity-relation graph (deterministic extraction, zero LLM at index time): recall runs Personalized PageRank over the entity graph (HippoRAG) under an explicit TOKEN BUDGET — only the activated subgraph ever enters a prompt; edges carry EXTRACTED/INFERRED provenance (graphify)",
+    "dream": "consolidation cycle — merges near-duplicates, senses latent relations, distills old memories into insights; hosts can run it manually or auto-dream via shouldAutoDream() when memory has grown (gbrain 24/7 dream cycle)"
+  },
+  "coach": {
+    "review": "after every mission the coach reflects (Reflexion): what worked, what wasted steps → at most 2 concrete lessons stored as procedural memories",
+    "inject": "before every mission the top-k lessons whose origin goal resembles the new task are injected into the planner prompt",
+    "grade": "use-attributed feedback (gbrain): lessons that help gain weight w ← w + α(1-w), lessons that ride failures decay w ← w(1-α); low-weight lessons stop being injected",
+    "teach": "teachFact() normalizes user-taught knowledge into high-salience memories"
+  },
+  "tokenEconomy": {
+    "contextCache": "in-memory LRU response cache with TTL for deterministic callers (routing, chips) + stats; cache-friendly prompt layout discipline: static persona → stable lists → stable memory → append-only history → volatile tail (provider KV-cache reuse)",
+    "promptRefine": "decontextualization rewrites follow-ups into standalone queries before recall (LLM, heuristic-gated); deterministic query expansion fuses variants; one-round self-refine for planning artifacts"
+  },
+  "knowledgeGraph": {
+    "edges": "every edge tagged EXTRACTED (from app data), INFERRED (strong co-occurrence) or AMBIGUOUS (weak overlap) — graphify's transparency model",
+    "queries": "neighbors / path / stats, plus buildGraphReport() with god nodes, memory communities (label propagation), surprising cross-cluster connections and suggested questions",
+    "rabbitHole": "associative deep-dive: from a topic entity, hop outward preferring surprising edges (INFERRED + low-degree destinations) — the brain explores rabbit holes on purpose, with a map"
+  },
+  "gbrain": {
+    "origin": "port of garrytan/gbrain (MIT) — canonical sources vendored at gbrain/vendor/gbrain, attribution in gbrain/ATTRIBUTION.md",
+    "writePath": "gbrainRemember(): capture dedup (refresh, not duplicate) → one-line truth compile → typed-claim conflict supersede (stale facts marked + leave the core tier) → entity save-time resolution cascade (exact → alias → variant → new)",
+    "entityResolution": "name variants ranked strongest-first (normalized / honorific / reordered / diminutive / initial / typo / surname) with Damerau distance, nickname groups and corporate-suffix handling; weak matches resolve only when unique; near-matches are FLAGGED, never silently merged",
+    "coreMemory": "pages marked alwaysLoad render into EVERY prompt under one character budget (default 4000) — deterministic, zero LLM; marking refuses when the budget is full",
+    "retrievalLedger": "every recall recorded in a bounded ring buffer; recency-weighted use-attribution trust — memories that keep being used earn trust",
+    "graphOps": "node inspect / create / rename / alias / remove / orphan-prune — the brain auto-creates nodes from memory text and auto-prunes orphans; people can too (origin: auto | manual)"
+  },
+  "modules": {
+    "core/gate.ts": "connection gate — connect / disconnect / status + app-directive storage",
+    "core/cognition.ts": "thinking core — reflex + fast router (think), streamed-answer prompt builder (answerMessages), code-fence safety net",
+    "core/appcontrol.ts": "app-control surface — tone/verbosity directives, control summary for the UI",
+    "core/capabilities.ts": "capability registry — what the brain can reach in the host body",
+    "core/recall.ts": "human-brain memory recall: GenAgents scoring, Bjork strengths, priming, pattern completion, citations",
+    "core/memory-graph.ts": "graph memory — entity/triple extraction, memory graph, spreading activation, Personalized PageRank, token-budgeted graph recall, rabbit holes",
+    "core/graph.ts": "knowledge graph — heterogeneous nodes, provenance-tagged edges, communities, surprising connections, graph report",
+    "core/dream.ts": "dream cycle — memory consolidation planner + auto-dream gate",
+    "core/coach.ts": "the coach — Reflexion reviews after missions, lesson injection before missions, use-attributed grading, teach()",
+    "core/cache.ts": "context cache — LRU response cache with TTL + cache-friendly prompt layout",
+    "core/refine.ts": "prompt refinement — decontextualizing rewrite, query expansion, one-round self-refine",
+    "gbrain/types.ts": "the gbrain memory model + GBrainStore persistence contract (host implements, brain decides)",
+    "gbrain/entities.ts": "gbrain entity resolution — name variants, near-name flagging, save-time cascade",
+    "gbrain/facts.ts": "gbrain facts — typed claims, conflict supersede, capture dedup, truth compilation",
+    "gbrain/core-memory.ts": "gbrain always-loaded tier — char-budgeted core memory rendered into every prompt",
+    "gbrain/retrievals.ts": "gbrain retrieval ledger — use-attribution trust",
+    "gbrain/graph-ops.ts": "gbrain graph ops — inspect/create/rename/alias/remove/prune",
+    "gbrain/remember.ts": "the gbrain write path — every memory in the app flows through it",
+    "gbrain/vendor/gbrain/": "canonical upstream sources (MIT, reference only, excluded from compilation)",
+    "types.ts": "BrainHost adapter contract, route decisions, app prefs",
+    "index.ts": "createBrain(host) — the single public entry point"
+  },
+  "guarantees": [
+    "Disconnecting the brain never deletes or disables host capabilities — they stay installed in the body.",
+    "A disconnected brain is never consulted: the host spine answers with full LLM power; the app never goes dumb.",
+    "App directives only apply while connected — disconnecting reverts the app to default behavior, nothing is lost.",
+    "The brain holds no app-specific imports — it can be dropped into any TypeScript app that provides BrainHost."
+  ]
+}
