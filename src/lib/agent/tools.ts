@@ -441,7 +441,6 @@ export async function executeTool(
   conversationId: string | null
 ): Promise<ToolExecResult> {
   await bumpUsage(slug)
-  const zai = await getZAI()
 
   try {
     switch (slug) {
@@ -473,7 +472,16 @@ export async function executeTool(
           }
         }
         if (!Array.isArray(results) || results.length === 0) {
-          results = (await zai.functions.invoke('web_search', { query, num })) as unknown[]
+          const zai = await getZAI()
+          if (zai) {
+            results = (await zai.functions.invoke('web_search', { query, num })) as unknown[]
+          } else if (!tavilyKey) {
+            return {
+              ok: false,
+              summary: 'Web search provider not configured',
+              raw: 'Error: Web search requires TAVILY_API_KEY or a configured ZAI SDK.',
+            }
+          }
         }
         if (!Array.isArray(results) || results.length === 0) {
           return { ok: true, summary: `No results for "${query}"`, raw: 'No results found.' }
@@ -499,9 +507,26 @@ export async function executeTool(
 
       case 'read_url': {
         const url = str(args.url)
-        const page = await zai.functions.invoke('page_reader', { url })
-        const title = str(page?.data?.title, url)
-        const text = truncate(stripHtml(str(page?.data?.html)), 4000)
+        const zai = await getZAI()
+        if (zai) {
+          const page = await zai.functions.invoke('page_reader', { url })
+          const title = str(page?.data?.title, url)
+          const text = truncate(stripHtml(str(page?.data?.html)), 4000)
+          return {
+            ok: true,
+            summary: `Read page: ${title}`,
+            raw: `PAGE: ${title}\nURL: ${url}\n\n${text}`,
+            display: { kind: 'text', text: `Read "${title}" — ${text.length} chars extracted` },
+          }
+        }
+        const res = await fetch(url, {
+          headers: { 'User-Agent': 'NexusAgent/1.0', Accept: 'text/html,text/plain' },
+          signal: AbortSignal.timeout(12000),
+        })
+        if (!res.ok) return { ok: false, summary: `Failed to read ${url}`, raw: `HTTP ${res.status}` }
+        const html = await res.text()
+        const title = (/<title[^>]*>([^<]{1,200})<\/title>/i.exec(html)?.[1] ?? url).trim()
+        const text = truncate(stripHtml(html), 4000)
         return {
           ok: true,
           summary: `Read page: ${title}`,
@@ -542,6 +567,8 @@ export async function executeTool(
         /** SDK page_reader fallback — server-side rendering service, handles bot-blocking sites */
         const fetchViaReader = async (u: string): Promise<{ title: string; text: string; links: { href: string; label: string }[] } | null> => {
           try {
+            const zai = await getZAI()
+            if (!zai) return null
             const page = await zai.functions.invoke('page_reader', { url: u })
             const html = str(page?.data?.html)
             if (!html) return null
@@ -643,6 +670,10 @@ export async function executeTool(
       }
 
       case 'generate_image': {
+        const zai = await getZAI()
+        if (!zai) {
+          return { ok: false, summary: 'Image generator unavailable', raw: 'Image generation requires ZAI SDK configuration.' }
+        }
         const prompt = str(args.prompt)
         const size = ['1024x1024', '768x1344', '864x1152', '1344x768', '1152x864', '1440x720', '720x1440'].includes(
           str(args.size)
@@ -664,6 +695,10 @@ export async function executeTool(
       }
 
       case 'search_images': {
+        const zai = await getZAI()
+        if (!zai) {
+          return { ok: false, summary: 'Image search unavailable', raw: 'Image search requires ZAI SDK configuration.' }
+        }
         const query = str(args.query)
         const res = await zai.images.search.create({ query, count: 6 })
         if (!res?.results?.length) {
@@ -695,6 +730,10 @@ export async function executeTool(
       }
 
       case 'tts_speak': {
+        const zai = await getZAI()
+        if (!zai) {
+          return { ok: false, summary: 'TTS unavailable', raw: 'Text-to-speech requires ZAI SDK configuration.' }
+        }
         const text = str(args.text ?? args.input)
         if (!text.trim()) return { ok: false, summary: 'Empty text', raw: 'Error: empty text.' }
         const res = await zai.audio.tts.create({ input: text, response_format: 'wav', stream: false })
@@ -1139,7 +1178,10 @@ export async function executeTool(
         //    wikipedia.org is TLS-fingerprint-blocked)
         if (titles.length === 0) {
           try {
-            const results = (await zai.functions.invoke('web_search', { query: `${query} site:en.wikipedia.org`, num: 8 })) as unknown
+            const zai = await getZAI()
+            const results = zai
+              ? ((await zai.functions.invoke('web_search', { query: `${query} site:en.wikipedia.org`, num: 8 })) as unknown)
+              : null
             if (Array.isArray(results)) {
               for (const r of results) {
                 const url = str(r.url)

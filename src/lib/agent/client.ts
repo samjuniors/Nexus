@@ -198,6 +198,12 @@ export interface BrainInfo {
     maxEntries: number
   }
   refine?: { rewrites: number }
+  llm?: {
+    provider: string
+    model: string | null
+    configured: boolean
+    fallback?: string
+  }
 }
 
 // ---------- Knowledge graph ----------
@@ -392,6 +398,7 @@ export const api = {
       graphMemory: BrainInfo['graphMemory']
       cache: BrainInfo['cache']
       refine: BrainInfo['refine']
+      llm?: BrainInfo['llm']
     }>('/api/brain'),
   brainGraph: () =>
     jsonFetch<{ graph: BrainGraphDTO; report: GraphReportDTO }>('/api/brain?graph=1'),
@@ -517,23 +524,45 @@ export const api = {
       for (const part of parts) {
         const line = part.split('\n').find((l) => l.startsWith('data: '))
         if (!line) continue
+        let ev: StartStreamEvent
         try {
-          const ev = JSON.parse(line.slice(6)) as StartStreamEvent
-          handlers.onEvent(ev)
+          ev = JSON.parse(line.slice(6)) as StartStreamEvent
         } catch {
           // partial JSON — ignore
+          continue
         }
+        handlers.onEvent(ev)
+      }
+    }
+    if (buffer.trim()) {
+      const line = buffer.split('\n').find((l) => l.startsWith('data: '))
+      if (line) {
+        let ev: StartStreamEvent | null = null
+        try {
+          ev = JSON.parse(line.slice(6)) as StartStreamEvent
+        } catch {
+          ev = null
+        }
+        if (ev) handlers.onEvent(ev)
       }
     }
   },
-  stepRun: (runId: string) =>
-    jsonFetch<{
+  stepRun: async (runId: string) => {
+    const res = await fetch('/api/agent/step', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId }),
+    })
+    const data = (await res.json().catch(() => null)) as {
       ok: boolean
       busy?: boolean
       status: string
       events: EventOutDTO[]
       error?: string
-    }>('/api/agent/step', { method: 'POST', body: JSON.stringify({ runId }) }),
+    } | null
+    if (data && typeof data.status === 'string') return data
+    throw new Error(data?.error ?? `Request failed (${res.status})`)
+  },
   stopRun: (runId: string) =>
     jsonFetch<{ ok: boolean }>('/api/agent/stop', { method: 'POST', body: JSON.stringify({ runId }) }),
 }

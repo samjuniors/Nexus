@@ -2,6 +2,10 @@ import { getZAI } from '../src/lib/agent/zai'
 
 async function main() {
   const zai = await getZAI()
+  if (!zai) {
+    console.log('page_reader FAIL: ZAI SDK not configured')
+    return
+  }
   try {
     const page = await zai.functions.invoke('page_reader', { url: 'https://en.wikipedia.org/wiki/Voyager_program' })
     const title = (page as { data?: { title?: string } })?.data?.title

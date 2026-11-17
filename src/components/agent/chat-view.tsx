@@ -8,9 +8,13 @@ import {
   History,
   Loader2,
   MessageSquarePlus,
+  Mic,
+  MicOff,
+  PhoneOff,
   Sparkles as SparklesIcon,
   Square,
   Trash2,
+  Volume2,
   Wrench,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -25,11 +29,14 @@ import {
 } from '@/components/ui/sheet'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useApp } from '@/lib/agent/store'
+import { useLiveVoice, type VoiceName } from '@/lib/agent/use-live-voice'
 import { MissionBlock } from '@/components/agent/mission-block'
 import { Typewriter } from '@/components/agent/typewriter'
 import { cn } from '@/lib/utils'
 import { useToast } from '@/hooks/use-toast'
 import type { SuggestionDTO } from '@/lib/agent/client'
+
+const VOICES: VoiceName[] = ['Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir']
 
 const SUGGESTIONS = [
   { text: "What's today's date and time?", kind: 'instant' },
@@ -69,6 +76,15 @@ export function ChatView() {
   } = useApp()
   const { toast } = useToast()
   const streamingAssistantId = useApp((s) => s.streamingAssistantId)
+  const voice = useLiveVoice({
+    onError: (msg) => {
+      toast({
+        title: 'Live voice error',
+        description: msg,
+        variant: 'destructive',
+      })
+    },
+  })
   const [input, setInput] = useState('')
   const [historyOpen, setHistoryOpen] = useState(false)
   const [isSending, setIsSending] = useState(false)
@@ -88,7 +104,14 @@ export function ChatView() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [conversation?.messages.length, conversation?.runs.length, lastRunEventCount, isThinking])
+  }, [
+    conversation?.messages.length,
+    conversation?.runs.length,
+    lastRunEventCount,
+    isThinking,
+    voice.liveInputTranscript,
+    voice.liveOutputTranscript,
+  ])
 
   const runsById = useMemo(() => {
     const map = new Map<string, NonNullable<typeof conversation>['runs'][number]>()
@@ -137,8 +160,11 @@ export function ChatView() {
 
   const submit = async () => {
     const text = input.trim()
-    if (!text || isRunning) return
+    if (!text || isRunning || isSending) return
     setInput('')
+    if (voice.status === 'connected' && voice.sendLiveText(text)) {
+      return
+    }
     setIsSending(true)
     try {
       await sendTask(text)
@@ -160,7 +186,11 @@ export function ChatView() {
     }
   }
 
-  const empty = !conversation || (conversation.messages.length === 0 && conversation.runs.length === 0)
+  const empty =
+    (!conversation || (conversation.messages.length === 0 && conversation.runs.length === 0)) &&
+    !voice.isActive &&
+    !voice.liveInputTranscript &&
+    !voice.liveOutputTranscript
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -209,6 +239,7 @@ export function ChatView() {
                 size="sm"
                 className="mb-3 w-full gap-1.5 text-xs"
                 onClick={() => {
+                  if (voice.isActive) voice.stopVoice()
                   void newConversation()
                   setHistoryOpen(false)
                 }}
@@ -230,6 +261,7 @@ export function ChatView() {
                       <button
                         className="min-w-0 flex-1 text-left"
                         onClick={() => {
+                          if (voice.isActive && c.id !== activeConvId) voice.stopVoice()
                           setActiveConv(c.id)
                           setHistoryOpen(false)
                         }}
@@ -298,7 +330,7 @@ export function ChatView() {
             </div>
           ) : (
             <div className="space-y-6">
-              {conversation.messages.map((m) => {
+              {conversation?.messages.map((m) => {
                 if (m.role === 'user') {
                   return (
                     <div key={m.id} className="space-y-3">
@@ -402,6 +434,56 @@ export function ChatView() {
                 )
               })}
 
+              {/* live voice user draft bubble */}
+              {voice.liveInputTranscript && (
+                <div className="flex justify-end" aria-live="polite">
+                  <div className="max-w-[85%] rounded-2xl rounded-br-md border border-emerald-400/25 bg-emerald-400/[0.08] px-4 py-2.5">
+                    <div className="mb-1 flex items-center gap-1.5 font-mono text-[9.5px] uppercase tracking-wider text-emerald-300/80">
+                      <Mic className="h-2.5 w-2.5" /> voice input
+                    </div>
+                    <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-foreground">
+                      {voice.liveInputTranscript}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* live voice assistant draft bubble */}
+              {(voice.liveOutputTranscript || (voice.isActive && (voice.isSpeaking || voice.activeTool))) && (
+                <div className="flex gap-3" aria-live="polite">
+                  <AssistantAvatar thinking={voice.isSpeaking || Boolean(voice.activeTool)} />
+                  <div className="min-w-0 flex-1">
+                    {voice.activeTool && (
+                      <div className="mb-1.5 inline-flex items-center gap-1.5 rounded-md border border-sky-400/25 bg-sky-400/[0.07] px-2 py-0.5 font-mono text-[10.5px] text-sky-200">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        <span>Executing {voice.activeTool.tool}…</span>
+                      </div>
+                    )}
+                    {voice.liveOutputTranscript && (
+                      <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-zinc-200">
+                        {voice.liveOutputTranscript}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* live voice ready empty hint */}
+              {voice.isActive &&
+                !voice.liveInputTranscript &&
+                !voice.liveOutputTranscript &&
+                !voice.activeTool &&
+                (!conversation || conversation.messages.length === 0) && (
+                  <div className="flex gap-3" aria-live="polite">
+                    <AssistantAvatar thinking={voice.status === 'connecting'} />
+                    <div className="flex h-7 items-center font-mono text-xs text-zinc-400">
+                      {voice.status === 'connecting'
+                        ? `Connecting Gemini Live voice (${voice.voiceName})…`
+                        : `Listening (${voice.voiceName}) — ask anything, run tools, spawn subagents, or create bots & skills.`}
+                    </div>
+                  </div>
+                )}
+
               {/* thinking indicator — while routing or writing an instant reply */}
               {isThinking && (
                 <div className="flex gap-3" aria-live="polite">
@@ -420,41 +502,185 @@ export function ChatView() {
       {/* input */}
       <div className="border-t border-white/[0.06] bg-sidebar px-4 py-3.5 md:px-6">
         <div className="mx-auto w-full max-w-3xl">
+          {(voice.isActive || (voice.status === 'error' && voice.lastError)) && (
+            <div
+              className={cn(
+                'mb-2 flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-xs',
+                voice.status === 'error'
+                  ? 'border-red-400/30 bg-red-500/10 text-red-200'
+                  : 'border-emerald-400/25 bg-emerald-400/[0.06] text-zinc-200'
+              )}
+            >
+              <div className="flex min-w-0 items-center gap-2.5">
+                {voice.status === 'connecting' ? (
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-emerald-300" />
+                ) : voice.isSpeaking ? (
+                  <Volume2 className="h-3.5 w-3.5 shrink-0 text-emerald-300" />
+                ) : voice.muted ? (
+                  <MicOff className="h-3.5 w-3.5 shrink-0 text-amber-300" />
+                ) : (
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400 pulse-dot" />
+                )}
+
+                <span className="truncate font-mono text-[11px]">
+                  {voice.status === 'error'
+                    ? voice.lastError
+                    : voice.status === 'connecting'
+                      ? `Connecting ${voice.voiceName}…`
+                      : voice.activeTool
+                        ? `Running ${voice.activeTool.tool}…`
+                        : voice.isSpeaking
+                          ? `Speaking (${voice.voiceName})`
+                          : voice.muted
+                            ? `Mic muted (${voice.voiceName})`
+                            : `Listening (${voice.voiceName})`}
+                </span>
+
+                {voice.status === 'connected' && (
+                  <div className="flex h-4 items-center gap-0.5" aria-hidden>
+                    {[0.35, 0.7, 1, 0.7, 0.35].map((scale, i) => {
+                      const barPct = voice.muted
+                        ? 18
+                        : Math.max(18, Math.min(100, Math.round((voice.isSpeaking ? 0.45 : voice.micLevel) * 100 * scale + 18)))
+                      return (
+                        <span
+                          key={i}
+                          style={{ height: `${barPct}%` }}
+                          className={cn(
+                            'w-0.5 rounded-full transition-[height] duration-75',
+                            voice.muted ? 'bg-zinc-600' : voice.isSpeaking ? 'bg-sky-300' : 'bg-emerald-400'
+                          )}
+                        />
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex shrink-0 items-center gap-1.5">
+                {voice.status === 'error' ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 border-white/15 bg-transparent px-2.5 text-[11px]"
+                    onClick={() => void voice.startVoice(activeConvId)}
+                  >
+                    Retry
+                  </Button>
+                ) : (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 gap-1 border-white/15 bg-transparent px-2 text-[11px]"
+                      onClick={voice.toggleMute}
+                      aria-label={voice.muted ? 'Unmute microphone' : 'Mute microphone'}
+                    >
+                      {voice.muted ? <MicOff className="h-3 w-3 text-amber-300" /> : <Mic className="h-3 w-3" />}
+                      <span className="hidden sm:inline">{voice.muted ? 'Unmute' : 'Mute'}</span>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      className="h-7 gap-1 px-2.5 text-[11px]"
+                      onClick={voice.stopVoice}
+                      aria-label="End live voice session"
+                    >
+                      <PhoneOff className="h-3 w-3" />
+                      <span className="hidden sm:inline">End</span>
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="flex items-end gap-2 rounded-2xl border border-white/10 bg-black/25 p-2 transition-colors focus-within:border-white/25">
             <Textarea
               ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={isRunning ? 'Agent is working…' : 'Ask anything, or describe a mission…'}
+              placeholder={
+                isRunning
+                  ? 'Agent is working…'
+                  : voice.status === 'connected'
+                    ? 'Speak aloud, or type into the live voice session…'
+                    : 'Ask anything, or describe a mission…'
+              }
               disabled={isRunning}
               rows={1}
               className="max-h-40 min-h-9 flex-1 resize-none border-0 bg-transparent px-2 py-1.5 text-[13.5px] focus-visible:ring-0 focus-visible:ring-offset-0 disabled:opacity-50"
               aria-label="Message input"
             />
-            {isRunning ? (
+            <div className="flex items-center gap-1.5">
+              {!voice.isActive && (
+                <select
+                  aria-label="Select voice"
+                  value={voice.voiceName}
+                  onChange={(e) => voice.setVoiceName(e.target.value as VoiceName)}
+                  disabled={isRunning}
+                  className="hidden h-9 rounded-xl border border-white/10 bg-white/[0.03] px-2 font-mono text-[11px] text-zinc-300 outline-none transition-colors hover:border-white/20 focus:border-white/30 sm:block"
+                  title="Gemini Live voice"
+                >
+                  {VOICES.map((v) => (
+                    <option key={v} value={v} className="bg-zinc-900 text-zinc-100">
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              )}
               <Button
                 size="sm"
-                variant="destructive"
-                className="h-9 gap-1.5 rounded-xl px-3 text-xs"
-                onClick={() => void stopTask()}
+                variant={voice.isActive ? 'destructive' : 'outline'}
+                className={cn(
+                  'h-9 gap-1.5 rounded-xl px-2.5 text-xs',
+                  !voice.isActive && 'border-white/10 bg-white/[0.03] text-zinc-200 hover:bg-white/[0.08]'
+                )}
+                disabled={voice.status === 'connecting' && !voice.isActive}
+                onClick={() => {
+                  if (voice.isActive) {
+                    voice.stopVoice()
+                  } else {
+                    void voice.startVoice(activeConvId)
+                  }
+                }}
+                aria-label={voice.isActive ? 'Stop voice conversation' : 'Start voice conversation'}
+                title={voice.isActive ? 'End Live Voice' : `Talk to NEXUS Live (${voice.voiceName})`}
               >
-                <Square className="h-3.5 w-3.5 fill-current" /> Stop
+                {voice.status === 'connecting' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : voice.isActive ? (
+                  <PhoneOff className="h-3.5 w-3.5" />
+                ) : (
+                  <Mic className="h-3.5 w-3.5" />
+                )}
+                <span className="hidden sm:inline">{voice.isActive ? 'Live' : 'Voice'}</span>
               </Button>
-            ) : (
-              <Button
-                size="sm"
-                className="h-9 rounded-xl px-3 text-xs"
-                disabled={!input.trim() || isSending}
-                onClick={() => void submit()}
-                aria-label="Send message"
-              >
-                {isSending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
-              </Button>
-            )}
+              {isRunning ? (
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="h-9 gap-1.5 rounded-xl px-3 text-xs"
+                  onClick={() => void stopTask()}
+                >
+                  <Square className="h-3.5 w-3.5 fill-current" /> Stop
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  className="h-9 rounded-xl px-3 text-xs"
+                  disabled={!input.trim() || isSending}
+                  onClick={() => void submit()}
+                  aria-label="Send message"
+                >
+                  {isSending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
+                </Button>
+              )}
+            </div>
           </div>
           <p className="mt-1.5 text-center text-[10px] text-muted-foreground/60">
-            Enter to send · Shift+Enter for a new line
+            Enter to send · Shift+Enter for a new line · Voice supports live tools, subagents, skills & bots
           </p>
         </div>
       </div>

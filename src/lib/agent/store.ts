@@ -8,6 +8,7 @@ import {
   type ConversationDTO,
   type McpDTO,
   type MemoryDTO,
+  type MessageDTO,
   type PluginDTO,
   type SkillDTO,
   type Tab,
@@ -58,6 +59,12 @@ interface AppState {
   sendTask: (message: string) => Promise<void>
   stopTask: () => Promise<void>
   appendEvents: (runId: string, events: EventOutDTO[], status?: string) => void
+
+  refreshConversations: () => Promise<void>
+  ensureConversationForVoice: (convId: string) => Promise<void>
+  applyVoiceTurn: (convId: string, userMessage: MessageDTO | null, assistantMessage: MessageDTO | null) => void
+  applyVoiceMissionStart: (convId: string, runId: string, userMessage: string) => void
+  applyVoiceMissionEvents: (runId: string, events: EventOutDTO[], status?: string) => void
 }
 
 export const useApp = create<AppState>((set, get) => ({
@@ -169,8 +176,8 @@ export const useApp = create<AppState>((set, get) => ({
 
   refreshBrain: async () => {
     try {
-      const { status, summary, inventory, appControl, lastDream, coach, graphMemory, cache, refine } = await api.brain()
-      set({ brain: { ...status, summary, inventory, appControl, lastDream, coach, graphMemory, cache, refine } })
+      const { status, summary, inventory, appControl, lastDream, coach, graphMemory, cache, refine, llm } = await api.brain()
+      set({ brain: { ...status, summary, inventory, appControl, lastDream, coach, graphMemory, cache, refine, llm } })
     } catch { /* ignore */ }
   },
 
@@ -223,26 +230,128 @@ export const useApp = create<AppState>((set, get) => ({
     set((s) => ({
       conversations: s.conversations.map((c) => ({
         ...c,
-        runs: c.runs.map((r) =>
-          r.id === runId
-            ? {
-                ...r,
-                status: status ?? r.status,
-                events: [
-                  ...r.events,
-                  ...events.map((e, i) => ({
-                    id: `${runId}-${e.seq}-${i}`,
-                    seq: e.seq,
-                    type: e.type,
-                    data: e.data,
-                    createdAt: new Date().toISOString(),
-                  })),
-                ],
-              }
-            : r
-        ),
+        runs: c.runs.map((r) => {
+          if (r.id !== runId) return r
+          const existingSeqs = new Set(r.events.map((ev) => ev.seq))
+          const added = events
+            .filter((e) => !existingSeqs.has(e.seq))
+            .map((e, i) => ({
+              id: `${runId}-${e.seq}-${i}`,
+              seq: e.seq,
+              type: e.type,
+              data: e.data,
+              createdAt: new Date().toISOString(),
+            }))
+          return {
+            ...r,
+            status: status ?? r.status,
+            events: added.length > 0 ? [...r.events, ...added] : r.events,
+          }
+        }),
       })),
     }))
+  },
+
+  refreshConversations: async () => {
+    try {
+      const { conversations } = await api.conversations()
+      set((s) => ({
+        conversations,
+        activeConvId: s.activeConvId && conversations.some((c) => c.id === s.activeConvId)
+          ? s.activeConvId
+          : (conversations[0]?.id ?? null),
+      }))
+    } catch { /* ignore */ }
+  },
+
+  ensureConversationForVoice: async (convId) => {
+    const exists = get().conversations.some((c) => c.id === convId)
+    if (exists) {
+      if (get().activeConvId !== convId) set({ activeConvId: convId })
+      return
+    }
+    try {
+      const { conversations } = await api.conversations()
+      const found = conversations.some((c) => c.id === convId)
+      if (found) {
+        set({ conversations, activeConvId: convId })
+        return
+      }
+    } catch { /* fallback below */ }
+    const now = new Date().toISOString()
+    set((s) => ({
+      activeConvId: convId,
+      conversations: s.conversations.some((c) => c.id === convId)
+        ? s.conversations
+        : [{ id: convId, title: 'Voice Session', messages: [], runs: [], suggestions: [], updatedAt: now }, ...s.conversations],
+    }))
+  },
+
+  applyVoiceTurn: (convId, userMessage, assistantMessage) => {
+    const now = new Date().toISOString()
+    set((s) => ({
+      conversations: s.conversations.map((c) => {
+        if (c.id !== convId) return c
+        const existingIds = new Set(c.messages.map((m) => m.id))
+        const nextMessages = [...c.messages]
+        if (userMessage && !existingIds.has(userMessage.id)) {
+          nextMessages.push(userMessage)
+        }
+        if (assistantMessage && !existingIds.has(assistantMessage.id)) {
+          nextMessages.push(assistantMessage)
+        }
+        const nextTitle =
+          userMessage && (c.title === 'New Mission' || c.title === 'Voice Session')
+            ? userMessage.content.replace(/\s+/g, ' ').slice(0, 60)
+            : c.title
+        return {
+          ...c,
+          title: nextTitle,
+          messages: nextMessages,
+          updatedAt: now,
+        }
+      }),
+    }))
+  },
+
+  applyVoiceMissionStart: (convId, runId, userMessage) => {
+    const now = new Date().toISOString()
+    set((s) => {
+      const hasConv = s.conversations.some((c) => c.id === convId)
+      const baseConvs = hasConv
+        ? s.conversations
+        : [{ id: convId, title: userMessage.slice(0, 60), messages: [], runs: [], suggestions: [], updatedAt: now }, ...s.conversations]
+      return {
+        activeConvId: convId,
+        runningRunId: runId,
+        conversations: baseConvs.map((c) => {
+          if (c.id !== convId) return c
+          const hasRun = c.runs.some((r) => r.id === runId)
+          const hasUserMsg = c.messages.some((m) => m.runId === runId && m.role === 'user')
+          return {
+            ...c,
+            title: c.title === 'New Mission' || c.title === 'Voice Session' ? userMessage.slice(0, 60) : c.title,
+            messages: hasUserMsg
+              ? c.messages
+              : [...c.messages, { id: `voice-${runId}-u`, role: 'user', content: userMessage, runId, createdAt: now }],
+            runs: hasRun
+              ? c.runs
+              : [...c.runs, { id: runId, status: 'planning', userMessage, events: [], createdAt: now }],
+            updatedAt: now,
+          }
+        }),
+      }
+    })
+  },
+
+  applyVoiceMissionEvents: (runId, events, status) => {
+    get().appendEvents(runId, events, status)
+    if (status && ['done', 'error', 'stopped'].includes(status)) {
+      if (get().runningRunId === runId) {
+        set({ runningRunId: null })
+      }
+      void get().refreshConversations()
+    }
   },
 
   sendTask: async (message) => {
@@ -413,6 +522,9 @@ export const useApp = create<AppState>((set, get) => ({
           if (step.busy) {
             await new Promise((r) => setTimeout(r, 800))
             continue
+          }
+          if (!step.ok && step.error) {
+            throw new Error(step.error)
           }
           if (['done', 'error', 'stopped'].includes(step.status)) break
         }

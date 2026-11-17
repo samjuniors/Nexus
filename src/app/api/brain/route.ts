@@ -3,7 +3,7 @@ import { db } from '@/lib/db'
 import { getBrain, getBrainPrefs } from '@/lib/agent/brain-host'
 import { buildInventory, summarizeInventory, planDream, shouldAutoDream, buildGraphReport, describeAppControl, teachFact } from '@brain/index'
 import { buildAppGraph } from '@/lib/agent/graph-source'
-import { chatText } from '@/lib/agent/zai'
+import { chatText, llmProviderInfo } from '@/lib/agent/zai'
 import { ensureSeeded } from '@/lib/agent/seed'
 import { brainCache, coachStats, coachReviewRun, refineStats } from '@/lib/agent/brain-runtime'
 import { graphMemoryStats, backfillGraphIndex, teachMemory } from '@/lib/agent/memory-graph-store'
@@ -147,6 +147,7 @@ export async function GET(request: Request) {
       graphMemory: graphMem,
       cache: brainCache.stats_(),
       refine: { rewrites: refineStats.rewrites },
+      llm: llmProviderInfo(),
     })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

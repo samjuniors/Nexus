@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { chatText, chatTextStream, extractJson } from '@/lib/agent/zai'
+import { chatText, chatTextStream, extractJson, getZAI, llmProviderInfo } from '@/lib/agent/zai'
 import { executeTool, getEffectiveTools } from '@/lib/agent/tools'
 import { getBrain, getBrainPrefs } from '@/lib/agent/brain-host'
 import { listWorkspaceFiles } from '@/lib/agent/workspace'
@@ -133,6 +133,13 @@ export type RouteDecision =
  * - Either brain says "task" → a full agent mission run is created.
  */
 export async function decideRoute(conversationId: string | null, message: string): Promise<RouteDecision> {
+  const llm = llmProviderInfo()
+  if (!llm.configured && !(await getZAI())) {
+    throw new Error(
+      'No LLM API key configured. Add GEMINI_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) in Settings > Secrets.'
+    )
+  }
+
   let conv = conversationId
     ? await db.conversation.findUnique({ where: { id: conversationId } })
     : null
@@ -180,43 +187,27 @@ export async function decideRoute(conversationId: string | null, message: string
 
   // ---- the connected brain decides (overlay) ----
   if (status.connected) {
-    try {
-      const { value } = await brainCache.cached(routeKey, 420, 5 * 60_000, async () => {
-        try {
-          const decision = await brain.think({
-            message,
-            history,
-            memories: memories.map((m) => ({ content: m.content, type: m.type })),
-          })
-          return decision.kind === 'chat' ? 'chat' : 'task'
-        } catch {
-          return 'task' // brain routing failure → mission path (never leave the user hanging)
-        }
+    const { value } = await brainCache.cached(routeKey, 420, 5 * 60_000, async () => {
+      const decision = await brain.think({
+        message,
+        history,
+        memories: memories.map((m) => ({ content: m.content, type: m.type })),
       })
-      if (value === 'chat') {
-        // graph-first recall upgrade: PPR over the entity graph, budgeted
-        const recalled = await graphRecallRefs(recallQuery, memories)
-        return { mode: 'chat', conversationId: conv.id, brainConnected: true, recalled }
-      }
-    } catch {
-      // fall through to the mission path (never leave the user hanging)
+      return decision.kind === 'chat' ? 'chat' : 'task'
+    })
+    if (value === 'chat') {
+      // graph-first recall upgrade: PPR over the entity graph, budgeted
+      const recalled = await graphRecallRefs(recallQuery, memories)
+      return { mode: 'chat', conversationId: conv.id, brainConnected: true, recalled }
     }
   } else {
     // ---- the spine brain decides (always-on, no overlay extras) ----
-    try {
-      const { value } = await brainCache.cached(routeKey, 380, 5 * 60_000, async () => {
-        try {
-          const decision = await routeWithAppBrain({ message, history })
-          return decision.kind === 'chat' ? 'chat' : 'task'
-        } catch {
-          return 'task' // spine routing failure → mission path
-        }
-      })
-      if (value === 'chat') {
-        return { mode: 'chat', conversationId: conv.id, brainConnected: false }
-      }
-    } catch {
-      // spine routing failure → mission path
+    const { value } = await brainCache.cached(routeKey, 380, 5 * 60_000, async () => {
+      const decision = await routeWithAppBrain({ message, history })
+      return decision.kind === 'chat' ? 'chat' : 'task'
+    })
+    if (value === 'chat') {
+      return { mode: 'chat', conversationId: conv.id, brainConnected: false }
     }
   }
 

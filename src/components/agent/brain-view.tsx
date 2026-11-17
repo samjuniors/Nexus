@@ -218,6 +218,13 @@ export function BrainView() {
                   ? brain?.summary ?? 'Loading capability inventory…'
                   : 'Overlay paused — the app\'s own spine brain keeps routing, planning, tools and memory running like a normal agent app. You only lose the extras: recall citations, graph intelligence, dreams and app directives.'}
               </p>
+              {brain?.llm && (
+                <p className="mt-2 font-mono text-[10.5px] text-muted-foreground/80">
+                  LLM: <span className={brain.llm.configured ? 'text-emerald-300/90' : 'text-amber-300/90'}>{brain.llm.provider}</span>
+                  {brain.llm.model ? ` · ${brain.llm.model}` : ''}
+                  {!brain.llm.configured && ' — add GEMINI_API_KEY in Settings > Secrets to run'}
+                </p>
+              )}
             </div>
 
             {/* master toggle */}

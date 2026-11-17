@@ -270,7 +270,9 @@ export function Sidebar() {
             <span
               className={cn('font-mono', brainConnected ? 'text-foreground/80' : 'text-amber-200/90')}
             >
-              {brainConnected ? 'connected · GLM' : 'spine · GLM'}
+              {brainConnected
+                ? `connected · ${brain?.llm ? (brain.llm.configured ? brain.llm.provider.replace('-compatible', '') : 'no key') : 'Gemini'}`
+                : `spine · ${brain?.llm ? (brain.llm.configured ? brain.llm.provider.replace('-compatible', '') : 'no key') : 'Gemini'}`}
             </span>
           </div>
           <div className="flex justify-between">
