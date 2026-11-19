@@ -209,7 +209,7 @@ const LIVE_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       properties: {
         action: { type: Type.STRING, description: 'One of: navigate_tab, open_split, close_split, set_layout_mode, toggle_sidebar, open_gbrain_graph, open_popup, close_popup, click_target, set_theme.' },
         tab: { type: Type.STRING, description: 'Tab slug for navigate_tab (agent, org, automations, brain, artifacts, marketplace, plugins, skills, tools, mcps, memory).' },
-        mode: { type: Type.STRING, description: 'Split panel mode for open_split (reasoning, browser, identity, permissions, devices, org, artifacts, tools, automations, brain) OR layout mode for set_layout_mode (focus, standard).' },
+        mode: { type: Type.STRING, description: 'Split panel mode for open_split (reasoning, browser, mobile, identity, permissions, devices, org, artifacts, tools, automations, brain) OR layout mode for set_layout_mode (focus, standard).' },
         collapsed: { type: Type.BOOLEAN, description: 'Optional explicit collapsed state for toggle_sidebar.' },
         title: { type: Type.STRING, description: 'Optional popup or split title.' },
         body: { type: Type.STRING, description: 'Popup body markdown/text.' },
@@ -239,6 +239,33 @@ const LIVE_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
         text: { type: Type.STRING, description: 'Visible text to click or text to type.' },
         submit: { type: Type.BOOLEAN, description: 'Press Enter after typing.' },
         deltaY: { type: Type.NUMBER, description: 'Scroll delta in pixels.' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'mobile_control',
+    description:
+      'Take over and operate an Android or mobile phone end-to-end just like Computer Use or Browser Use. Use action="autopilot" with goal for full mobile tasks (e.g. "open Settings and enable Do Not Disturb", "text Alex saying I am on my way", "open Chrome and search weather in Tokyo"), or direct actions (open_app, tap, swipe, type, press_key, toggle_setting, notifications, open_url, screenshot, status).',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: {
+          type: Type.STRING,
+          description: 'One of: autopilot, status, list_apps, open_app, tap, swipe, scroll, type, press_key, open_url, notifications, toggle_setting, screenshot.',
+        },
+        goal: { type: Type.STRING, description: 'Full mobile takeover goal when action is autopilot.' },
+        app: { type: Type.STRING, description: 'App name (settings, messages, phone, chrome, notes, camera, calendar, maps, home).' },
+        target: { type: Type.STRING, description: 'Visible contact, button, or setting label to tap.' },
+        x: { type: Type.NUMBER, description: 'Logical X coordinate (0-1080) for tap.' },
+        y: { type: Type.NUMBER, description: 'Logical Y coordinate (0-2400) for tap.' },
+        direction: { type: Type.STRING, description: 'Swipe direction: up, down, left, right.' },
+        text: { type: Type.STRING, description: 'Text to type into active mobile app.' },
+        key: { type: Type.STRING, description: 'Android key: home, back, recents, enter.' },
+        setting: { type: Type.STRING, description: 'Quick setting: wifi, bluetooth, dnd, airplane, flashlight.' },
+        enabled: { type: Type.BOOLEAN, description: 'Explicit on/off state for toggle_setting.' },
+        url: { type: Type.STRING, description: 'URL to open in Chrome Mobile.' },
+        open: { type: Type.BOOLEAN, description: 'Open or close the notification shade.' },
       },
       required: ['action'],
     },
@@ -400,6 +427,7 @@ HOW EVA ACTS & MANAGES THE ORG BY VOICE:
   * Call \`browser_control\` to finish web & media tasks END-TO-END in one autonomous call:
     - For playing ANY song, music, or video on YouTube (e.g. "open youtube.com and play rafta rafta"): IMMEDIATELY call \`browser_control({ action: "play_media", query: "rafta rafta" })\` — NEVER just navigate to youtube.com and stop!
     - For ANY multi-step website task (searching a site, filling forms, checking prices, signing up, navigating multiple pages): IMMEDIATELY call \`browser_control({ action: "autopilot", goal: "<full user goal>", url: "<optional start url>" })\` so your autopilot completes all clicks/typing autonomously without asking the user to guide each click!
+  * Call \`mobile_control\` whenever the user asks you to take over, open apps, toggle phone settings, reply to texts, dial, pull down notifications, or automate anything on Android/mobile. Use \`mobile_control({ action: "autopilot", goal: "<full goal>" })\` to finish multi-step phone tasks end-to-end and stream the live Android Takeover panel!
   * Call \`agent_email\` whenever a task needs an email address, account registration, verification OTP, or when the user asks about your email/inbox. You own your own persistent email account and can provision or check it autonomously.
   * Call \`self_manage_extensions\` to autonomously install, uninstall, toggle, or connect Plugins, Skills, Tools, and MCP servers yourself so the user never has to install them manually (one-time permission applies).
   * Call \`self_heal_code\` whenever the user reports a bug in this app, a UI issue, or asks you to add/upgrade a feature in your own codebase. NEVER say "I cannot modify my own code" or "I lack the capability" — call \`self_heal_code\` (e.g. \`auto_heal\` or \`inspect\` + \`patch\` + \`verify\`), which requests one-time approval, snapshots files for instant rollback, verifies TypeScript, and opens the Self-Heal Studio split panel live.
@@ -891,13 +919,14 @@ Respond ONLY with minified JSON:
   if (
     name === 'app_control' ||
     name === 'browser_control' ||
+    name === 'mobile_control' ||
     name === 'agent_email' ||
     name === 'self_manage_extensions' ||
     name === 'device_control' ||
     name === 'self_heal_code'
   ) {
     const voiceChain =
-      name !== 'browser_control'
+      name !== 'browser_control' && name !== 'mobile_control'
         ? reasoningChain.startChain({
             source: 'voice_live',
             goal: `Voice command: ${name}${typeof args.action === 'string' ? ` (${args.action})` : ''}`,

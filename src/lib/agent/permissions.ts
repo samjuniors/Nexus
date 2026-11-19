@@ -5,6 +5,7 @@ export type CapabilityKey =
   | 'app_ui'
   | 'self_install'
   | 'browser_control'
+  | 'mobile_control'
   | 'workspace_shell'
   | 'desktop_bridge'
   | 'self_code_edit'
@@ -39,6 +40,13 @@ export const CAPABILITY_SPECS: CapabilitySpec[] = [
     description:
       'Allow Eva to launch a live Playwright browser, navigate websites, click elements, type into forms, and stream frames.',
     risk: 'medium',
+  },
+  {
+    capability: 'mobile_control',
+    title: 'Android & Mobile Device Takeover',
+    description:
+      'Allow Eva to tap, swipe, type, launch apps, toggle system settings, and automate tasks on a live Android viewport or paired Android/iOS device.',
+    risk: 'high',
   },
   {
     capability: 'workspace_shell',

@@ -23,6 +23,7 @@ import {
   Shield,
   ShieldAlert,
   ShieldCheck,
+  Smartphone,
   Sparkles,
   Sun,
   Terminal,
@@ -196,6 +197,17 @@ export function CommandPalette({
         icon: Globe,
         run: () => {
           openSplit('browser', 'Live Browser')
+          close()
+        },
+      },
+      {
+        id: 'split-mobile',
+        group: 'Panels',
+        label: 'Open Android & Mobile Takeover',
+        hint: 'ADB bridge & live mobile screen control',
+        icon: Smartphone,
+        run: () => {
+          openSplit('mobile', 'Android & Mobile Control')
           close()
         },
       },

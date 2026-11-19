@@ -91,7 +91,7 @@ const FILE_READ_RE =
 const TERMINAL_RE =
   /(verify|compile|build|lint|test|exec|shell|bash|terminal|command|npm|tsc|run_script|self_heal_verify)/i
 const BROWSER_RE =
-  /(browser|click|navigate|open_url|web_search|web_fetch|scrape|screenshot|dom|scroll|type_text|media|youtube)/i
+  /(browser|mobile_control|android|tap|swipe|phone|click|navigate|open_url|web_search|web_fetch|scrape|screenshot|dom|scroll|type_text|media|youtube)/i
 const ORG_RE =
   /(subagent|delegate|paperclip|hire|org|agent|bot|skill|workflow|automation|heartbeat|ticket|company|spawn)/i
 

@@ -56,12 +56,13 @@ describe('Mochi/Coucou procedural eyes engine', () => {
 })
 
 describe('Permission Vault capabilities and policy validation', () => {
-  it('defines all 6 autonomous capabilities with valid specs', () => {
-    assert.equal(CAPABILITY_SPECS.length, 6)
+  it('defines all 7 autonomous capabilities with valid specs', () => {
+    assert.equal(CAPABILITY_SPECS.length, 7)
     for (const cap of [
       'app_ui',
       'self_install',
       'browser_control',
+      'mobile_control',
       'workspace_shell',
       'desktop_bridge',
       'self_code_edit',

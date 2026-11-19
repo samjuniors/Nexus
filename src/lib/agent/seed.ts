@@ -509,6 +509,13 @@ export async function ensureSeeded() {
         source: 'builtin',
       },
       {
+        slug: 'mobile_control',
+        name: 'Android & Mobile Takeover',
+        description:
+          'Take over and automate Android/mobile devices just like Computer Use or Browser Use: tap, swipe, type, launch apps, toggle Wi-Fi/DND/Flashlight, pull notifications, or run end-to-end autopilot goals on the Live Android Viewport or paired ADB Android phone. Args: {"action": "autopilot"|"open_app"|"tap"|"swipe"|"type"|"press_key"|"toggle_setting"|"notifications"|"open_url"|"screenshot", ...}',
+        source: 'builtin',
+      },
+      {
         slug: 'agent_email',
         name: 'Eva Autonomous Email',
         description:

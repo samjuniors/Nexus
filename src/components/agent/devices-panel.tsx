@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Check, Copy, Download, Laptop, MonitorSmartphone, Pin, Plus, Terminal, Trash2 } from 'lucide-react'
+import { Check, Copy, Download, Laptop, MonitorSmartphone, Pin, Plus, Smartphone, Terminal, Trash2 } from 'lucide-react'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
 import { cn } from '@/lib/utils'
 
@@ -22,11 +22,16 @@ export function DevicesPanel() {
   const refreshDevices = useEvaControl((s) => s.refreshDevices)
   const pairDevice = useEvaControl((s) => s.pairDevice)
   const revokeDevice = useEvaControl((s) => s.revokeDevice)
+  const openSplit = useEvaControl((s) => s.openSplit)
 
   const [name, setName] = useState('')
-  const [platform, setPlatform] = useState<'macos' | 'windows' | 'linux'>('macos')
+  const [platform, setPlatform] = useState<'macos' | 'windows' | 'linux' | 'android' | 'ios'>('macos')
   const [pairing, setPairing] = useState(false)
-  const [freshToken, setFreshToken] = useState<{ deviceName: string; token: string } | null>(null)
+  const [freshToken, setFreshToken] = useState<{
+    deviceName: string
+    token: string
+    platform: 'macos' | 'windows' | 'linux' | 'android' | 'ios'
+  } | null>(null)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [alwaysOnTop, setAlwaysOnTop] = useState(false)
 
@@ -45,12 +50,14 @@ export function DevicesPanel() {
 
   const handlePair = async (e: React.FormEvent) => {
     e.preventDefault()
-    const clean = name.trim() || 'My Computer'
+    const clean =
+      name.trim() ||
+      (platform === 'android' ? 'My Android Phone' : platform === 'ios' ? 'My iPhone' : 'My Computer')
     setPairing(true)
     try {
       const res = await pairDevice(clean, platform)
       if (res) {
-        setFreshToken({ deviceName: res.device.name, token: res.pairingToken })
+        setFreshToken({ deviceName: res.device.name, token: res.pairingToken, platform })
         setName('')
       }
     } finally {
@@ -64,8 +71,11 @@ export function DevicesPanel() {
     setTimeout(() => setCopiedKey(null), 1800)
   }
 
+  const isFreshMobile = freshToken?.platform === 'android' || freshToken?.platform === 'ios'
   const oneLineCommand = freshToken
-    ? `curl -fsSL "${origin}/api/devices/runner" -o nexus-companion.mjs && NEXUS_WS_URL="${wsOrigin}/api/device-bridge" NEXUS_DEVICE_TOKEN="${freshToken.token}" node nexus-companion.mjs`
+    ? isFreshMobile
+      ? `curl -fsSL "${origin}/api/devices/mobile-runner" -o nexus-android-bridge.mjs && NEXUS_WS_URL="${wsOrigin}/api/device-bridge" NEXUS_DEVICE_TOKEN="${freshToken.token}" node nexus-android-bridge.mjs`
+      : `curl -fsSL "${origin}/api/devices/runner" -o nexus-companion.mjs && NEXUS_WS_URL="${wsOrigin}/api/device-bridge" NEXUS_DEVICE_TOKEN="${freshToken.token}" node nexus-companion.mjs`
     : ''
 
   const electronCommand = `cd electron && npm install && NEXUS_APP_URL="${origin}" npm start`
@@ -82,20 +92,38 @@ export function DevicesPanel() {
         <div>
           <div className="flex items-center gap-2">
             <Laptop className="h-4 w-4 text-emerald-400" />
-            <h2 className="text-sm font-semibold">Connected Computers &amp; Desktop</h2>
+            <h2 className="text-sm font-semibold">Connected Computers &amp; Phones</h2>
           </div>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            Manage your computer from the deployed Web app (via Local OS Companion Bridge) or run the native Electron Desktop App.
+            Manage your computer or Android phone from the deployed Web app via companion bridges, or run the native Electron Desktop App.
           </p>
         </div>
-        <a
-          href="/api/devices/runner"
-          download="nexus-companion.mjs"
-          className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[10.5px] text-secondary-foreground hover:bg-accent"
-        >
-          <Download className="h-3 w-3" />
-          Runner
-        </a>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+          <button
+            type="button"
+            onClick={() => openSplit('mobile', 'Android & Mobile Control')}
+            className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-emerald-500/35 bg-emerald-500/12 px-2 py-1 font-mono text-[10.5px] text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-300"
+          >
+            <Smartphone className="h-3 w-3" />
+            Mobile Takeover
+          </button>
+          <a
+            href="/api/devices/mobile-runner"
+            download="nexus-android-bridge.mjs"
+            className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[10.5px] text-secondary-foreground hover:bg-accent"
+          >
+            <Download className="h-3 w-3" />
+            ADB Bridge
+          </a>
+          <a
+            href="/api/devices/runner"
+            download="nexus-companion.mjs"
+            className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[10.5px] text-secondary-foreground hover:bg-accent"
+          >
+            <Download className="h-3 w-3" />
+            Desktop Runner
+          </a>
+        </div>
       </div>
 
       {/* Native Electron Desktop App Card */}
@@ -170,26 +198,28 @@ export function DevicesPanel() {
         className="mt-3 space-y-2.5 rounded-lg border border-border bg-card/40 p-3"
       >
         <div className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground">
-          Pair Local Machine (Web Companion Bridge)
+          Pair Computer or Android Phone (Companion Bridge)
         </div>
         <div className="flex flex-wrap gap-2">
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. MacBook Pro"
-            aria-label="Computer name"
+            placeholder={platform === 'android' ? 'e.g. Pixel 9 Pro' : platform === 'ios' ? 'e.g. iPhone 16' : 'e.g. MacBook Pro'}
+            aria-label="Device name"
             className="h-8 min-w-36 flex-1 rounded-md border border-border bg-background px-2.5 text-xs text-foreground outline-none focus:border-emerald-400/60"
           />
           <select
             value={platform}
-            onChange={(e) => setPlatform(e.target.value as 'macos' | 'windows' | 'linux')}
-            aria-label="Operating system platform"
+            onChange={(e) => setPlatform(e.target.value as 'macos' | 'windows' | 'linux' | 'android' | 'ios')}
+            aria-label="Device platform"
             className="h-8 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none"
           >
             <option value="macos">macOS</option>
             <option value="windows">Windows</option>
             <option value="linux">Linux</option>
+            <option value="android">Android (ADB)</option>
+            <option value="ios">iOS</option>
           </select>
           <button
             type="submit"
@@ -223,7 +253,9 @@ export function DevicesPanel() {
             </button>
           </div>
           <p className="text-[11px] text-muted-foreground">
-            Run this once in your computer&apos;s terminal (requires Node 22+). Save this token now — it is hashed on the server.
+            {isFreshMobile
+              ? 'Run this on a host with ADB + USB or Wireless Debugging enabled (requires Node 22+ and adb). Save this token now — it is hashed on the server.'
+              : "Run this once in your computer's terminal (requires Node 22+). Save this token now — it is hashed on the server."}
           </p>
           <pre className="nice-scroll overflow-x-auto rounded-md border border-border bg-background p-2 font-mono text-[10.5px] leading-relaxed text-foreground">
             {oneLineCommand}

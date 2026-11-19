@@ -21,6 +21,7 @@ import {
   Settings,
   Shield,
   ShieldCheck,
+  Smartphone,
   Sparkles,
   Store,
   Users,
@@ -58,6 +59,7 @@ const SPLIT_ACTIONS: { mode: SplitMode; label: string; title: string; icon: type
   { mode: 'reasoning', label: 'Reasoning', title: 'Reasoning Chain', icon: GitBranch },
   { mode: 'self_heal', label: 'Self-Heal', title: 'Self-Heal Studio', icon: ShieldCheck },
   { mode: 'browser', label: 'Browser', title: 'Live Browser', icon: Globe },
+  { mode: 'mobile', label: 'Mobile', title: 'Android & Mobile Control', icon: Smartphone },
   { mode: 'identity', label: 'Inbox', title: 'Eva Email & Identity', icon: Mail },
   { mode: 'permissions', label: 'Permissions', title: 'Permissions Vault', icon: Shield },
   { mode: 'devices', label: 'Devices', title: 'Connected Computers', icon: Laptop },
@@ -191,7 +193,7 @@ export function Sidebar({ onOpenCommandPalette }: { onOpenCommandPalette?: () =>
     <aside
       data-sidebar-rail={collapsed ? 'collapsed' : 'expanded'}
       className={cn(
-        'hidden shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200 md:flex',
+        'hidden shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200 lg:flex',
         collapsed ? 'w-[60px]' : 'w-[224px]'
       )}
     >

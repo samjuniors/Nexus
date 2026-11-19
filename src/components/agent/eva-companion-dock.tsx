@@ -168,7 +168,7 @@ export function EvaCompanionDock() {
       data-eva-companion-dock="minimal"
       data-companion-anchor={manualOffset ? 'manual' : anchor.slot}
       className={cn(
-        'group/companion fixed right-5 bottom-20 z-40 h-[92px] w-[92px] select-none bg-transparent md:bottom-6',
+        'group/companion fixed right-5 bottom-6 z-40 hidden h-[92px] w-[92px] select-none bg-transparent lg:block',
         !isDragging && 'transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]'
       )}
       style={{ transform: `translate3d(${effectiveOffset.x}px, ${effectiveOffset.y}px, 0)` }}

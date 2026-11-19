@@ -8,6 +8,7 @@ import type { Tab } from '@/lib/agent/client'
 import type {
   BrowserFramePayload,
   CursorEventPayload,
+  MobileFramePayload,
   PermissionRequestPayload,
 } from '@/lib/agent/control-bus'
 import type { ReasoningChain } from '@/lib/agent/reasoning-chain'
@@ -32,6 +33,7 @@ const VALID_SPLIT_MODES = new Set<SplitMode>([
   'reasoning',
   'self_heal',
   'browser',
+  'mobile',
   'identity',
   'permissions',
   'devices',
@@ -158,6 +160,9 @@ export function useControlBus() {
         if (msg.browserFrame) {
           ctrl.setBrowserFrame(msg.browserFrame as BrowserFramePayload)
         }
+        if (msg.mobileFrame) {
+          ctrl.setMobileFrame(msg.mobileFrame as MobileFramePayload)
+        }
         if (Array.isArray(msg.pendingPermissions)) {
           ctrl.setPendingPermissions(msg.pendingPermissions as PermissionRequestPayload[])
         }
@@ -204,6 +209,12 @@ export function useControlBus() {
       if (type === 'browser:frame') {
         const frame = (msg.frame ?? null) as BrowserFramePayload | null
         ctrl.setBrowserFrame(frame)
+        return
+      }
+
+      if (type === 'mobile:frame') {
+        const frame = (msg.frame ?? null) as MobileFramePayload | null
+        ctrl.setMobileFrame(frame)
         return
       }
 

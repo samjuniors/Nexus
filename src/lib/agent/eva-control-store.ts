@@ -4,6 +4,7 @@ import { create } from 'zustand'
 import type {
   BrowserFramePayload,
   CursorEventPayload,
+  MobileFramePayload,
   PermissionDecision,
   PermissionRequestPayload,
 } from '@/lib/agent/control-bus'
@@ -26,6 +27,15 @@ import type {
 import type { GBrainCategoryId } from '@/lib/agent/gbrain-categories'
 import type { EvaEmotionId } from '@/lib/agent/eva-emotions'
 import type { HandTrackingAction } from '@/lib/agent/hand-tracking'
+import {
+  persistCaptionStyle,
+  readSavedCaptionStyle,
+  type CaptionAnimationStyle,
+} from '@/lib/agent/caption-animation'
+import {
+  persistMobileVoiceFirst,
+  readSavedMobileVoiceFirst,
+} from '@/lib/agent/responsive-layout'
 
 export interface RuntimeErrorAlert {
   message: string
@@ -66,6 +76,7 @@ export type SplitMode =
   | 'reasoning'
   | 'self_heal'
   | 'browser'
+  | 'mobile'
   | 'identity'
   | 'permissions'
   | 'devices'
@@ -135,6 +146,8 @@ interface EvaControlState {
   splitTitle: string | null
   browserFrame: BrowserFramePayload | null
   browserBusy: boolean
+  mobileFrame: MobileFramePayload | null
+  mobileBusy: boolean
   cursor: LiveCursorState
   pendingPermissions: PermissionRequestPayload[]
   grants: PermissionGrantDTO[]
@@ -169,6 +182,8 @@ interface EvaControlState {
   settingsOpen: boolean
   companionResetSeq: number
   autoVoiceFocus: boolean
+  mobileVoiceFirst: boolean
+  mobileDrawerOpen: boolean
 
   setControlConnected: (connected: boolean) => void
   setLayoutMode: (mode: LayoutMode) => void
@@ -177,10 +192,13 @@ interface EvaControlState {
   setSettingsOpen: (open: boolean) => void
   resetCompanionPosition: () => void
   setAutoVoiceFocus: (enabled: boolean) => void
+  setMobileVoiceFirst: (enabled: boolean) => void
+  setMobileDrawerOpen: (open: boolean) => void
   setGbrainGraphOpen: (open: boolean, initialPanel?: 'none' | 'audit' | 'packs') => void
   openSplit: (mode: SplitMode, title?: string) => void
   closeSplit: () => void
   setBrowserFrame: (frame: BrowserFramePayload | null) => void
+  setMobileFrame: (frame: MobileFramePayload | null) => void
   updateCursor: (payload: CursorEventPayload) => void
   hideCursor: () => void
   pushPendingPermission: (req: PermissionRequestPayload) => void
@@ -236,6 +254,7 @@ interface EvaControlState {
   pairDevice: (name: string, platform: string) => Promise<{ pairingToken: string; device: ConnectedDeviceDTO } | null>
   revokeDevice: (id: string) => Promise<void>
   browserAction: (body: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>
+  mobileAction: (body: Record<string, unknown>) => Promise<{ ok: boolean; summary?: string; error?: string }>
   refreshIdentity: () => Promise<void>
   provisionIdentity: (opts?: { forceNew?: boolean; preferredLocal?: string }) => Promise<AgentIdentityDTO | null>
   saveCustomIdentity: (address: string, displayName?: string) => Promise<AgentIdentityDTO | null>
@@ -244,6 +263,8 @@ interface EvaControlState {
   setManualEmotion: (emotion: EvaEmotionId | null) => void
   captionsEnabled: boolean
   setCaptionsEnabled: (enabled: boolean) => void
+  captionAnimationStyle: CaptionAnimationStyle
+  setCaptionAnimationStyle: (style: CaptionAnimationStyle) => void
   previewHandAction: HandTrackingAction | null
   setPreviewHandAction: (action: HandTrackingAction | null) => void
 }
@@ -258,6 +279,8 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
   splitTitle: null,
   browserFrame: null,
   browserBusy: false,
+  mobileFrame: null,
+  mobileBusy: false,
   cursor: {
     visible: false,
     x: 420,
@@ -299,6 +322,8 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
   settingsOpen: false,
   companionResetSeq: 0,
   autoVoiceFocus: readSavedAutoVoiceFocus(),
+  mobileVoiceFirst: readSavedMobileVoiceFirst(),
+  mobileDrawerOpen: false,
   manualEmotion: null,
   captionsEnabled: true,
 
@@ -337,6 +362,13 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
     set({ autoVoiceFocus: enabled })
   },
 
+  setMobileVoiceFirst: (enabled) => {
+    persistMobileVoiceFirst(enabled)
+    set({ mobileVoiceFirst: enabled })
+  },
+
+  setMobileDrawerOpen: (open) => set({ mobileDrawerOpen: open }),
+
   setManualEmotion: (emotion) => set({ manualEmotion: emotion }),
 
   setCaptionsEnabled: (enabled) => set({ captionsEnabled: enabled }),
@@ -357,6 +389,8 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
   closeSplit: () => set({ splitOpen: false }),
 
   setBrowserFrame: (frame) => set({ browserFrame: frame && frame.active ? frame : null }),
+
+  setMobileFrame: (frame) => set({ mobileFrame: frame && frame.active ? frame : null }),
 
   updateCursor: (payload) =>
     set((s) => ({
@@ -572,6 +606,31 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     } finally {
       set({ browserBusy: false })
+    }
+  },
+
+  mobileAction: async (body) => {
+    set({ mobileBusy: true })
+    try {
+      const res = await fetch('/api/mobile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = (await res.json()) as {
+        ok?: boolean
+        summary?: string
+        error?: string
+        frame?: MobileFramePayload | null
+      }
+      if ('frame' in data) {
+        set({ mobileFrame: data.frame && data.frame.active ? data.frame : null })
+      }
+      return { ok: Boolean(data.ok), summary: data.summary, error: data.error }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    } finally {
+      set({ mobileBusy: false })
     }
   },
 
@@ -1047,4 +1106,9 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
   previewHandAction: null,
   setPreviewHandAction: (action) =>
     set((s) => ({ previewHandAction: s.previewHandAction === action ? null : action })),
+  captionAnimationStyle: readSavedCaptionStyle(),
+  setCaptionAnimationStyle: (style) => {
+    persistCaptionStyle(style)
+    set({ captionAnimationStyle: style })
+  },
 }))

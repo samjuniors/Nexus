@@ -41,12 +41,27 @@ export async function listConnectedDevices(): Promise<ConnectedDeviceDTO[]> {
   })
 }
 
+const MOBILE_CAPABILITIES = [
+  'android_tap',
+  'android_swipe',
+  'android_type',
+  'android_press_key',
+  'android_open_app',
+  'android_open_url',
+  'android_screenshot',
+  'android_notifications',
+]
+
+const DESKTOP_CAPABILITIES = ['open_url', 'open_app', 'shell', 'system_info']
+
 export async function createPairedDevice(name: string, platform = 'macos'): Promise<{
   device: ConnectedDeviceDTO
   pairingToken: string
 }> {
-  const cleanName = name.trim().slice(0, 60) || 'My Computer'
-  const cleanPlatform = ['macos', 'windows', 'linux'].includes(platform) ? platform : 'unknown'
+  const cleanName = name.trim().slice(0, 60) || (platform === 'android' ? 'Android Phone' : platform === 'ios' ? 'iPhone' : 'My Computer')
+  const cleanPlatform = ['macos', 'windows', 'linux', 'android', 'ios'].includes(platform) ? platform : 'unknown'
+  const isMobile = cleanPlatform === 'android' || cleanPlatform === 'ios'
+  const capabilities = isMobile ? MOBILE_CAPABILITIES : DESKTOP_CAPABILITIES
   const pairingToken = `nxs_${crypto.randomBytes(20).toString('hex')}`
   const tokenHash = hashToken(pairingToken)
 
@@ -56,7 +71,7 @@ export async function createPairedDevice(name: string, platform = 'macos'): Prom
       platform: cleanPlatform,
       tokenHash,
       status: 'offline',
-      capabilitiesJson: JSON.stringify(['open_url', 'open_app', 'shell', 'system_info']),
+      capabilitiesJson: JSON.stringify(capabilities),
     },
   })
 
@@ -66,7 +81,7 @@ export async function createPairedDevice(name: string, platform = 'macos'): Prom
       name: row.name,
       platform: row.platform,
       status: 'offline',
-      capabilities: ['open_url', 'open_app', 'shell', 'system_info'],
+      capabilities,
       lastSeenAt: null,
       createdAt: new Date(row.createdAt).toISOString(),
     },
@@ -100,7 +115,10 @@ export async function handleDeviceBridgeSocket(ws: WebSocket, req: IncomingMessa
   }
 
   const platformParam = (url.searchParams.get('platform') ?? device.platform).trim() || device.platform
-  const capabilities = ['open_url', 'open_app', 'shell', 'system_info']
+  const capabilities =
+    platformParam === 'android' || platformParam === 'ios'
+      ? MOBILE_CAPABILITIES
+      : DESKTOP_CAPABILITIES
 
   await db.connectedDevice.update({
     where: { id: device.id },
@@ -261,3 +279,143 @@ function connect() {
 connect();
 `
 }
+
+/**
+ * Generates an inspectable standalone Node.js (v22+) Android ADB / Termux Bridge.
+ * Connects a real Android device over USB or Wireless ADB (or Termux) to Eva via `/api/device-bridge`,
+ * executing real tap, swipe, text input, keyevent, app launch, URL intent, and live screencap actions.
+ */
+export function buildAndroidBridgeScript(origin: string): string {
+  const wsUrl = origin.replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:') + '/api/device-bridge'
+  return `#!/usr/bin/env node
+/**
+ * Nexus Agent OS — Android & Mobile Takeover Bridge (ADB / Wireless Debugging)
+ * Connects your Android phone or tablet (via USB or Wireless ADB) to Eva so she can
+ * tap, swipe, type, launch apps, open URLs, and capture live screens just like Computer Use.
+ *
+ * Requirements: Node.js 22+ and Android platform-tools (adb) on PATH.
+ * Usage: node nexus-android-bridge.mjs --token <YOUR_PAIRING_TOKEN> [--serial <ADB_SERIAL>]
+ */
+import { execFile } from 'node:child_process';
+
+const tokenIdx = process.argv.indexOf('--token');
+const token = tokenIdx !== -1 ? process.argv[tokenIdx + 1] : process.env.NEXUS_DEVICE_TOKEN;
+const serialIdx = process.argv.indexOf('--serial');
+const serial = serialIdx !== -1 ? process.argv[serialIdx + 1] : process.env.ANDROID_SERIAL;
+
+if (!token) {
+  console.error('Missing token. Run: node nexus-android-bridge.mjs --token <YOUR_PAIRING_TOKEN>');
+  process.exit(1);
+}
+
+const endpoint = '${wsUrl}?token=' + encodeURIComponent(token) + '&platform=android';
+
+function adb(args, opts = {}) {
+  const finalArgs = serial ? ['-s', serial, ...args] : args;
+  return new Promise((resolve) => {
+    execFile('adb', finalArgs, { timeout: 15000, maxBuffer: 12 * 1024 * 1024, ...opts }, (err, stdout, stderr) => {
+      if (err) return resolve({ ok: false, output: '', error: String(stderr || err.message) });
+      resolve({ ok: true, output: Buffer.isBuffer(stdout) ? stdout : String(stdout || '').trim() });
+    });
+  });
+}
+
+const KEY_CODES = {
+  home: '3',
+  back: '4',
+  call: '5',
+  endcall: '6',
+  volume_up: '24',
+  volume_down: '25',
+  power: '26',
+  enter: '66',
+  recents: '187',
+};
+
+const APP_PACKAGES = {
+  settings: 'com.android.settings',
+  chrome: 'com.android.chrome',
+  messages: 'com.google.android.apps.messaging',
+  phone: 'com.google.android.dialer',
+  camera: 'com.android.camera2',
+  maps: 'com.google.android.apps.maps',
+  calendar: 'com.google.android.calendar',
+  notes: 'com.google.android.keep',
+};
+
+async function executeAndroidAction(action, args = {}) {
+  if (action === 'android_tap') {
+    const x = Math.round(Number(args.x ?? 540));
+    const y = Math.round(Number(args.y ?? 1200));
+    return adb(['shell', 'input', 'tap', String(x), String(y)]);
+  }
+  if (action === 'android_swipe' || action === 'android_scroll') {
+    const fx = Math.round(Number(args.fromX ?? 540));
+    const fy = Math.round(Number(args.fromY ?? 1600));
+    const tx = Math.round(Number(args.toX ?? 540));
+    const ty = Math.round(Number(args.toY ?? 600));
+    return adb(['shell', 'input', 'swipe', String(fx), String(fy), String(tx), String(ty), '280']);
+  }
+  if (action === 'android_type' && typeof args.text === 'string') {
+    const escaped = args.text.replace(/\\s+/g, '%s').replace(/["'\\\\$&;|<>()]/g, '');
+    return adb(['shell', 'input', 'text', escaped]);
+  }
+  if (action === 'android_press_key') {
+    const code = KEY_CODES[String(args.key || 'home').toLowerCase()] || '3';
+    return adb(['shell', 'input', 'keyevent', code]);
+  }
+  if (action === 'android_open_app' && typeof args.app === 'string') {
+    const pkg = APP_PACKAGES[args.app.toLowerCase()] || args.app;
+    return adb(['shell', 'monkey', '-p', pkg, '-c', 'android.intent.category.LAUNCHER', '1']);
+  }
+  if (action === 'android_open_url' && typeof args.url === 'string') {
+    return adb(['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', args.url]);
+  }
+  if (action === 'android_notifications') {
+    return adb(['shell', 'cmd', 'statusbar', args.open === false ? 'collapse' : 'expand-notifications']);
+  }
+  if (action === 'android_screenshot') {
+    const res = await adb(['exec-out', 'screencap', '-p'], { encoding: 'buffer' });
+    if (!res.ok) return res;
+    const b64 = Buffer.from(res.output).toString('base64');
+    return { ok: true, output: 'data:image/png;base64,' + b64 };
+  }
+  return { ok: false, output: '', error: 'Unsupported Android action: ' + action };
+}
+
+function connect() {
+  console.log('[Nexus Android Bridge] Connecting to', endpoint.replace(/token=[^&]+/, 'token=***'));
+  const ws = new WebSocket(endpoint);
+  let pingTimer;
+  ws.addEventListener('open', () => {
+    console.log('[Nexus Android Bridge] Connected to Eva. Ready for ADB takeover.');
+    pingTimer = setInterval(() => {
+      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'bridge:ping' }));
+    }, 20000);
+  });
+  ws.addEventListener('message', async (ev) => {
+    try {
+      const msg = JSON.parse(String(ev.data));
+      if (msg.type === 'device:exec' && msg.commandId) {
+        console.log('[Nexus Android Bridge] Executing:', msg.action, msg.args);
+        const res = await executeAndroidAction(msg.action, msg.args);
+        ws.send(JSON.stringify({ type: 'device:result', commandId: msg.commandId, ...res }));
+      }
+    } catch (e) {
+      console.error('[Nexus Android Bridge] Message error:', e);
+    }
+  });
+  ws.addEventListener('close', () => {
+    if (pingTimer) clearInterval(pingTimer);
+    console.log('[Nexus Android Bridge] Disconnected — reconnecting in 4s...');
+    setTimeout(connect, 4000);
+  });
+  ws.addEventListener('error', () => {
+    try { ws.close(); } catch {}
+  });
+}
+
+connect();
+`
+}
+

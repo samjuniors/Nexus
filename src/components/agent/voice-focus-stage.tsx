@@ -9,12 +9,15 @@ import {
   CaptionsOff,
   Ear,
   EarOff,
+  Eye,
+  EyeOff,
   GitBranch,
   Globe,
   Hand,
   Heart,
   LayoutGrid,
   MessageCircle,
+  MessageSquare,
   Mic,
   MicOff,
   Monitor,
@@ -22,10 +25,12 @@ import {
   Network,
   PhoneOff,
   Shirt,
+  Smartphone,
   Sparkles,
 } from 'lucide-react'
 import { CoucouBot } from '@/components/coucou/coucou-bot'
 import { VisionPreviewStrip } from '@/components/agent/vision-preview-pip'
+import { AnimatedCaptionText } from '@/components/agent/animated-caption-text'
 import { useEva } from '@/components/agent/eva-provider'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
 import { useApp } from '@/lib/agent/store'
@@ -110,9 +115,11 @@ export function VoiceFocusStage({
   const setManualEmotion = useEvaControl((s) => s.setManualEmotion)
   const captionsEnabled = useEvaControl((s) => s.captionsEnabled)
   const setCaptionsEnabled = useEvaControl((s) => s.setCaptionsEnabled)
+  const captionAnimationStyle = useEvaControl((s) => s.captionAnimationStyle)
 
   const [greetSeq, setGreetSeq] = useState(0)
   const [previousCaption, setPreviousCaption] = useState<CaptionLine | null>(null)
+  const [mobileMoodOpen, setMobileMoodOpen] = useState(false)
   const lastCaptionTextRef = useRef<string>('')
 
   const activeConversation = useMemo(
@@ -299,8 +306,8 @@ export function VoiceFocusStage({
         }}
       />
 
-      {/* Lightweight OS Stage Action Strip (OsTopBar already sits cleanly above) */}
-      <header className="relative z-10 flex items-center justify-between gap-3 border-b border-border/60 px-5 py-2">
+      {/* Desktop-only OS Stage Action Strip (mobile/tablet use the single 48px OsTopBar) */}
+      <header className="relative z-10 hidden items-center justify-between gap-3 border-b border-border/60 px-5 py-2 lg:flex">
         <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
           <span
             className="h-2 w-2 shrink-0 rounded-full transition-colors"
@@ -435,10 +442,98 @@ export function VoiceFocusStage({
             </div>
           )}
 
-          {/* Emotion & Feeling Presence Bar */}
+          {/* Mobile & Tablet (< lg): single quiet tappable feeling line — keeps first screen serene */}
+          <div className="mt-2 flex flex-col items-center gap-2 text-center lg:hidden">
+            <button
+              type="button"
+              data-mobile-mood-toggle="1"
+              onClick={() => setMobileMoodOpen((v) => !v)}
+              aria-expanded={mobileMoodOpen}
+              className="inline-flex min-h-[36px] items-center gap-2 rounded-full px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            >
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ backgroundColor: emotion.accentHex }}
+              />
+              <span className="font-medium text-foreground">{emotion.label}</span>
+              <span className="opacity-50">·</span>
+              <span className="truncate max-w-[200px]">
+                {voice.isActive
+                  ? voice.muted
+                    ? 'Muted'
+                    : voice.isSpeaking
+                      ? 'Speaking'
+                      : 'Listening'
+                  : wake.sleepMode
+                    ? 'Sleeping'
+                    : 'Tap to speak'}
+              </span>
+            </button>
+
+            <AnimatePresence>
+              {mobileMoodOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 4 }}
+                  transition={{ duration: 0.14 }}
+                  role="group"
+                  aria-label="Eva feeling tone"
+                  className="flex max-w-xs flex-wrap items-center justify-center gap-1.5 pt-1"
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setManualEmotion(null)
+                      setMobileMoodOpen(false)
+                    }}
+                    aria-pressed={manualEmotion === null}
+                    className={cn(
+                      'inline-flex h-8 items-center gap-1 rounded-full border px-3 text-[11px] font-medium transition-colors',
+                      manualEmotion === null
+                        ? 'border-foreground/30 bg-foreground/10 text-foreground'
+                        : 'border-border/70 text-muted-foreground'
+                    )}
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    Auto
+                  </button>
+                  {VOICE_MOOD_PRESETS.map((id) => {
+                    const meta = EVA_EMOTIONS[id]
+                    const active = emotion.id === id
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => {
+                          setManualEmotion(manualEmotion === id ? null : id)
+                          setMobileMoodOpen(false)
+                        }}
+                        aria-pressed={active}
+                        className={cn(
+                          'inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[11px] font-medium transition-colors',
+                          active
+                            ? 'border-foreground/30 bg-muted text-foreground'
+                            : 'border-border/70 text-muted-foreground'
+                        )}
+                      >
+                        <span
+                          className="h-1.5 w-1.5 rounded-full"
+                          style={{ backgroundColor: meta.accentHex }}
+                        />
+                        {meta.shortLabel}
+                      </button>
+                    )
+                  })}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Desktop (>= lg): Emotion & Feeling Presence Bar */}
           <div
             data-voice-emotion-ribbon="1"
-            className="mt-2 flex flex-col items-center gap-2 text-center"
+            className="mt-2 hidden flex-col items-center gap-2 text-center lg:flex"
           >
             <div className="flex items-center gap-2 text-xs">
               <Heart className="h-3.5 w-3.5" style={{ color: emotion.accentHex }} />
@@ -500,7 +595,10 @@ export function VoiceFocusStage({
             <button
               type="button"
               onClick={() => openReasoningForChain(latestChain.id)}
-              className="mt-3 inline-flex max-w-md items-center gap-2 rounded-lg border border-border/80 bg-card/70 px-3 py-1.5 text-left text-[11.5px] text-muted-foreground transition-colors hover:border-sky-500/40 hover:text-foreground"
+              className={cn(
+                'mt-3 max-w-md items-center gap-2 rounded-lg border border-border/80 bg-card/70 px-3 py-1.5 text-left text-[11.5px] text-muted-foreground transition-colors hover:border-sky-500/40 hover:text-foreground',
+                latestChain.status === 'active' ? 'inline-flex' : 'hidden lg:inline-flex'
+              )}
             >
               <Hand className="h-3.5 w-3.5 shrink-0 text-amber-500" />
               <span className="truncate">
@@ -514,8 +612,8 @@ export function VoiceFocusStage({
         </motion.div>
       </div>
 
-      {/* Bottom Live Captions Stage — anchored right above the 4-Sense OS Dock */}
-      <div className="relative z-10 mx-auto w-full max-w-2xl px-5 pb-3">
+      {/* Bottom Live Captions Stage — anchored right above the voice dock */}
+      <div className="relative z-10 mx-auto w-full max-w-2xl px-4 pb-2 lg:px-5 lg:pb-3">
         <AnimatePresence initial={false}>
           {captionsEnabled && (
             <motion.section
@@ -527,7 +625,7 @@ export function VoiceFocusStage({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 8 }}
               transition={{ duration: 0.18 }}
-              className="rounded-xl border border-border/80 bg-card/85 px-4 py-3 backdrop-blur-md"
+              className="rounded-2xl border border-border/70 bg-card/80 px-4 py-3 backdrop-blur-md lg:rounded-xl lg:border-border/80 lg:bg-card/85"
             >
               {/* Fading previous caption line */}
               {previousCaption && (
@@ -558,20 +656,138 @@ export function VoiceFocusStage({
                   </span>
                 </div>
 
-                <p
+                <AnimatedCaptionText
+                  text={activeCaption.text}
+                  styleMode={captionAnimationStyle}
+                  accentColor={activeCaption.speaker === 'You' ? '#38bdf8' : emotion.accentHex}
                   data-voice-caption-active="1"
-                  className="min-w-0 flex-1 text-sm font-medium leading-relaxed text-foreground sm:text-[15px]"
-                >
-                  {activeCaption.text}
-                </p>
+                />
               </div>
             </motion.section>
           )}
         </AnimatePresence>
       </div>
 
-      {/* Bottom 4-Sense OS Dock (Mouth · Eyes · Ears · Hands · Captions · Wardrobe) */}
-      <footer className="relative z-10 border-t border-border/70 bg-sidebar/80 px-5 py-3 backdrop-blur-sm">
+      {/* Mobile & Tablet (< lg): Real Voice Agent Thumb-Zone Dock */}
+      <div
+        data-mobile-voice-dock="1"
+        className="relative z-10 flex flex-col items-center gap-2 px-4 pt-2 pb-[max(1.25rem,env(safe-area-inset-bottom))] lg:hidden"
+      >
+        <div className="flex w-full max-w-sm items-center justify-between gap-2">
+          {/* Camera / Vision Eye */}
+          <button
+            type="button"
+            onClick={() => {
+              if (vision.screenActive) void vision.toggleScreen()
+              else void vision.toggleCamera()
+            }}
+            aria-pressed={vision.anyActive}
+            aria-label={vision.anyActive ? 'Turn off Eva eyes' : 'Turn on Eva camera eye'}
+            className={cn(
+              'flex h-12 w-12 shrink-0 items-center justify-center rounded-full border transition-colors active:scale-95',
+              vision.anyActive
+                ? 'border-sky-500/45 bg-sky-500/15 text-sky-500'
+                : 'border-border/80 bg-card/80 text-muted-foreground hover:text-foreground'
+            )}
+          >
+            {vision.anyActive ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+          </button>
+
+          {/* Android / Mobile Takeover */}
+          <button
+            type="button"
+            data-mobile-takeover-trigger="1"
+            onClick={() => openSplit('mobile', 'Android & Mobile Control')}
+            aria-label="Open Android and Mobile Takeover"
+            className={cn(
+              'flex h-12 w-12 shrink-0 items-center justify-center rounded-full border transition-colors active:scale-95',
+              splitOpen && splitMode === 'mobile'
+                ? 'border-emerald-500/45 bg-emerald-500/15 text-emerald-500'
+                : 'border-border/80 bg-card/80 text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <Smartphone className="h-5 w-5" />
+          </button>
+
+          {/* Center Hero Talk / Voice Orb */}
+          <button
+            type="button"
+            data-mobile-voice-orb="1"
+            onClick={() => {
+              if (voice.isActive) {
+                voice.toggleMute()
+              } else {
+                setGreetSeq((n) => n + 1)
+                void voice.startVoice(activeConvId)
+              }
+            }}
+            aria-label={
+              voice.isActive
+                ? voice.muted
+                  ? 'Unmute microphone'
+                  : 'Mute microphone'
+                : 'Talk to Eva'
+            }
+            className={cn(
+              'relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full border shadow-lg transition-all active:scale-95',
+              voice.isActive && !voice.muted
+                ? 'border-emerald-400/60 bg-emerald-500 text-zinc-950 shadow-emerald-500/25'
+                : voice.isActive && voice.muted
+                  ? 'border-amber-400/60 bg-amber-500/20 text-amber-500'
+                  : 'border-sky-400/40 bg-foreground text-background shadow-black/25'
+            )}
+          >
+            {voice.isActive && voice.muted ? (
+              <MicOff className="h-6 w-6" />
+            ) : voice.isSpeaking ? (
+              <MessageCircle className="h-6 w-6" />
+            ) : (
+              <Mic className="h-6 w-6" />
+            )}
+          </button>
+
+          {/* Switch to Workspace Chat */}
+          <button
+            type="button"
+            data-mobile-switch-chat="1"
+            onClick={() => setLayoutMode('standard')}
+            aria-label="Open chat workspace"
+            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-border/80 bg-card/80 text-muted-foreground transition-colors hover:text-foreground active:scale-95"
+          >
+            <MessageSquare className="h-5 w-5" />
+          </button>
+
+          {/* Toggle Live Captions or End Voice Call */}
+          {voice.isActive ? (
+            <button
+              type="button"
+              onClick={voice.stopVoice}
+              aria-label="End live voice session"
+              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-destructive/50 bg-destructive/15 text-destructive transition-colors active:scale-95"
+            >
+              <PhoneOff className="h-5 w-5" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setCaptionsEnabled(!captionsEnabled)}
+              aria-pressed={captionsEnabled}
+              aria-label={captionsEnabled ? 'Hide live captions' : 'Show live captions'}
+              className={cn(
+                'flex h-12 w-12 shrink-0 items-center justify-center rounded-full border transition-colors active:scale-95',
+                captionsEnabled
+                  ? 'border-foreground/25 bg-muted text-foreground'
+                  : 'border-border/80 bg-card/80 text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {captionsEnabled ? <Captions className="h-5 w-5" /> : <CaptionsOff className="h-5 w-5" />}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Desktop (>= lg): Bottom 4-Sense OS Dock (Mouth · Eyes · Ears · Hands · Captions · Wardrobe) */}
+      <footer className="relative z-10 hidden border-t border-border/70 bg-sidebar/80 px-5 py-3 backdrop-blur-sm lg:block">
         <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-2">
           {/* Primary Mouth / Talk control */}
           <div className="flex items-center gap-2">

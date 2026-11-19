@@ -177,9 +177,16 @@ const BUILTIN_TOOL_SPECS: Record<string, { name: string; description: string; ar
     app_control: {
       name: 'App UI Self-Control',
       description:
-        'Control the Nexus Agent OS interface visually with an animated live cursor: switch tabs, open or close split-screen panels (reasoning, self_heal, browser, identity, permissions, devices, org, artifacts, tools, automations, brain), switch between standard and Voice Focus layout modes, collapse/expand the sidebar rail, open the interactive GBrain graph, show popups, click buttons/targets, or toggle light/dark theme.',
+        'Control the Nexus Agent OS interface visually with an animated live cursor: switch tabs, open or close split-screen panels (reasoning, self_heal, browser, mobile, identity, permissions, devices, org, artifacts, tools, automations, brain), switch between standard and Voice Focus layout modes, collapse/expand the sidebar rail, open the interactive GBrain graph, show popups, click buttons/targets, or toggle light/dark theme.',
       argSpec:
-        '{"action": "navigate_tab"|"open_split"|"close_split"|"set_layout_mode"|"toggle_sidebar"|"open_gbrain_graph"|"open_popup"|"close_popup"|"click_target"|"set_theme", "tab"?: string, "mode"?: "reasoning"|"self_heal"|"browser"|"identity"|"permissions"|"devices"|"org"|"artifacts"|"tools"|"automations"|"brain"|"standard"|"focus", "collapsed"?: boolean, "title"?: string, "body"?: string, "selector"?: string, "label"?: string, "theme"?: "light"|"dark", "url"?: string}',
+        '{"action": "navigate_tab"|"open_split"|"close_split"|"set_layout_mode"|"toggle_sidebar"|"open_gbrain_graph"|"open_popup"|"close_popup"|"click_target"|"set_theme", "tab"?: string, "mode"?: "reasoning"|"self_heal"|"browser"|"mobile"|"identity"|"permissions"|"devices"|"org"|"artifacts"|"tools"|"automations"|"brain"|"standard"|"focus", "collapsed"?: boolean, "title"?: string, "body"?: string, "selector"?: string, "label"?: string, "theme"?: "light"|"dark", "url"?: string}',
+    },
+    mobile_control: {
+      name: 'Android & Mobile Device Takeover',
+      description:
+        'Take over and automate an Android/mobile phone just like Computer Use or Browser Use: run multi-step "autopilot" goals end-to-end, open apps (settings, messages, phone, chrome, notes, camera, calendar, maps), tap coordinates or targets, swipe/scroll, type text or SMS replies, press Android keys (home, back, recents), pull down notifications, toggle quick settings (wifi, bluetooth, dnd, airplane, flashlight), or open URLs on the Live Android Viewport or a paired ADB Android phone.',
+      argSpec:
+        '{"action": "autopilot"|"status"|"list_apps"|"open_app"|"tap"|"long_press"|"swipe"|"scroll"|"type"|"press_key"|"open_url"|"notifications"|"toggle_setting"|"screenshot"|"select_device", "goal"?: string, "app"?: string, "target"?: string, "x"?: number, "y"?: number, "direction"?: "up"|"down"|"left"|"right", "text"?: string, "key"?: "home"|"back"|"recents"|"enter", "setting"?: "wifi"|"bluetooth"|"dnd"|"airplane"|"flashlight", "enabled"?: boolean, "url"?: string, "open"?: boolean, "deviceId"?: string}',
     },
     self_manage_extensions: {
       name: 'Self-Install & Manage Extensions',
@@ -191,7 +198,7 @@ const BUILTIN_TOOL_SPECS: Record<string, { name: string; description: string; ar
     device_control: {
       name: 'Connected Device Control',
       description:
-        'List paired local Mac/Windows/Linux computers and execute approved actions (system_info, open_url, open_app, shell) on an online computer via the optional Nexus Companion Bridge.',
+        'List paired local Mac/Windows/Linux computers and Android/iOS devices and execute approved actions (system_info, open_url, open_app, shell) on an online device via the Nexus Companion Bridge.',
       argSpec:
         '{"action": "list"|"system_info"|"open_url"|"open_app"|"shell", "deviceId"?: string, "url"?: string, "app"?: string, "command"?: string}',
     },
@@ -2232,6 +2239,7 @@ export async function executeTool(
             'reasoning',
             'self_heal',
             'browser',
+            'mobile',
             'identity',
             'permissions',
             'devices',
@@ -2522,6 +2530,60 @@ export async function executeTool(
           summary: res.ok ? `Executed ${action} on ${target.name}` : `Device action failed: ${res.error ?? 'error'}`,
           raw: res.ok ? res.output : `Error: ${res.error ?? res.output}`,
           display: { kind: 'text', text: res.ok ? `${target.name}: ${truncate(res.output, 600)}` : `Error: ${res.error}` },
+        }
+      }
+
+      case 'mobile_control': {
+        const { mobileManager } = await import('@/lib/agent/mobile-manager')
+        const action = str(args.action, 'status').toLowerCase()
+
+        if (action !== 'status' && action !== 'list_apps') {
+          const perm = await requireCapabilityPermission({
+            capability: 'mobile_control',
+            actionSummary: `Android / Mobile takeover: ${action}${str(args.goal || args.app || args.target || args.setting) ? ` (${str(args.goal || args.app || args.target || args.setting).slice(0, 60)})` : ''}`,
+            details: JSON.stringify(args).slice(0, 200),
+          })
+          if (!perm.allowed) {
+            return {
+              ok: false,
+              summary: 'Mobile takeover permission declined',
+              raw: perm.reason ?? 'Permission declined for mobile_control.',
+              display: { kind: 'text', text: perm.reason ?? 'Permission declined.' },
+            }
+          }
+        }
+
+        const res = await mobileManager.execute(
+          {
+            action: action as Parameters<typeof mobileManager.execute>[0]['action'],
+            app: str(args.app) || undefined,
+            target: str(args.target) || undefined,
+            x: typeof args.x === 'number' ? args.x : undefined,
+            y: typeof args.y === 'number' ? args.y : undefined,
+            fromX: typeof args.fromX === 'number' ? args.fromX : undefined,
+            fromY: typeof args.fromY === 'number' ? args.fromY : undefined,
+            toX: typeof args.toX === 'number' ? args.toX : undefined,
+            toY: typeof args.toY === 'number' ? args.toY : undefined,
+            direction: (['up', 'down', 'left', 'right'].includes(str(args.direction))
+              ? str(args.direction)
+              : undefined) as 'up' | 'down' | 'left' | 'right' | undefined,
+            text: str(args.text) || undefined,
+            key: str(args.key) || undefined,
+            setting: str(args.setting) || undefined,
+            enabled: typeof args.enabled === 'boolean' ? args.enabled : undefined,
+            url: str(args.url) || undefined,
+            goal: str(args.goal) || undefined,
+            deviceId: str(args.deviceId) || undefined,
+            open: typeof args.open === 'boolean' ? args.open : undefined,
+          },
+          { broadcast: true, openPanel: true }
+        )
+
+        return {
+          ok: res.ok,
+          summary: res.summary,
+          raw: res.output,
+          display: { kind: 'text', text: res.output },
         }
       }
 

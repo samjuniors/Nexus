@@ -1,9 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
-import { Bot, Brain, CalendarClock, Loader2, Mic, MicOff, Moon, PhoneOff, Puzzle, Store, Users } from 'lucide-react'
+import { Loader2, Menu, MessageSquare, Mic, MicOff, Moon, PhoneOff, Smartphone } from 'lucide-react'
 import { EvaProvider, useEva } from '@/components/agent/eva-provider'
 import { Sidebar } from '@/components/agent/sidebar'
 import { ChatView } from '@/components/agent/chat-view'
@@ -20,8 +20,14 @@ import { CommandPalette } from '@/components/agent/command-palette'
 import { RuntimeHealBanner } from '@/components/agent/runtime-heal-banner'
 import { SettingsModal } from '@/components/agent/settings-modal'
 import { OsTopBar } from '@/components/agent/os-top-bar'
+import { MobileNavDrawer } from '@/components/agent/mobile-nav-drawer'
 import { useApp } from '@/lib/agent/store'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
+import {
+  readSavedMobileVoiceFirst,
+  shouldStartInVoiceAgentMode,
+  useViewportTier,
+} from '@/lib/agent/responsive-layout'
 import type { Tab } from '@/lib/agent/client'
 import { cn } from '@/lib/utils'
 
@@ -77,20 +83,6 @@ const VIEW_LABELS: Record<Tab, string> = {
   mcps: 'MCP Servers',
   memory: 'Memory',
 }
-
-const MOBILE_NAV: { tab: Tab; label: string; icon: typeof Bot; match: (t: Tab) => boolean }[] = [
-  { tab: 'agent', label: 'Agent', icon: Bot, match: (t) => t === 'agent' },
-  { tab: 'org', label: 'Org', icon: Users, match: (t) => t === 'org' },
-  { tab: 'automations', label: 'Auto', icon: CalendarClock, match: (t) => t === 'automations' },
-  { tab: 'brain', label: 'Brain', icon: Brain, match: (t) => t === 'brain' },
-  { tab: 'marketplace', label: 'Market', icon: Store, match: (t) => t === 'marketplace' },
-  {
-    tab: 'plugins',
-    label: 'Customize',
-    icon: Puzzle,
-    match: (t) => t === 'plugins' || t === 'skills' || t === 'tools' || t === 'mcps' || t === 'artifacts' || t === 'memory',
-  },
-]
 
 function EvaLiveDockedBar() {
   const { activeTab, setTab } = useApp()
@@ -154,18 +146,45 @@ function EvaLiveDockedBar() {
 function ShellContent() {
   const { activeTab, setTab, bootstrap, brain } = useApp()
   const splitOpen = useEvaControl((s) => s.splitOpen)
+  const splitMode = useEvaControl((s) => s.splitMode)
+  const openSplit = useEvaControl((s) => s.openSplit)
   const layoutMode = useEvaControl((s) => s.layoutMode)
+  const setLayoutMode = useEvaControl((s) => s.setLayoutMode)
+  const setMobileVoiceFirst = useEvaControl((s) => s.setMobileVoiceFirst)
+  const setMobileDrawerOpen = useEvaControl((s) => s.setMobileDrawerOpen)
   const gbrainGraphOpen = useEvaControl((s) => s.gbrainGraphOpen)
   const setGbrainGraphOpen = useEvaControl((s) => s.setGbrainGraphOpen)
 
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [splitExpanded, setSplitExpanded] = useState(false)
+  const { tier: viewportTier, isCompact } = useViewportTier()
+  const initializedViewportRef = useRef(false)
 
   const brainConnected = brain?.connected ?? true
 
   useEffect(() => {
     void bootstrap()
   }, [bootstrap])
+
+  // Start phones & tablets directly on the minimal Real Voice Agent first screen
+  useEffect(() => {
+    if (initializedViewportRef.current || typeof window === 'undefined') return
+    initializedViewportRef.current = true
+    const savedVoiceFirst = readSavedMobileVoiceFirst()
+    if (!savedVoiceFirst) {
+      setMobileVoiceFirst(false)
+    }
+    const params = new URLSearchParams(window.location.search)
+    if (
+      shouldStartInVoiceAgentMode({
+        width: window.innerWidth,
+        mobileVoiceFirstEnabled: savedVoiceFirst,
+        queryView: params.get('view'),
+      })
+    ) {
+      setLayoutMode('focus')
+    }
+  }, [setLayoutMode, setMobileVoiceFirst])
 
   // Portable Brain auto-detach: automatically leave Brain/Memory views and close GBrain overlay
   useEffect(() => {
@@ -178,11 +197,6 @@ function ShellContent() {
       }
     }
   }, [brainConnected, activeTab, setTab, gbrainGraphOpen, setGbrainGraphOpen])
-
-  const openCustomize = () => {
-    const sub: Tab[] = ['plugins', 'skills', 'tools', 'mcps']
-    if (!sub.includes(activeTab)) setTab('plugins')
-  }
 
   const primaryWorkspace =
     layoutMode === 'focus' ? (
@@ -213,12 +227,21 @@ function ShellContent() {
     )
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-background text-foreground">
+    <div
+      data-viewport-tier={viewportTier}
+      data-layout-mode={layoutMode}
+      className="flex h-dvh overflow-hidden bg-background text-foreground"
+    >
       <Sidebar onOpenCommandPalette={() => setPaletteOpen(true)} />
 
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col pb-14 md:pb-0">
+      <main
+        className={cn(
+          'flex min-h-0 min-w-0 flex-1 flex-col lg:pb-0',
+          layoutMode === 'standard' ? 'pb-14' : 'pb-0'
+        )}
+      >
         <OsTopBar onOpenCommandPalette={() => setPaletteOpen(true)} />
-        {splitOpen ? (
+        {splitOpen && !isCompact ? (
           <PanelGroup
             key={splitExpanded ? 'wide' : 'balanced'}
             direction="horizontal"
@@ -251,7 +274,20 @@ function ShellContent() {
         )}
       </main>
 
-      {/* Borderless Floating Companion, Settings Modal, Dynamic Popups, Command Palette (⌘K), Permission Prompt, Live AI Cursor, and Portable GBrain Graph */}
+      {/* Mobile & Tablet full-height split stage overlay (Android Takeover, Live Browser, Devices, etc.) */}
+      {splitOpen && isCompact && (
+        <div
+          data-mobile-split-sheet="1"
+          className="fixed inset-0 z-40 flex flex-col bg-background lg:hidden"
+        >
+          <WorkspaceSplitStage />
+        </div>
+      )}
+
+      {/* Slide-over navigation drawer for Mobile & Tablet (< lg) */}
+      <MobileNavDrawer />
+
+      {/* Borderless Floating Companion (Desktop), Settings Modal, Dynamic Popups, Command Palette (⌘K), Permission Prompt, Live AI Cursor, and Portable GBrain Graph */}
       <EvaCompanionDock />
       <SettingsModal />
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
@@ -261,29 +297,57 @@ function ShellContent() {
       <RuntimeHealBanner />
       {brainConnected && <GBrainGraph open={gbrainGraphOpen} onOpenChange={setGbrainGraphOpen} />}
 
-      {/* mobile bottom nav */}
-      <nav
-        aria-label="Mobile navigation"
-        className="fixed inset-x-0 bottom-0 z-40 flex border-t border-white/[0.08] bg-sidebar md:hidden"
-      >
-        {MOBILE_NAV.filter((item) => brainConnected || item.tab !== 'brain').map(({ tab, label, icon: Icon, match }) => {
-          const active = match(activeTab)
-          return (
-            <button
-              key={tab}
-              onClick={() => (tab === 'plugins' ? openCustomize() : setTab(tab))}
-              aria-current={active ? 'page' : undefined}
-              className={cn(
-                'flex min-h-14 flex-1 flex-col items-center justify-center gap-0.5 text-[9px] transition-colors',
-                active ? 'text-primary' : 'text-muted-foreground'
-              )}
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-            </button>
-          )
-        })}
-      </nav>
+      {/* Minimalistic 4-destination bottom bar on Mobile & Tablet — ONLY in Workspace/Chat mode */}
+      {layoutMode === 'standard' && (
+        <nav
+          aria-label="Mobile workspace navigation"
+          data-mobile-bottom-nav="1"
+          className="fixed inset-x-0 bottom-0 z-30 flex h-14 border-t border-border/80 bg-background/95 backdrop-blur-md lg:hidden"
+        >
+          <button
+            type="button"
+            onClick={() => setLayoutMode('focus')}
+            className="flex min-h-[44px] flex-1 flex-col items-center justify-center gap-0.5 text-[10.5px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <Mic className="h-4 w-4" />
+            <span>Voice</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('agent')}
+            aria-current={activeTab === 'agent' ? 'page' : undefined}
+            className={cn(
+              'flex min-h-[44px] flex-1 flex-col items-center justify-center gap-0.5 text-[10.5px] font-medium transition-colors',
+              activeTab === 'agent' ? 'text-sky-500' : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <MessageSquare className="h-4 w-4" />
+            <span>Chat</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => openSplit('mobile', 'Android & Mobile Control')}
+            aria-pressed={splitOpen && splitMode === 'mobile'}
+            className={cn(
+              'flex min-h-[44px] flex-1 flex-col items-center justify-center gap-0.5 text-[10.5px] font-medium transition-colors',
+              splitOpen && splitMode === 'mobile'
+                ? 'text-emerald-500'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <Smartphone className="h-4 w-4" />
+            <span>Android</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileDrawerOpen(true)}
+            className="flex min-h-[44px] flex-1 flex-col items-center justify-center gap-0.5 text-[10.5px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <Menu className="h-4 w-4" />
+            <span>Menu</span>
+          </button>
+        </nav>
+      )}
     </div>
   )
 }

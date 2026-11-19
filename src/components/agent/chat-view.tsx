@@ -235,7 +235,7 @@ export function ChatView() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* minimal header */}
-      <header className="flex items-center gap-3 border-b border-border/70 bg-sidebar px-4 py-2.5 md:px-6">
+      <header className="flex items-center gap-3 border-b border-border/70 bg-sidebar px-3.5 py-2 lg:px-6 lg:py-2.5">
         <MochiEyes
           expression={evaExpression}
           archetype="eva"
@@ -255,13 +255,13 @@ export function ChatView() {
           onClick={() => setSettingsOpen(true)}
           aria-label="Open settings"
           title="Settings"
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/80 bg-transparent text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/80 bg-transparent text-muted-foreground transition-colors hover:bg-muted hover:text-foreground lg:flex"
         >
           <Settings className="h-3.5 w-3.5" />
         </button>
         <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
           <SheetTrigger asChild>
-            <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border/80 bg-transparent text-xs">
+            <Button variant="outline" size="sm" className="h-9 gap-1.5 border-border/80 bg-transparent text-xs lg:h-8">
               <History className="h-3.5 w-3.5" /> History
             </Button>
           </SheetTrigger>

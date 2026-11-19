@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useTheme } from 'next-themes'
 import {
   BrainCog,
+  Captions,
   Download,
   Ear,
   Focus,
@@ -17,14 +18,17 @@ import {
   Settings,
   Shield,
   ShieldCheck,
+  Smartphone,
   Sparkles,
   Sun,
   Upload,
   X,
 } from 'lucide-react'
 import { useEva } from '@/components/agent/eva-provider'
+import { AnimatedCaptionText } from '@/components/agent/animated-caption-text'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
 import { useApp } from '@/lib/agent/store'
+import { CAPTION_ANIMATION_OPTIONS } from '@/lib/agent/caption-animation'
 import { VOICES, type VoiceName } from '@/lib/agent/voice-state'
 import { WAKE_PHRASE_PRESETS } from '@/lib/agent/wake-word'
 import { OUTFIT_SELECTIONS, type OutfitSelection } from '@/lib/coucou/wardrobe'
@@ -63,12 +67,19 @@ export function SettingsModal() {
   const resetCompanionPosition = useEvaControl((s) => s.resetCompanionPosition)
   const openSplit = useEvaControl((s) => s.openSplit)
   const setGbrainGraphOpen = useEvaControl((s) => s.setGbrainGraphOpen)
+  const captionsEnabled = useEvaControl((s) => s.captionsEnabled)
+  const setCaptionsEnabled = useEvaControl((s) => s.setCaptionsEnabled)
+  const captionAnimationStyle = useEvaControl((s) => s.captionAnimationStyle)
+  const setCaptionAnimationStyle = useEvaControl((s) => s.setCaptionAnimationStyle)
+  const mobileVoiceFirst = useEvaControl((s) => s.mobileVoiceFirst)
+  const setMobileVoiceFirst = useEvaControl((s) => s.setMobileVoiceFirst)
 
   const { voice, wake, onToggleSleepMode, onArmEar } = useEva()
   const { brain, toggleBrain, setBrainPrefs, refreshBrain, refreshMemories } = useApp()
   const { resolvedTheme, setTheme } = useTheme()
 
   const [section, setSection] = useState<SettingsSection>('workspace')
+  const [captionPreviewSeq, setCaptionPreviewSeq] = useState(0)
   const [brainBusy, setBrainBusy] = useState(false)
   const [brainMessage, setBrainMessage] = useState<string | null>(null)
   const importInputRef = useRef<HTMLInputElement | null>(null)
@@ -331,6 +342,29 @@ export function SettingsModal() {
                         {autoVoiceFocus ? 'Automatic' : 'Manual'}
                       </button>
                     </div>
+                    <div className="flex items-center justify-between gap-4 px-3.5 py-3">
+                      <div>
+                        <div className="text-[13px] font-medium text-foreground">Mobile &amp; Tablet Start Screen</div>
+                        <div className="text-[11px] text-muted-foreground">
+                          Launch straight into the minimal Voice Agent first screen on phones and tablets
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        data-settings-mobile-voice-first="1"
+                        aria-checked={mobileVoiceFirst}
+                        onClick={() => setMobileVoiceFirst(!mobileVoiceFirst)}
+                        className={cn(
+                          'shrink-0 whitespace-nowrap rounded-lg border px-3 py-1 text-xs font-medium transition-colors',
+                          mobileVoiceFirst
+                            ? 'border-sky-500/40 bg-sky-500/12 text-sky-600 dark:text-sky-400'
+                            : 'border-border bg-muted/40 text-muted-foreground hover:text-foreground'
+                        )}
+                      >
+                        {mobileVoiceFirst ? 'Voice Agent' : 'Workspace Chat'}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -338,7 +372,18 @@ export function SettingsModal() {
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     Quick Panels
                   </h3>
-                  <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        openSplit('mobile', 'Android & Mobile Control')
+                        setOpen(false)
+                      }}
+                      className="flex items-center gap-2 rounded-lg border border-border bg-background/60 px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                    >
+                      <Smartphone className="h-3.5 w-3.5 text-emerald-500" />
+                      Android &amp; Mobile Takeover
+                    </button>
                     <button
                       type="button"
                       onClick={() => {
@@ -440,14 +485,14 @@ export function SettingsModal() {
                               : `Listening (${wake.engine}) for "${wake.wakePhrase}"`}
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex shrink-0 items-center gap-2">
                         {earNeedsUnlock && (
                           <button
                             type="button"
                             onClick={onArmEar}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/12 px-2.5 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300"
+                            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-amber-500/40 bg-amber-500/12 px-2.5 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300"
                           >
-                            <Ear className="h-3.5 w-3.5" />
+                            <Ear className="h-3.5 w-3.5 shrink-0" />
                             Arm Ear
                           </button>
                         )}
@@ -455,14 +500,120 @@ export function SettingsModal() {
                           type="button"
                           onClick={onToggleSleepMode}
                           className={cn(
-                            'inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors',
+                            'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors',
                             wake.sleepMode
                               ? 'border-sky-500/40 bg-sky-500/12 text-sky-600 dark:text-sky-400'
                               : 'border-border bg-muted/40 text-foreground hover:bg-muted'
                           )}
                         >
-                          {wake.sleepMode ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+                          {wake.sleepMode ? <Sun className="h-3.5 w-3.5 shrink-0" /> : <Moon className="h-3.5 w-3.5 shrink-0" />}
                           {wake.sleepMode ? 'Wake Eva' : 'Sleep Mode'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Voice Focus Captions
+                  </h3>
+                  <div className="mt-2.5 divide-y divide-border/70 rounded-xl border border-border/80 bg-background/60">
+                    <div className="flex items-center justify-between gap-4 px-3.5 py-3">
+                      <div>
+                        <div className="text-[13px] font-medium text-foreground">Live Captions</div>
+                        <div className="text-[11px] text-muted-foreground">
+                          Show live spoken captions at the bottom of Voice Focus Mode
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={captionsEnabled}
+                        onClick={() => setCaptionsEnabled(!captionsEnabled)}
+                        className={cn(
+                          'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-3 py-1 text-xs font-medium transition-colors',
+                          captionsEnabled
+                            ? 'border-sky-500/40 bg-sky-500/12 text-sky-600 dark:text-sky-400'
+                            : 'border-border bg-muted/40 text-muted-foreground hover:text-foreground'
+                        )}
+                      >
+                        <Captions className="h-3.5 w-3.5 shrink-0" />
+                        {captionsEnabled ? 'On' : 'Off'}
+                      </button>
+                    </div>
+
+                    <div className="space-y-3 px-3.5 py-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="text-[13px] font-medium text-foreground">
+                            Caption Animation Style
+                          </div>
+                          <div className="text-[11px] text-muted-foreground">
+                            Choose how Eva&apos;s spoken words animate in Voice Focus Mode
+                          </div>
+                        </div>
+
+                        <div
+                          role="group"
+                          aria-label="Caption animation style"
+                          data-settings-caption-group="1"
+                          className="flex shrink-0 items-center gap-1 rounded-lg border border-border bg-muted/40 p-0.5"
+                        >
+                          {CAPTION_ANIMATION_OPTIONS.map((opt) => {
+                            const active = captionAnimationStyle === opt.id
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                data-settings-caption-style={opt.id}
+                                aria-pressed={active}
+                                onClick={() => {
+                                  setCaptionAnimationStyle(opt.id)
+                                  setCaptionPreviewSeq((n) => n + 1)
+                                }}
+                                className={cn(
+                                  'rounded-md px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors',
+                                  active
+                                    ? 'bg-background text-foreground shadow-xs'
+                                    : 'text-muted-foreground hover:text-foreground'
+                                )}
+                              >
+                                {opt.label}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Live authentic animation preview */}
+                      <div
+                        data-settings-caption-preview="1"
+                        className="flex items-start justify-between gap-3 rounded-lg border border-border/70 bg-card/70 px-3 py-2.5"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="mb-1 flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
+                            <span className="uppercase tracking-wider">Eva · Preview</span>
+                            <span aria-hidden>·</span>
+                            <span>
+                              {CAPTION_ANIMATION_OPTIONS.find((o) => o.id === captionAnimationStyle)?.label}
+                            </span>
+                          </div>
+                          <AnimatedCaptionText
+                            text="All systems nominal — ready whenever you want to speak."
+                            styleMode={captionAnimationStyle}
+                            replayKey={captionPreviewSeq}
+                            className="text-xs sm:text-[13px]"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setCaptionPreviewSeq((n) => n + 1)}
+                          title="Replay caption animation preview"
+                          aria-label="Replay caption animation preview"
+                          className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/70 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        >
+                          <RotateCcw className="h-3 w-3" />
                         </button>
                       </div>
                     </div>

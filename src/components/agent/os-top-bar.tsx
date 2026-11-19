@@ -9,7 +9,10 @@ import {
   Focus,
   Hand,
   Heart,
+  Menu,
   MessageCircle,
+  MessageSquare,
+  Mic,
   Monitor,
   RotateCcw,
   Sparkles,
@@ -71,6 +74,7 @@ export function OsTopBar({ onOpenCommandPalette }: { onOpenCommandPalette: () =>
   const setManualEmotion = useEvaControl((s) => s.setManualEmotion)
   const previewHandAction = useEvaControl((s) => s.previewHandAction)
   const setPreviewHandAction = useEvaControl((s) => s.setPreviewHandAction)
+  const setMobileDrawerOpen = useEvaControl((s) => s.setMobileDrawerOpen)
 
   const [panelOpen, setPanelOpen] = useState(false)
   const [clockText, setClockText] = useState('')
@@ -115,17 +119,63 @@ export function OsTopBar({ onOpenCommandPalette }: { onOpenCommandPalette: () =>
   return (
     <header
       data-os-top-bar="1"
-      className="relative z-30 flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border/80 bg-sidebar/90 px-3 text-[11.5px] backdrop-blur-sm select-none"
+      className="relative z-30 flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border/70 bg-background/95 px-2.5 text-[11.5px] backdrop-blur-md select-none lg:h-9 lg:border-border/80 lg:bg-sidebar/90 lg:px-3"
     >
-      {/* Left: Active OS Window & Live Process indicator */}
-      <div className="flex min-w-0 items-center gap-2">
+      {/* Mobile & Tablet (< lg): ultra-minimalistic 48px voice-first top bar */}
+      <div className="flex w-full items-center justify-between gap-2 lg:hidden">
+        <button
+          type="button"
+          data-mobile-menu-trigger="1"
+          onClick={() => setMobileDrawerOpen(true)}
+          aria-label="Open navigation menu"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-foreground transition-colors hover:bg-muted active:scale-95"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            className="h-2 w-2 shrink-0 rounded-full transition-colors"
+            style={{ backgroundColor: emotion.accentHex }}
+          />
+          <span className="truncate text-[13.5px] font-semibold tracking-tight text-foreground">
+            {layoutMode === 'focus' ? 'Eva' : WINDOW_TITLES[activeTab]}
+          </span>
+          {runningRunId && (
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400 pulse-dot" aria-label="Task running" />
+          )}
+        </div>
+
+        <button
+          type="button"
+          data-mobile-top-switch={layoutMode === 'focus' ? 'chat' : 'voice'}
+          onClick={() => setLayoutMode(layoutMode === 'focus' ? 'standard' : 'focus')}
+          aria-label={layoutMode === 'focus' ? 'Switch to workspace chat' : 'Switch to Voice Agent'}
+          className="inline-flex h-10 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-border/80 bg-card/70 px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted active:scale-95"
+        >
+          {layoutMode === 'focus' ? (
+            <>
+              <MessageSquare className="h-3.5 w-3.5 text-sky-500" />
+              <span>Chat</span>
+            </>
+          ) : (
+            <>
+              <Mic className="h-3.5 w-3.5 text-sky-500" />
+              <span>Voice</span>
+            </>
+          )}
+        </button>
+      </div>
+
+      {/* Desktop (>= lg): Left Active OS Window & Live Process indicator */}
+      <div className="hidden min-w-0 items-center gap-2 lg:flex">
         <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Nexus OS
         </span>
         <span className="text-border">/</span>
         <span className="truncate font-medium text-foreground">{windowName}</span>
         {runningRunId && (
-          <span className="hidden items-center gap-1.5 font-mono text-[10px] text-sky-600 sm:inline-flex dark:text-sky-400">
+          <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-sky-600 dark:text-sky-400">
             <span className="h-1.5 w-1.5 rounded-full bg-sky-400 pulse-dot" />
             Hands executing
           </span>
@@ -166,8 +216,8 @@ export function OsTopBar({ onOpenCommandPalette }: { onOpenCommandPalette: () =>
         })}
       </div>
 
-      {/* Right: Emotion & Senses Control Center trigger + Quick Focus + Command Bar + Clock */}
-      <div className="flex shrink-0 items-center gap-1.5" ref={popoverRef}>
+      {/* Desktop (>= lg): Right Emotion & Senses Control Center trigger + Quick Focus + Command Bar + Clock */}
+      <div className="hidden shrink-0 items-center gap-1.5 lg:flex" ref={popoverRef}>
         <button
           type="button"
           data-os-emotion-trigger="1"

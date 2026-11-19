@@ -19,8 +19,8 @@ export function resolveCompanionAnchor(ctx: {
   visionActive: boolean
 }): { slot: CompanionAnchorSlot; offsetX: number; offsetY: number } {
   if (ctx.splitOpen) {
-    if (ctx.splitMode === 'browser') {
-      // Glide near bottom-center-left beside the chat while the right half shows the Live Browser
+    if (ctx.splitMode === 'browser' || ctx.splitMode === 'mobile') {
+      // Glide near bottom-center-left beside the chat while the right half shows Live Browser or Mobile Takeover
       return { slot: 'bottom-center-left', offsetX: -460, offsetY: -16 }
     }
     if (ctx.splitMode === 'reasoning' || ctx.splitMode === 'self_heal') {

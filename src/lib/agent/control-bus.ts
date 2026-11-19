@@ -7,6 +7,7 @@ export type ControlSplitMode =
   | 'reasoning'
   | 'self_heal'
   | 'browser'
+  | 'mobile'
   | 'permissions'
   | 'devices'
   | 'identity'
@@ -59,6 +60,62 @@ export interface BrowserFramePayload {
   mediaEmbedUrl?: string | null
   mediaTitle?: string | null
   mediaVideoId?: string | null
+  updatedAt: string
+}
+
+export interface MobileElementHint {
+  id: string
+  label: string
+  kind: 'app' | 'toggle' | 'button' | 'input' | 'item' | 'link'
+  x: number
+  y: number
+}
+
+export interface MobileFramePayload {
+  active: boolean
+  mode: 'live_emulator' | 'adb_bridge'
+  deviceId: string | null
+  deviceName: string
+  platform: 'android' | 'ios'
+  osVersion: string
+  battery: number
+  timeLabel: string
+  width: number
+  height: number
+  currentApp: string
+  appTitle: string
+  url: string
+  chromeTitle: string
+  chromeSnippet: string
+  notificationShadeOpen: boolean
+  recentsOpen: boolean
+  quickSettings: {
+    wifi: boolean
+    bluetooth: boolean
+    dnd: boolean
+    airplane: boolean
+    flashlight: boolean
+  }
+  activeThreadId: string | null
+  threads: {
+    id: string
+    contact: string
+    preview: string
+    time: string
+    unread: boolean
+    messages: { from: 'them' | 'me'; text: string; time: string }[]
+  }[]
+  notes: { id: string; title: string; body: string; updatedAt: string }[]
+  dialerNumber: string
+  callState: 'idle' | 'calling'
+  notifications: { id: string; app: string; title: string; body: string; time: string }[]
+  elements: MobileElementHint[]
+  touchX: number | null
+  touchY: number | null
+  swipeVector: { fromX: number; fromY: number; toX: number; toY: number } | null
+  screenshotBase64: string | null
+  lastAction: string
+  actionLog: { id: string; action: string; detail: string; ts: string }[]
   updatedAt: string
 }
 
@@ -118,6 +175,7 @@ class NexusControlBus {
   private pendingPermissions = new Map<string, PendingPermission>()
   private pendingDeviceCommands = new Map<string, PendingDeviceCommand>()
   private latestBrowserFrame: BrowserFramePayload | null = null
+  private latestMobileFrame: MobileFramePayload | null = null
 
   constructor() {
     reasoningChain.subscribe((event) => {
@@ -145,6 +203,7 @@ class NexusControlBus {
     this.safeSend(ws, {
       type: 'control:init',
       browserFrame: this.latestBrowserFrame,
+      mobileFrame: this.latestMobileFrame,
       pendingPermissions: Array.from(this.pendingPermissions.values()).map((p) => p.request),
       onlineDeviceIds: Array.from(this.deviceSockets.keys()),
       reasoningChains: reasoningChain.listChains(20),
@@ -200,6 +259,11 @@ class NexusControlBus {
     this.broadcast({ type: 'browser:frame', frame })
   }
 
+  broadcastMobileFrame(frame: MobileFramePayload) {
+    this.latestMobileFrame = frame.active ? frame : null
+    this.broadcast({ type: 'mobile:frame', frame })
+  }
+
   broadcastReasoningUpdate(chain: ReasoningChain) {
     this.broadcast({ type: 'reasoning:update', chain })
   }
@@ -214,6 +278,10 @@ class NexusControlBus {
 
   getLatestBrowserFrame(): BrowserFramePayload | null {
     return this.latestBrowserFrame
+  }
+
+  getLatestMobileFrame(): MobileFramePayload | null {
+    return this.latestMobileFrame
   }
 
   getPendingPermissions(): PermissionRequestPayload[] {
