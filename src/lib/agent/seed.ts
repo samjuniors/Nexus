@@ -75,6 +75,60 @@ export const DEFAULT_SKILLS: {
     prompt:
       'Strategy thinking: define the user and problem, ground claims in market evidence, structure documents with goals/non-goals, and end with measurable success criteria.',
   },
+  {
+    slug: 'subagent-bot-architect',
+    name: 'Subagent & Bot Architect',
+    description: 'Design, hire, and orchestrate persistent AI employees, custom bots, and focused subagents.',
+    category: 'agents',
+    icon: 'bot',
+    prompt:
+      'Subagent & Bot design methodology: when a task benefits from recurring specialist roles or reusable custom bots, use manage_org to hire an AI Employee or create a dedicated Bot with clear role boundaries, curated tools/skills, concise system prompt, and clear reporting hierarchy under the Lead Agent or a department head.',
+  },
+  {
+    slug: 'automation-scheduler',
+    name: 'Automation & Scheduling',
+    description: 'Build reliable recurring workflows, cron jobs, monitors, and scheduled briefings.',
+    category: 'automation',
+    icon: 'clock',
+    prompt:
+      'Automation discipline: use manage_automation to turn recurring operational checks, digests, or project monitoring into scheduled tasks (interval minutes, 5-field cron, or one-shot timestamp). Assign each automation to either Lead Agent or the best-matching Org AI Employee.',
+  },
+  {
+    slug: 'project-intelligence',
+    name: 'Project Intelligence',
+    description: 'Inspect codebase architecture, schemas, routes, and dependencies into the portable Brain.',
+    category: 'developer',
+    icon: 'compass',
+    prompt:
+      'Project understanding methodology: call inspect_project before planning significant codebase changes so you know the exact framework stack, Prisma models, API routes, and portable brain/ boundaries. Persist key project truths into Graph Memory so the portable Brain retains workspace architecture.',
+  },
+  {
+    slug: 'verification-qa',
+    name: 'Verification & QA',
+    description: 'Verify implementations systematically via type checks, runtime probes, and edge-case validation.',
+    category: 'developer',
+    icon: 'wrench',
+    prompt:
+      'Verification standard: never claim work is complete without concrete verification. Check TypeScript types, schema alignment, error handling, empty states, and edge cases; report observed results honestly.',
+  },
+  {
+    slug: 'knowledge-graph-curator',
+    name: 'Knowledge Graph Curator',
+    description: 'Maintain high-signal semantic truths and traverse entity relations with graph_query.',
+    category: 'intelligence',
+    icon: 'sparkles',
+    prompt:
+      'Knowledge graph curation: recall first via recall_memory or graph_query before duplicating facts. Store durable architectural decisions and preferences cleanly with save_memory.',
+  },
+  {
+    slug: 'mcp-orchestrator',
+    name: 'MCP Orchestrator',
+    description: 'Discover, compose, and safely invoke Model Context Protocol tools across registries.',
+    category: 'developer',
+    icon: 'terminal',
+    prompt:
+      'MCP orchestration: prefer connected MCP tools (e.g. fs.*, time.*) for workspace operations and suggest installing relevant MCP servers when external context is needed.',
+  },
 ]
 
 /** Idempotent seeding of the default capability registry. */
@@ -197,6 +251,110 @@ export async function ensureSeeded() {
             'You are an expert document writer. Given a topic and requirements, produce a well-structured markdown document with headings, lists and clear prose.',
         },
       },
+      {
+        slug: 'project-indexer',
+        name: 'Project Indexer',
+        description:
+          'Scans codebase architecture, database schema, API routes, and indexes truths into the portable Brain.',
+        category: 'developer',
+        icon: 'compass',
+        source: 'builtin',
+        installed: true,
+        toolSlug: 'inspect_project',
+        config: { type: 'builtin' },
+      },
+      {
+        slug: 'bot-architect',
+        name: 'Org & Bot Architect',
+        description:
+          'Creates persistent AI employees, custom bots, and reporting lines; delegates specialist tasks.',
+        category: 'agents',
+        icon: 'bot',
+        source: 'builtin',
+        installed: true,
+        toolSlug: 'manage_org',
+        config: { type: 'builtin' },
+      },
+      {
+        slug: 'automation-ops',
+        name: 'Automation Ops',
+        description:
+          'Schedules recurring cron, interval, and one-shot tasks for Lead Agent or AI employees.',
+        category: 'automation',
+        icon: 'clock',
+        source: 'builtin',
+        installed: true,
+        toolSlug: 'manage_automation',
+        config: { type: 'builtin' },
+      },
+      {
+        slug: 'code-reviewer',
+        name: 'Code Reviewer',
+        description:
+          'Audits TypeScript/React/API snippets for bugs, security risks, race conditions, and maintainability.',
+        category: 'developer',
+        icon: 'code',
+        source: 'marketplace',
+        installed: false,
+        toolSlug: 'x_code_reviewer',
+        config: {
+          type: 'llm',
+          inputHint: '{"code": string, "focus"?: string}',
+          instructions:
+            'You are a Principal Software Engineer conducting a rigorous code review. Identify correctness bugs, security vulnerabilities, race conditions, missing edge cases, and concrete fixes.',
+        },
+      },
+      {
+        slug: 'json-validator',
+        name: 'JSON & Schema Architect',
+        description:
+          'Validates payloads, infers strict TypeScript/Zod/JSON schemas, and transforms structured specs.',
+        category: 'developer',
+        icon: 'file-text',
+        source: 'marketplace',
+        installed: false,
+        toolSlug: 'x_json_validator',
+        config: {
+          type: 'llm',
+          inputHint: '{"payload": string, "task"?: string}',
+          instructions:
+            'You are a strict schema and JSON validation specialist. Inspect the payload, report structural issues or type mismatches, and output clean corrected JSON + Zod/TypeScript types.',
+        },
+      },
+      {
+        slug: 'sql-architect',
+        name: 'SQL & Schema Optimizer',
+        description:
+          'Designs normalized schemas, indexes, migrations, and safe query plans for SQLite and PostgreSQL.',
+        category: 'data',
+        icon: 'chart',
+        source: 'marketplace',
+        installed: false,
+        toolSlug: 'x_sql_architect',
+        config: {
+          type: 'llm',
+          inputHint: '{"queryOrSchema": string, "dialect"?: string}',
+          instructions:
+            'You are a database systems engineer. Analyze SQL queries or schemas, recommend indexes, normalization fixes, and safe zero-downtime migrations.',
+        },
+      },
+      {
+        slug: 'prd-writer',
+        name: 'PRD & ADR Architect',
+        description:
+          'Produces engineering PRDs, Architecture Decision Records (ADRs), and milestone verification plans.',
+        category: 'business',
+        icon: 'target',
+        source: 'marketplace',
+        installed: false,
+        toolSlug: 'x_prd_architect',
+        config: {
+          type: 'llm',
+          inputHint: '{"feature": string, "constraints"?: string}',
+          instructions:
+            'You are a Staff Engineering Manager writing a crisp PRD/ADR. Include Problem, Goals, Non-Goals, Hierarchy/Data Model impact, Verification Gates, and Risks.',
+        },
+      },
     ]
 
     for (const p of plugins) {
@@ -315,6 +473,69 @@ export async function ensureSeeded() {
         description: 'Find real photos on the web. Args: {"query": string}',
         source: 'plugin:image-search',
       },
+      {
+        slug: 'inspect_project',
+        name: 'Inspect Project',
+        description:
+          'Scan project codebase structure, stack, database models, API routes, and portable brain/ modules; optionally index into Brain memory. Args: {"indexIntoBrain"?: boolean}',
+        source: 'plugin:project-indexer',
+      },
+      {
+        slug: 'manage_org',
+        name: 'Manage Org & Bots',
+        description:
+          'List, hire, update, or delegate tasks to AI Employees and custom Bots in the Org hierarchy. Args: {"action": "list"|"hire"|"create_bot"|"delegate"|"remove", "name"?: string, "title"?: string, "department"?: string, "role"?: string, "systemPrompt"?: string, "skills"?: string[], "tools"?: string[], "target"?: string, "task"?: string}',
+        source: 'plugin:bot-architect',
+      },
+      {
+        slug: 'manage_automation',
+        name: 'Manage Automations',
+        description:
+          'Create, list, pause/resume, run, or delete scheduled tasks (interval/cron/once). Args: {"action": "list"|"create"|"toggle"|"run_now"|"delete", "name"?: string, "prompt"?: string, "triggerType"?: "interval"|"cron"|"once", "schedule"?: string, "assignee"?: string, "id"?: string}',
+        source: 'plugin:automation-ops',
+      },
+      {
+        slug: 'create_skill',
+        name: 'Create Skill',
+        description:
+          'Author and save a new reusable Agent Skill into NEXUS. Args: {"name": string, "description": string, "prompt": string, "category"?: string}',
+        source: 'builtin',
+      },
+      {
+        slug: 'browser_control',
+        name: 'Live Browser Control',
+        description:
+          'Drive a real Playwright browser & live YouTube media player in the split panel. Use "play_media" for songs/videos, "autopilot" for multi-step goals end-to-end, or navigate/click/type/scroll. Args: {"action": "play_media"|"autopilot"|"navigate"|"click"|"type"|"scroll"|"press"|"back"|"reload"|"snapshot"|"clear_media"|"close", "query"?: string, "goal"?: string, "url"?: string}',
+        source: 'builtin',
+      },
+      {
+        slug: 'agent_email',
+        name: 'Eva Autonomous Email',
+        description:
+          'Provision and read Eva\'s own working email inbox to autonomously receive OTP verification codes and sign-up links. Args: {"action": "provision"|"status"|"list_inbox"|"read_message"|"wait_for_code", "senderFilter"?: string}',
+        source: 'builtin',
+      },
+      {
+        slug: 'app_control',
+        name: 'App UI Self-Control',
+        description:
+          'Control Nexus UI visually with animated live cursor: switch tabs, open split panels (browser, identity, permissions, devices, org, artifacts, tools, automations, brain), spawn popups, click buttons, toggle theme. Args: {"action": "navigate_tab"|"open_split"|"close_split"|"open_popup"|"close_popup"|"click_target"|"set_theme", ...}',
+        source: 'builtin',
+      },
+      {
+        slug: 'self_manage_extensions',
+        name: 'Self-Install Extensions',
+        description:
+          'Autonomously list, install, enable, or connect Plugins, Skills, Tools, and MCP servers after one-time permission. Args: {"action": "list"|"install_plugin"|"uninstall_plugin"|"toggle_plugin"|"toggle_skill"|"toggle_tool"|"connect_mcp"|"disconnect_mcp", "slug"?: string}',
+        source: 'builtin',
+      },
+      {
+        slug: 'device_control',
+        name: 'Connected Device Control',
+        description:
+          'List paired Mac/Windows/Linux computers and execute approved host actions (system_info, open_url, open_app, shell) via the Local Companion Bridge. Args: {"action": "list"|"system_info"|"open_url"|"open_app"|"shell", ...}',
+        source: 'builtin',
+      },
     ]
 
     for (const t of tools) {
@@ -402,6 +623,82 @@ export async function ensureSeeded() {
           mode: 'builtin',
           toolsJson: JSON.stringify(m.tools),
           enabled: true,
+        },
+      })
+    }
+
+    // ---------- Starter Org AI Employees (fresh install only) ----------
+    if ((await db.aiEmployee.count()) === 0) {
+      const architect = await db.aiEmployee.create({
+        data: {
+          slug: 'chief-architect',
+          name: 'Chief Architect',
+          title: 'Principal Systems Architect',
+          department: 'Engineering',
+          kind: 'employee',
+          role: 'Owns system design, code structure, schema integrity, and technical planning.',
+          systemPrompt:
+            'You are Chief Architect, reporting to Lead Agent. Design modular, scalable, strictly typed software architectures. Inspect the project first with inspect_project before recommending structural changes.',
+          skillsJson: JSON.stringify(['project-intelligence', 'web-development', 'verification-qa']),
+          toolsJson: JSON.stringify(['inspect_project', 'run_code', 'graph_query', 'recall_memory']),
+          autonomy: 'autonomous',
+          status: 'active',
+          icon: 'compass',
+        },
+      })
+
+      await db.aiEmployee.create({
+        data: {
+          slug: 'knowledge-curator',
+          name: 'Knowledge Lead',
+          title: 'Portable Brain & Graph Curator',
+          department: 'Intelligence',
+          kind: 'employee',
+          role: 'Curates project truths, Graphify entity links, and deep cross-session research.',
+          systemPrompt:
+            'You are Knowledge Lead, reporting to Lead Agent. Keep the portable Brain high-signal, eliminate contradictions, query the knowledge graph, and index key workspace facts.',
+          skillsJson: JSON.stringify(['knowledge-graph-curator', 'project-intelligence', 'research-analysis']),
+          toolsJson: JSON.stringify(['inspect_project', 'graph_query', 'recall_memory', 'save_memory', 'web_search']),
+          autonomy: 'autonomous',
+          status: 'active',
+          icon: 'brain',
+        },
+      })
+
+      await db.aiEmployee.create({
+        data: {
+          slug: 'automation-engineer',
+          name: 'Ops & Automation Bot',
+          title: 'Workflow Automation Specialist',
+          department: 'Operations',
+          kind: 'bot',
+          role: 'Builds, schedules, and executes recurring checks, digests, and background workflows.',
+          systemPrompt:
+            'You are Ops & Automation Bot, reporting to Lead Agent. Automate repeatable workflows using manage_automation, run diagnostics, and report concise operational summaries.',
+          skillsJson: JSON.stringify(['automation-scheduler', 'subagent-bot-architect']),
+          toolsJson: JSON.stringify(['manage_automation', 'inspect_project', 'time.get_datetime']),
+          autonomy: 'autonomous',
+          status: 'active',
+          icon: 'clock',
+        },
+      })
+
+      await db.aiEmployee.create({
+        data: {
+          slug: 'qa-verifier',
+          name: 'QA Verifier',
+          title: 'Staff Verification & Security Engineer',
+          department: 'Engineering',
+          kind: 'employee',
+          role: 'Verifies implementation correctness, type safety, edge cases, and security hygiene.',
+          reportsToId: architect.id,
+          systemPrompt:
+            'You are QA Verifier, reporting to Chief Architect. Verify every feature strictly via deterministic tests, static inspection, and runtime checks before marking work complete.',
+          skillsJson: JSON.stringify(['verification-qa', 'project-intelligence']),
+          toolsJson: JSON.stringify(['inspect_project', 'run_code', 'computer_use']),
+          autonomy: 'supervised',
+          status: 'active',
+          icon: 'wrench',
         },
       })
     }

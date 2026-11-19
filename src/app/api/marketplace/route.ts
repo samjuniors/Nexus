@@ -1,8 +1,160 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { ensureSeeded, DEFAULT_SKILLS } from '@/lib/agent/seed'
+import { indexProjectIntoBrain } from '@/lib/agent/project-intel'
 
 export const runtime = 'nodejs'
+
+interface CuratedPack {
+  id: string
+  name: string
+  tagline: string
+  description: string
+  icon: string
+  pluginSlugs: string[]
+  skillSlugs: string[]
+  indexesProject?: boolean
+  starterBot?: {
+    slug: string
+    name: string
+    title: string
+    department: string
+    role: string
+    systemPrompt: string
+  }
+}
+
+const CURATED_PACKS: CuratedPack[] = [
+  {
+    id: 'pack-project-intel',
+    name: 'Project & Brain Intelligence Pack',
+    tagline: 'Portable project awareness + GBrain graph curation',
+    description:
+      'Enables the Project Indexer plugin, Project Intelligence & Knowledge Graph Curator skills, and scans this repo into portable GBrain memory.',
+    icon: 'compass',
+    pluginSlugs: ['project-indexer'],
+    skillSlugs: ['project-intelligence', 'knowledge-graph-curator'],
+    indexesProject: true,
+  },
+  {
+    id: 'pack-subagent-org',
+    name: 'Subagent & Bot Architect Pack',
+    tagline: 'Multi-agent delegation + AI Org staff creator',
+    description:
+      'Enables the Bot & Subagent Architect plugin, Subagent Architect skill, and provisions an Autonomous Research Bot inside your Org.',
+    icon: 'bot',
+    pluginSlugs: ['bot-architect'],
+    skillSlugs: ['subagent-bot-architect'],
+    starterBot: {
+      slug: 'research-synthesis-bot',
+      name: 'Research Bot',
+      title: 'Autonomous Web & Docs Synthesizer',
+      department: 'Research',
+      role: 'Gather verified web/repo evidence and deliver cited engineering briefs.',
+      systemPrompt:
+        'You are Research Bot. Always verify facts via web_search, wikipedia_search, or read_url, and return structured bullet findings with sources.',
+    },
+  },
+  {
+    id: 'pack-automation-ops',
+    name: 'Automation & Scheduler Pack',
+    tagline: 'Cron, interval & recurring workflow ops',
+    description:
+      'Enables the Automation Ops Runner plugin and Automation & Schedule Designer skill for hands-free scheduled engineering workflows.',
+    icon: 'clock',
+    pluginSlugs: ['automation-ops'],
+    skillSlugs: ['automation-scheduler'],
+  },
+  {
+    id: 'pack-engineering-qa',
+    name: 'Senior Engineering & QA Suite',
+    tagline: 'Code review + SQL design + PRD + QA gates',
+    description:
+      'One-click install for Code Reviewer, SQL Schema Architect, PRD & Spec Writer, JSON Validator, Verification QA & MCP Orchestrator skills.',
+    icon: 'code',
+    pluginSlugs: ['code-reviewer', 'sql-architect', 'prd-writer', 'json-validator'],
+    skillSlugs: ['verification-qa', 'mcp-orchestrator'],
+  },
+]
+
+const CURATED_SOURCES = [
+  {
+    id: 'official-mcp',
+    name: 'Official MCP Registry',
+    url: 'https://registry.modelcontextprotocol.io',
+    description: 'Authoritative Model Context Protocol server directory maintained with Anthropic & community.',
+  },
+  {
+    id: 'smithery',
+    name: 'Smithery MCP Registry',
+    url: 'https://smithery.ai',
+    description: 'Hosted & verified MCP servers with live tool schemas.',
+  },
+  {
+    id: 'anthropics-skills',
+    name: 'Anthropic Official Skills',
+    url: 'https://github.com/anthropics/skills',
+    description: 'Official SKILL.md agent workflows and methodology packs.',
+  },
+  {
+    id: 'skills-sh',
+    name: 'skills.sh (vercel-labs)',
+    url: 'https://github.com/vercel-labs/skills',
+    description: 'Open ecosystem agent skills directory for TypeScript, React, and Next.js.',
+  },
+  {
+    id: 'mcp-servers',
+    name: 'Reference MCP Servers',
+    url: 'https://github.com/modelcontextprotocol/servers',
+    description: 'Reference GitHub, Filesystem, Postgres, Puppeteer, and Memory MCP servers.',
+  },
+  {
+    id: 'context7',
+    name: 'Upstash Context7',
+    url: 'https://github.com/upstash/context7',
+    description: 'Version-accurate documentation MCP server for LLMs and coding agents.',
+  },
+]
+
+interface OfficialMcpEntry {
+  name: string
+  description: string
+  version: string
+  repositoryUrl: string | null
+  packages: string[]
+}
+
+let officialMcpCache: { at: number; servers: OfficialMcpEntry[] } | null = null
+
+async function fetchOfficialMcpList(): Promise<OfficialMcpEntry[]> {
+  if (officialMcpCache && Date.now() - officialMcpCache.at < 5 * 60 * 1000) {
+    return officialMcpCache.servers
+  }
+  const data = (await fetchJson('https://registry.modelcontextprotocol.io/v0/servers?limit=35')) as {
+    servers?: unknown[]
+  }
+  const servers: OfficialMcpEntry[] = []
+  for (const raw of data.servers ?? []) {
+    if (!isObj(raw)) continue
+    const srv = isObj(raw.server) ? raw.server : raw
+    if (typeof srv.name !== 'string' || !srv.name.trim()) continue
+    const repo = isObj(srv.repository) && typeof srv.repository.url === 'string' ? srv.repository.url : null
+    const pkgs = Array.isArray(srv.packages)
+      ? srv.packages
+          .map((p) => (isObj(p) && typeof p.identifier === 'string' ? p.identifier : ''))
+          .filter(Boolean)
+      : []
+    servers.push({
+      name: srv.name,
+      description: typeof srv.description === 'string' ? srv.description : '',
+      version: typeof srv.version === 'string' ? srv.version : 'latest',
+      repositoryUrl: repo,
+      packages: pkgs,
+    })
+  }
+  if (servers.length > 0) officialMcpCache = { at: Date.now(), servers }
+  return servers
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -629,16 +781,45 @@ export async function GET(request: Request) {
     await ensureSeeded()
 
     if (action === 'catalog') {
-      const [plugins, skills] = await Promise.all([
-        db.plugin.findMany({ where: { installed: false }, orderBy: { name: 'asc' } }),
-        db.skill.findMany({ select: { slug: true } }),
+      const [allPlugins, skills] = await Promise.all([
+        db.plugin.findMany({ orderBy: { name: 'asc' } }),
+        db.skill.findMany({ select: { slug: true, enabled: true } }),
       ])
-      const have = new Set(skills.map((s) => s.slug))
+      const uninstalledPlugins = allPlugins.filter((p) => !p.installed)
+      const installedPluginSlugs = new Set(allPlugins.filter((p) => p.installed).map((p) => p.slug))
+      const haveSkills = new Set(skills.map((s) => s.slug))
+      const enabledSkills = new Set(skills.filter((s) => s.enabled).map((s) => s.slug))
+
+      const packs = CURATED_PACKS.map((pack) => {
+        const pluginsDone = pack.pluginSlugs.every((s) => installedPluginSlugs.has(s))
+        const skillsDone = pack.skillSlugs.every((s) => enabledSkills.has(s))
+        return {
+          ...pack,
+          installed: pluginsDone && skillsDone,
+        }
+      })
+
       return NextResponse.json({
         ok: true,
-        plugins,
-        skills: DEFAULT_SKILLS.filter((s) => !have.has(s.slug)),
+        plugins: uninstalledPlugins,
+        skills: DEFAULT_SKILLS.filter((s) => !haveSkills.has(s.slug)),
+        packs,
+        sources: CURATED_SOURCES,
       })
+    }
+
+    if (action === 'official-mcp') {
+      const query = (searchParams.get('query') ?? '').trim().toLowerCase()
+      const all = await fetchOfficialMcpList()
+      const servers = query
+        ? all.filter(
+            (s) =>
+              s.name.toLowerCase().includes(query) ||
+              s.description.toLowerCase().includes(query) ||
+              s.packages.some((p) => p.toLowerCase().includes(query))
+          )
+        : all
+      return NextResponse.json({ ok: true, servers: servers.slice(0, 35), total: servers.length })
     }
 
     if (action === 'smithery') {
@@ -705,6 +886,7 @@ export async function POST(request: Request) {
     await ensureSeeded()
     const body = (await request.json()) as {
       type?: string
+      packId?: string
       payload?: unknown
       origin?: {
         source?: string
@@ -716,6 +898,119 @@ export async function POST(request: Request) {
     }
     const type = body.type
     if (!type) return err(400, 'type required')
+
+    // ---- One-Click Recommended Pack ----
+    if (type === 'pack') {
+      const pack = CURATED_PACKS.find((p) => p.id === body.packId)
+      if (!pack) return err(404, `Pack "${body.packId ?? ''}" not found`)
+
+      let installedPlugins = 0
+      for (const slug of pack.pluginSlugs) {
+        const plug = await db.plugin.findUnique({ where: { slug } })
+        if (!plug) continue
+        await db.plugin.update({ where: { id: plug.id }, data: { installed: true, enabled: true } })
+        if (plug.toolSlug) {
+          const t = await db.tool.findUnique({ where: { slug: plug.toolSlug } })
+          if (t) await db.tool.update({ where: { id: t.id }, data: { enabled: true } })
+        }
+        installedPlugins++
+      }
+
+      let enabledSkills = 0
+      for (const sSlug of pack.skillSlugs) {
+        const existing = await db.skill.findUnique({ where: { slug: sSlug } })
+        if (existing) {
+          await db.skill.update({ where: { id: existing.id }, data: { enabled: true } })
+          enabledSkills++
+        } else {
+          const def = DEFAULT_SKILLS.find((d) => d.slug === sSlug)
+          if (def) {
+            await db.skill.create({ data: { ...def, enabled: true } })
+            enabledSkills++
+          }
+        }
+      }
+
+      if (pack.starterBot) {
+        const botExists = await db.aiEmployee.findUnique({ where: { slug: pack.starterBot.slug } })
+        if (!botExists) {
+          await db.aiEmployee.create({
+            data: {
+              slug: pack.starterBot.slug,
+              name: pack.starterBot.name,
+              title: pack.starterBot.title,
+              department: pack.starterBot.department,
+              kind: 'bot',
+              role: pack.starterBot.role,
+              systemPrompt: pack.starterBot.systemPrompt,
+              skillsJson: JSON.stringify(pack.skillSlugs),
+              toolsJson: JSON.stringify(['web_search', 'read_url', 'wikipedia_search']),
+              autonomy: 'autonomous',
+              status: 'active',
+              icon: 'bot',
+            },
+          })
+        }
+      }
+
+      let memoriesSaved = 0
+      if (pack.indexesProject) {
+        const res = await indexProjectIntoBrain().catch(() => ({ memoriesSaved: 0 }))
+        memoriesSaved = res.memoriesSaved
+      }
+
+      return NextResponse.json({
+        ok: true,
+        kind: 'pack',
+        packId: pack.id,
+        installedPlugins,
+        enabledSkills,
+        memoriesSaved,
+      })
+    }
+
+    // ---- Official MCP Registry 1-click install ----
+    if (type === 'official-mcp') {
+      const input = isObj(body.payload) ? body.payload : {}
+      const rawName = String(input.name ?? '').trim()
+      if (!rawName) return err(400, 'Server name required for official-mcp install')
+      const desc = String(input.description ?? `Official MCP server ${rawName}`).slice(0, 300)
+      const slug = await uniqueSlug(rawName, async (s) => (await db.mcpServer.findUnique({ where: { slug: s } })) !== null)
+      const shortTool = snake(rawName.split('/').pop() ?? rawName)
+      const toolDefs = [
+        {
+          slug: `${slug}.query`,
+          name: `${shortTool}_query`,
+          description: `Query or execute primary action on ${rawName}. ${desc}`,
+        },
+        {
+          slug: `${slug}.inspect`,
+          name: `${shortTool}_inspect`,
+          description: `Inspect state or resources exposed by ${rawName}.`,
+        },
+      ]
+      const server = await db.mcpServer.create({
+        data: {
+          slug,
+          name: `${rawName} (MCP Registry)`,
+          description: desc,
+          status: 'connected',
+          mode: 'registry',
+          toolsJson: JSON.stringify(toolDefs),
+          configJson: JSON.stringify({
+            origin: {
+              source: 'official-mcp',
+              name: rawName,
+              version: input.version ?? 'latest',
+              repositoryUrl: input.repositoryUrl ?? null,
+              packages: Array.isArray(input.packages) ? input.packages : [],
+            },
+          }),
+          enabled: true,
+        },
+      })
+      return NextResponse.json({ ok: true, kind: 'mcp', server })
+    }
 
     // ---- Plugin ----
     if (type === 'plugin') {

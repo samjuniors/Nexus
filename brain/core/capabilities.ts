@@ -62,5 +62,16 @@ export function buildInventory(caps: BrainCapabilitySet): CapabilityGroup[] {
 /** Flatten the inventory into one human-readable brain power summary. */
 export function summarizeInventory(caps: BrainCapabilitySet): string {
   const mcpTools = caps.mcps.length
-  return `${caps.tools.length} tools · ${caps.skills.length} skills · ${caps.plugins.length} plugins · ${mcpTools} MCP servers · ${caps.memoryCount} memories`
+  const empCount = caps.employees?.length ?? 0
+  const autoCount = caps.automations?.filter((a) => a.enabled).length ?? 0
+  const parts = [
+    `${caps.tools.length} tools`,
+    `${caps.skills.length} skills`,
+    `${caps.plugins.length} plugins`,
+    `${mcpTools} MCP servers`,
+    `${caps.memoryCount} memories`,
+  ]
+  if (empCount > 0) parts.push(`${empCount} AI staff`)
+  if (autoCount > 0) parts.push(`${autoCount} automations`)
+  return parts.join(' · ')
 }

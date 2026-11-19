@@ -9,6 +9,7 @@ import {
   Cpu,
   Download,
   FileText,
+  GitBranch,
   ImageIcon,
   Loader2,
   Maximize2,
@@ -19,6 +20,7 @@ import {
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { RunDTO, RunEventDTO } from '@/lib/agent/client'
+import { useEvaControl } from '@/lib/agent/eva-control-store'
 import { cn } from '@/lib/utils'
 
 interface StepInfo {
@@ -83,27 +85,39 @@ function ImageGeneratingCard({ prompt, size }: { prompt: string; size?: string }
 
 /** Finished image card — the generated picture with its prompt and actions. */
 function ImageResultCard({ url, prompt }: { url: string; prompt: string }) {
+  const [broken, setBroken] = useState(false)
   return (
-    <figure className="w-fit overflow-hidden rounded-lg border border-white/[0.08] bg-black/25">
-      <a href={url} target="_blank" rel="noreferrer" className="group relative block">
-        { }
-        <img
-          src={url}
-          alt={prompt || 'Generated image'}
-          className="max-h-80 w-auto max-w-full rounded-t-lg"
-          loading="lazy"
-        />
-        <span className="absolute right-2 top-2 flex items-center gap-1 rounded-md border border-white/15 bg-black/60 px-2 py-1 text-[10px] font-mono text-zinc-200 opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
-          <Maximize2 className="h-3 w-3" /> open
-        </span>
-      </a>
-      <figcaption className="flex items-center gap-2 border-t border-white/[0.06] px-3 py-1.5">
+    <figure className="w-fit overflow-hidden rounded-lg border border-border bg-muted/40 dark:border-white/[0.08] dark:bg-black/25">
+      {broken ? (
+        <div className="flex h-44 w-72 flex-col items-center justify-center gap-2 px-4 text-center text-xs text-muted-foreground">
+          <ImageIcon className="h-5 w-5 opacity-60" />
+          <span>Unable to preview image</span>
+          <a href={url} target="_blank" rel="noreferrer" className="underline">
+            Open file directly
+          </a>
+        </div>
+      ) : (
+        <a href={url} target="_blank" rel="noreferrer" className="group relative block">
+          <img
+            src={url}
+            alt={prompt || 'Generated image'}
+            className="max-h-80 w-auto max-w-full rounded-t-lg"
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            onError={() => setBroken(true)}
+          />
+          <span className="absolute right-2 top-2 flex items-center gap-1 rounded-md border border-white/15 bg-black/60 px-2 py-1 text-[10px] font-mono text-zinc-200 opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
+            <Maximize2 className="h-3 w-3" /> open
+          </span>
+        </a>
+      )}
+      <figcaption className="flex items-center gap-2 border-t border-border/70 px-3 py-1.5 dark:border-white/[0.06]">
         <ImageIcon className="h-3 w-3 shrink-0 text-zinc-500" />
         <span className="line-clamp-1 text-[10.5px] text-muted-foreground">{prompt}</span>
         <a
           href={url}
           download
-          className="ml-auto flex shrink-0 items-center gap-1 text-[10.5px] text-zinc-400 transition-colors hover:text-zinc-200"
+          className="ml-auto flex shrink-0 items-center gap-1 text-[10.5px] text-muted-foreground transition-colors hover:text-foreground"
         >
           <Download className="h-3 w-3" /> save
         </a>
@@ -152,8 +166,9 @@ function ToolDisplay({ display }: { display: Record<string, unknown> | null | un
             <img
               src={it.url}
               alt={it.caption ?? 'Search result'}
-              className="h-28 w-full rounded-md border border-white/10 object-cover"
+              className="h-28 w-full rounded-md border border-border object-cover dark:border-white/10"
               loading="lazy"
+              referrerPolicy="no-referrer"
             />
             {it.caption && <figcaption className="text-[10px] text-muted-foreground line-clamp-1">{it.caption}</figcaption>}
           </figure>
@@ -248,6 +263,8 @@ export function MissionBlock({ run, live }: { run: RunDTO; live: boolean }) {
   const events = useMemo(() => [...run.events].sort((a, b) => a.seq - b.seq), [run.events])
   const [open, setOpen] = useState(live)
   const wasLive = useRef(live)
+  const reasoningChainItem = useEvaControl((s) => s.reasoningChains.find((c) => c.runId === run.id) ?? null)
+  const openReasoningForChain = useEvaControl((s) => s.openReasoningForChain)
 
   // auto-open while live, auto-collapse once the run finishes (Claude-style)
   useEffect(() => {
@@ -354,6 +371,32 @@ export function MissionBlock({ run, live }: { run: RunDTO; live: boolean }) {
         <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 text-muted-foreground/60 transition-transform', open && 'rotate-90')} />
       </button>
 
+      {reasoningChainItem && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 bg-muted/20 px-3.5 py-1.5 text-[11px]">
+          <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
+            <GitBranch className="h-3.5 w-3.5 shrink-0 text-sky-500" />
+            <span className="truncate font-mono text-[10.5px] tabular-nums">
+              {reasoningChainItem.decisionCount} decision{reasoningChainItem.decisionCount === 1 ? '' : 's'}
+              {reasoningChainItem.correctionCount > 0
+                ? ` · ${reasoningChainItem.correctionCount} self-correction${reasoningChainItem.correctionCount === 1 ? '' : 's'}`
+                : ''}
+              {reasoningChainItem.verificationPassed !== null
+                ? reasoningChainItem.verificationPassed
+                  ? ' · verified'
+                  : ' · unverified'
+                : ' · active'}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => openReasoningForChain(reasoningChainItem.id)}
+            className="shrink-0 font-mono text-[10.5px] font-medium text-sky-600 transition-colors hover:underline dark:text-sky-400"
+          >
+            Inspect chain
+          </button>
+        </div>
+      )}
+
       {open && (
         <div className="space-y-4 border-t border-white/[0.06] p-4">
           {/* planning state */}
@@ -415,7 +458,7 @@ export function MissionBlock({ run, live }: { run: RunDTO; live: boolean }) {
                               <span className="font-mono text-[10px] text-muted-foreground/60 mr-1.5">{String(i + 1).padStart(2, '0')}</span>
                               {s.description}
                             </span>
-                            {s.assignee !== 'Lead Agent' && (
+                            {s.assignee !== 'Lead Agent' && s.assignee !== 'Eva' && (
                               <Badge variant="outline" className="ml-2 h-4 border-white/[0.1] bg-white/[0.04] px-1.5 text-[9px] text-zinc-300">
                                 <UserRound className="mr-1 h-2.5 w-2.5" /> {s.assignee}
                               </Badge>

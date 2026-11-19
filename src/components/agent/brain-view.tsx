@@ -1,12 +1,14 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   Brain as BrainIcon,
   Cable,
   Check,
   ChevronDown,
   Cpu,
+  Download,
+  FolderSearch,
   GraduationCap,
   Loader2,
   Moon,
@@ -16,6 +18,7 @@ import {
   Share2,
   SlidersHorizontal,
   Sparkles,
+  Upload,
   Wrench,
   Zap,
 } from 'lucide-react'
@@ -23,9 +26,11 @@ import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { useApp } from '@/lib/agent/store'
 import { cn } from '@/lib/utils'
-import type { BrainCapabilityGroup } from '@/lib/agent/client'
+import { api, type BrainCapabilityGroup, type PortableBrainBundleDTO } from '@/lib/agent/client'
 import { KnowledgeGraphSection } from '@/components/agent/graph-section'
-import { GBrainGraph, GBrainGraphButton } from '@/components/agent/gbrain-graph'
+import { GBrainGraphButton } from '@/components/agent/gbrain-graph'
+import { useEvaControl } from '@/lib/agent/eva-control-store'
+import { useToast } from '@/hooks/use-toast'
 
 const GROUP_ICONS: Record<BrainCapabilityGroup['key'], typeof Wrench> = {
   tools: Wrench,
@@ -91,7 +96,19 @@ function CapabilityGroupCard({ group, brainOn }: { group: BrainCapabilityGroup; 
 }
 
 export function BrainView() {
-  const { brain, toggleBrain, setBrainPrefs, runDream, memories, runCoachReview, teachBrain, refreshBrain } = useApp()
+  const { toast } = useToast()
+  const {
+    brain,
+    toggleBrain,
+    setBrainPrefs,
+    runDream,
+    memories,
+    runCoachReview,
+    teachBrain,
+    refreshBrain,
+    refreshMemories,
+    refreshSkills,
+  } = useApp()
   const [busy, setBusy] = useState(false)
   const [dreamBusy, setDreamBusy] = useState(false)
   const [dreamReport, setDreamReport] = useState<{ summary: string; mergedCount: number; before: number; after: number } | null>(null)
@@ -100,7 +117,11 @@ export function BrainView() {
   const [teachText, setTeachText] = useState('')
   const [teachBusy, setTeachBusy] = useState(false)
   const [taught, setTaught] = useState<{ content: string; entities: number } | null>(null)
-  const [graphOpen, setGraphOpen] = useState(false)
+  const setGbrainGraphOpen = useEvaControl((s) => s.setGbrainGraphOpen)
+  const [indexBusy, setIndexBusy] = useState(false)
+  const [indexSummary, setIndexSummary] = useState<string | null>(null)
+  const [portableBusy, setPortableBusy] = useState(false)
+  const importRef = useRef<HTMLInputElement>(null)
 
   const connected = brain?.connected ?? true
   const prefs = brain?.appPrefs
@@ -153,6 +174,79 @@ export function BrainView() {
       if (r) setDreamReport(r)
     } finally {
       setDreamBusy(false)
+    }
+  }
+
+  const onIndexProject = async () => {
+    setIndexBusy(true)
+    setIndexSummary(null)
+    try {
+      const res = await api.brainIndexProject()
+      const scan = res.projectIndex.scan
+      setIndexSummary(
+        `Indexed ${scan.name} (${scan.framework}, ${scan.apiRoutes.length} routes, ${scan.prismaModels.length} models) — ${res.projectIndex.memoriesSaved} architectural facts stored.`
+      )
+      await Promise.all([refreshBrain(), refreshMemories()])
+      toast({ title: 'Project indexed into brain' })
+    } catch (e) {
+      toast({
+        title: 'Project scan failed',
+        description: e instanceof Error ? e.message : String(e),
+        variant: 'destructive',
+      })
+    } finally {
+      setIndexBusy(false)
+    }
+  }
+
+  const onExportPortable = async () => {
+    setPortableBusy(true)
+    try {
+      const { bundle } = await api.brainExportPortable()
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `nexus-portable-brain-${new Date().toISOString().slice(0, 10)}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      toast({
+        title: 'Portable brain exported',
+        description: `${bundle.memories.length} memories and ${bundle.skills.length} skills packaged.`,
+      })
+    } catch (e) {
+      toast({
+        title: 'Export failed',
+        description: e instanceof Error ? e.message : String(e),
+        variant: 'destructive',
+      })
+    } finally {
+      setPortableBusy(false)
+    }
+  }
+
+  const onImportPortable = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setPortableBusy(true)
+    try {
+      const raw = await file.text()
+      const parsed = JSON.parse(raw) as PortableBrainBundleDTO
+      const res = await api.brainImportPortable(parsed)
+      await Promise.all([refreshBrain(), refreshMemories(), refreshSkills()])
+      toast({
+        title: 'Portable brain imported',
+        description: `Imported ${res.imported.memories} memories and ${res.imported.skills} skills.`,
+      })
+    } catch (err) {
+      toast({
+        title: 'Import failed',
+        description: err instanceof Error ? err.message : String(err),
+        variant: 'destructive',
+      })
+    } finally {
+      setPortableBusy(false)
     }
   }
 
@@ -264,6 +358,65 @@ export function BrainView() {
                 Connect overlay
               </Button>
             </div>
+          )}
+        </section>
+
+        {/* ---- project intelligence & portable brain ---- */}
+        <section className="mt-7 rounded-2xl border border-white/[0.07] bg-white/[0.02] p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <FolderSearch className="h-3.5 w-3.5 text-amber-300/80" />
+                <h2 className="text-[12.5px] font-semibold">Project intelligence &amp; portable brain</h2>
+              </div>
+              <p className="mt-1 text-[11.5px] text-muted-foreground">
+                Scan your codebase architecture into episodic memory or export/import the self-contained brain bundle across apps.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1.5 border-white/10 bg-black/20 px-2.5 text-[11px]"
+                disabled={indexBusy}
+                onClick={() => void onIndexProject()}
+              >
+                {indexBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <FolderSearch className="h-3 w-3" />}
+                Index Project
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1.5 border-white/10 bg-black/20 px-2.5 text-[11px]"
+                disabled={portableBusy}
+                onClick={() => void onExportPortable()}
+              >
+                <Download className="h-3 w-3" />
+                Export Brain
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1.5 border-white/10 bg-black/20 px-2.5 text-[11px]"
+                disabled={portableBusy}
+                onClick={() => importRef.current?.click()}
+              >
+                <Upload className="h-3 w-3" />
+                Import Bundle
+              </Button>
+              <input
+                ref={importRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(e) => void onImportPortable(e)}
+              />
+            </div>
+          </div>
+          {indexSummary && (
+            <p className="mt-3 rounded-lg border border-amber-400/20 bg-amber-400/[0.05] px-3 py-2 text-[11.5px] text-amber-100/90">
+              {indexSummary}
+            </p>
           )}
         </section>
 
@@ -511,7 +664,7 @@ export function BrainView() {
               — all memory as an entity graph: recall walks it (Personalized PageRank) and only the activated slice ever enters a prompt
             </span>
             <span className="ml-auto">
-              <GBrainGraphButton onClick={() => setGraphOpen(true)} />
+              <GBrainGraphButton onClick={() => setGbrainGraphOpen(true)} />
             </span>
           </div>
 
@@ -662,9 +815,6 @@ export function BrainView() {
           </div>
         </section>
       </div>
-
-      {/* the gbrain graph — fullscreen tear-off */}
-      <GBrainGraph open={graphOpen} onOpenChange={setGraphOpen} />
     </div>
   )
 }

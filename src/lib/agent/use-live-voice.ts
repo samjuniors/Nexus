@@ -4,13 +4,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useApp } from '@/lib/agent/store'
 import type { EventOutDTO, MessageDTO } from '@/lib/agent/client'
 
-export type VoiceName = 'Zephyr' | 'Puck' | 'Charon' | 'Kore' | 'Fenrir'
-export type VoiceStatus = 'idle' | 'connecting' | 'connected' | 'error'
+import {
+  type ActiveVoiceTool,
+  type VoiceAgentState,
+  type VoiceName,
+  type VoiceStatus,
+  deriveVoiceAgentState,
+} from '@/lib/agent/voice-state'
 
-export interface ActiveVoiceTool {
-  tool: string
-  args?: Record<string, unknown>
-}
+export type { ActiveVoiceTool, VoiceAgentState, VoiceName, VoiceStatus }
 
 interface LiveServerEvent {
   type: string
@@ -83,11 +85,14 @@ function base64Pcm16ToFloat32(base64: string): Float32Array {
 
 export function useLiveVoice(options?: {
   onError?: (message: string) => void
+  onSleepRequested?: () => void
 }) {
   const [status, setStatus] = useState<VoiceStatus>('idle')
   const [muted, setMuted] = useState(false)
   const [voiceName, setVoiceName] = useState<VoiceName>('Zephyr')
   const [isSpeaking, setIsSpeaking] = useState(false)
+  const [isUserSpeaking, setIsUserSpeaking] = useState(false)
+  const [isThinking, setIsThinking] = useState(false)
   const [micLevel, setMicLevel] = useState(0)
   const [liveInputTranscript, setLiveInputTranscript] = useState('')
   const [liveOutputTranscript, setLiveOutputTranscript] = useState('')
@@ -106,8 +111,35 @@ export function useLiveVoice(options?: {
   const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
   const closingIntentRef = useRef(false)
   const lastLevelTickRef = useRef(0)
+  const speechIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hasInputTranscriptRef = useRef(false)
   const onErrorRef = useRef(options?.onError)
   onErrorRef.current = options?.onError
+  const onSleepRequestedRef = useRef(options?.onSleepRequested)
+  onSleepRequestedRef.current = options?.onSleepRequested
+
+  const clearSpeechTimer = useCallback(() => {
+    if (speechIdleTimerRef.current) {
+      clearTimeout(speechIdleTimerRef.current)
+      speechIdleTimerRef.current = null
+    }
+  }, [])
+
+  const bumpUserSpeech = useCallback(
+    (hasTranscript: boolean) => {
+      if (hasTranscript) hasInputTranscriptRef.current = true
+      setIsUserSpeaking(true)
+      setIsThinking(false)
+      clearSpeechTimer()
+      speechIdleTimerRef.current = setTimeout(() => {
+        setIsUserSpeaking(false)
+        if (hasInputTranscriptRef.current) {
+          setIsThinking(true)
+        }
+      }, 950)
+    },
+    [clearSpeechTimer]
+  )
 
   const stopOutputPlayback = useCallback(() => {
     for (const node of activeSourcesRef.current) {
@@ -124,6 +156,8 @@ export function useLiveVoice(options?: {
   }, [])
 
   const teardown = useCallback(() => {
+    clearSpeechTimer()
+    hasInputTranscriptRef.current = false
     stopOutputPlayback()
 
     if (processorRef.current) {
@@ -177,7 +211,9 @@ export function useLiveVoice(options?: {
     setLiveInputTranscript('')
     setLiveOutputTranscript('')
     setIsSpeaking(false)
-  }, [stopOutputPlayback])
+    setIsUserSpeaking(false)
+    setIsThinking(false)
+  }, [clearSpeechTimer, stopOutputPlayback])
 
   const enqueueAudio = useCallback((base64Pcm: string) => {
     const outCtx = outputCtxRef.current
@@ -201,6 +237,7 @@ export function useLiveVoice(options?: {
 
     activeSourcesRef.current.add(source)
     setIsSpeaking(true)
+    setIsThinking(false)
 
     source.onended = () => {
       activeSourcesRef.current.delete(source)
@@ -221,6 +258,8 @@ export function useLiveVoice(options?: {
       void store.refreshMcps()
       void store.refreshMemories()
       void store.refreshArtifacts()
+      void store.refreshOrg()
+      void store.refreshAutomations()
       void store.refreshBrain()
       return
     }
@@ -231,15 +270,25 @@ export function useLiveVoice(options?: {
     }
     if (target === 'tools') void store.refreshTools()
     if (target === 'memories') void store.refreshMemories()
+    if (target === 'org') {
+      void store.refreshOrg()
+      void store.refreshPlugins()
+      void store.refreshTools()
+    }
+    if (target === 'automations') void store.refreshAutomations()
+    if (target === 'artifacts') void store.refreshArtifacts()
   }, [])
 
   const startVoice = useCallback(async (overrideConvId?: string | null, overrideVoice?: VoiceName) => {
     if (status === 'connecting' || status === 'connected') return
     closingIntentRef.current = false
+    hasInputTranscriptRef.current = false
     setLastError(null)
     setStatus('connecting')
     setLiveInputTranscript('')
     setLiveOutputTranscript('')
+    setIsUserSpeaking(false)
+    setIsThinking(false)
 
     const activeConvId = overrideConvId !== undefined ? overrideConvId : useApp.getState().activeConvId
     const chosenVoice = overrideVoice ?? voiceName
@@ -290,26 +339,43 @@ export function useLiveVoice(options?: {
 
         if (msg.type === 'input_transcript') {
           setLiveInputTranscript(msg.text ?? '')
+          bumpUserSpeech(Boolean(msg.text?.trim()))
           return
         }
 
         if (msg.type === 'output_transcript') {
+          clearSpeechTimer()
+          hasInputTranscriptRef.current = false
+          setIsUserSpeaking(false)
+          setIsThinking(false)
           setLiveOutputTranscript(msg.text ?? '')
           return
         }
 
         if (msg.type === 'audio' && msg.audio) {
+          clearSpeechTimer()
+          hasInputTranscriptRef.current = false
+          setIsUserSpeaking(false)
           enqueueAudio(msg.audio)
           return
         }
 
         if (msg.type === 'interrupted') {
           stopOutputPlayback()
+          setIsThinking(false)
           return
         }
 
         if (msg.type === 'tool_status') {
-          setActiveTool(msg.active && msg.tool ? { tool: msg.tool, args: msg.args } : null)
+          clearSpeechTimer()
+          setIsUserSpeaking(false)
+          if (msg.active && msg.tool) {
+            setActiveTool({ tool: msg.tool, args: msg.args })
+            setIsThinking(false)
+          } else {
+            setActiveTool(null)
+            setIsThinking(true)
+          }
           return
         }
 
@@ -325,6 +391,10 @@ export function useLiveVoice(options?: {
         }
 
         if (msg.type === 'turn_complete') {
+          clearSpeechTimer()
+          hasInputTranscriptRef.current = false
+          setIsUserSpeaking(false)
+          setIsThinking(false)
           setLiveInputTranscript('')
           setLiveOutputTranscript('')
           if (msg.conversationId) {
@@ -342,9 +412,22 @@ export function useLiveVoice(options?: {
 
         if (msg.type === 'error') {
           const errText = msg.error ?? 'Voice session error'
+          clearSpeechTimer()
+          setIsThinking(false)
+          setIsUserSpeaking(false)
           setLastError(errText)
           setStatus('error')
           onErrorRef.current?.(errText)
+          return
+        }
+
+        if (msg.type === 'eva_sleep') {
+          setTimeout(() => {
+            closingIntentRef.current = true
+            teardown()
+            setStatus('idle')
+            onSleepRequestedRef.current?.()
+          }, 1400)
           return
         }
 
@@ -390,6 +473,7 @@ export function useLiveVoice(options?: {
             if (nowMs - lastLevelTickRef.current > 80) {
               lastLevelTickRef.current = nowMs
               setMicLevel(0)
+              setIsUserSpeaking(false)
             }
             return
           }
@@ -399,10 +483,14 @@ export function useLiveVoice(options?: {
             sumSq += inputData[i] * inputData[i]
           }
           const rms = Math.sqrt(sumSq / inputData.length)
+          const normalized = Math.min(1, rms * 5.5)
           const nowMs = performance.now()
           if (nowMs - lastLevelTickRef.current > 70) {
             lastLevelTickRef.current = nowMs
-            setMicLevel(Math.min(1, rms * 5.5))
+            setMicLevel(normalized)
+            if (normalized > 0.09) {
+              bumpUserSpeech(false)
+            }
           }
 
           const pcm16k = downsampleTo16k(inputData, inputCtx.sampleRate)
@@ -421,7 +509,7 @@ export function useLiveVoice(options?: {
       onErrorRef.current?.(msg)
       teardown()
     }
-  }, [enqueueAudio, status, stopOutputPlayback, syncCapabilities, teardown, voiceName])
+  }, [bumpUserSpeech, clearSpeechTimer, enqueueAudio, status, stopOutputPlayback, syncCapabilities, teardown, voiceName])
 
   const stopVoice = useCallback(() => {
     closingIntentRef.current = true
@@ -432,17 +520,42 @@ export function useLiveVoice(options?: {
   const toggleMute = useCallback(() => {
     mutedRef.current = !mutedRef.current
     setMuted(mutedRef.current)
-    if (mutedRef.current) setMicLevel(0)
-  }, [])
+    if (mutedRef.current) {
+      clearSpeechTimer()
+      setMicLevel(0)
+      setIsUserSpeaking(false)
+    }
+  }, [clearSpeechTimer])
 
-  const sendLiveText = useCallback((text: string): boolean => {
-    const trimmed = text.trim()
+  const interruptAudio = useCallback(() => {
+    stopOutputPlayback()
+    setIsThinking(false)
+  }, [stopOutputPlayback])
+
+  const sendLiveText = useCallback(
+    (text: string): boolean => {
+      const trimmed = text.trim()
+      const ws = wsRef.current
+      if (!trimmed || !ws || ws.readyState !== WebSocket.OPEN) return false
+      clearSpeechTimer()
+      setIsUserSpeaking(false)
+      setIsThinking(true)
+      setLiveInputTranscript(trimmed)
+      ws.send(JSON.stringify({ type: 'text', text: trimmed }))
+      return true
+    },
+    [clearSpeechTimer]
+  )
+
+  const sendWakeAck = useCallback((): boolean => {
     const ws = wsRef.current
-    if (!trimmed || !ws || ws.readyState !== WebSocket.OPEN) return false
-    setLiveInputTranscript(trimmed)
-    ws.send(JSON.stringify({ type: 'text', text: trimmed }))
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false
+    clearSpeechTimer()
+    setIsUserSpeaking(false)
+    setIsThinking(true)
+    ws.send(JSON.stringify({ type: 'wake_ack' }))
     return true
-  }, [])
+  }, [clearSpeechTimer])
 
   useEffect(() => {
     return () => {
@@ -451,13 +564,25 @@ export function useLiveVoice(options?: {
     }
   }, [teardown])
 
+  const agentState = deriveVoiceAgentState({
+    status,
+    activeTool,
+    isSpeaking,
+    isThinking,
+    muted,
+    isUserSpeaking,
+  })
+
   return {
     status,
+    agentState,
     isActive: status === 'connecting' || status === 'connected',
     muted,
     voiceName,
     setVoiceName,
     isSpeaking,
+    isUserSpeaking,
+    isThinking,
     micLevel,
     liveInputTranscript,
     liveOutputTranscript,
@@ -466,6 +591,8 @@ export function useLiveVoice(options?: {
     startVoice,
     stopVoice,
     toggleMute,
+    interruptAudio,
     sendLiveText,
+    sendWakeAck,
   }
 }

@@ -1,0 +1,272 @@
+import { db } from '@/lib/db'
+import { ensureSeeded } from '@/lib/agent/seed'
+import { stepRun } from '@/lib/agent/orchestrator'
+import { chatText } from '@/lib/agent/zai'
+
+const globalScheduler = globalThis as unknown as {
+  __nexusSchedulerStarted?: boolean
+  __nexusSchedulerTimer?: ReturnType<typeof setInterval>
+  __nexusRunningAutomations?: Set<string>
+}
+
+const runningAutomations =
+  globalScheduler.__nexusRunningAutomations ??
+  (globalScheduler.__nexusRunningAutomations = new Set<string>())
+
+// Parse a cron field expression (e.g. "*", step/15, "0,30", "1-5") against a number.
+function matchCronField(expr: string, value: number, min: number, max: number): boolean {
+  const parts = expr.split(',')
+  for (const part of parts) {
+    const trimmed = part.trim()
+    if (!trimmed) continue
+    if (trimmed === '*') return true
+    const stepMatch = /^\*\/(\d+)$/.exec(trimmed)
+    if (stepMatch) {
+      const step = Math.max(1, Number(stepMatch[1]))
+      if ((value - min) % step === 0) return true
+      continue
+    }
+    const rangeMatch = /^(\d+)-(\d+)$/.exec(trimmed)
+    if (rangeMatch) {
+      const a = Number(rangeMatch[1])
+      const b = Number(rangeMatch[2])
+      if (value >= a && value <= b && value >= min && value <= max) return true
+      continue
+    }
+    if (/^\d+$/.test(trimmed) && Number(trimmed) === value) return true
+  }
+  return false
+}
+
+/** Compute the next execution timestamp for an interval, 5-field cron, or one-shot schedule. */
+export function computeNextRunAt(triggerType: string, schedule: string, from = new Date()): Date | null {
+  const clean = schedule.trim()
+  if (triggerType === 'once') {
+    const ts = Date.parse(clean)
+    if (!Number.isFinite(ts)) return new Date(from.getTime() + 60_000)
+    return new Date(ts)
+  }
+
+  if (triggerType === 'cron') {
+    const fields = clean.split(/\s+/)
+    if (fields.length === 5) {
+      const [mExpr, hExpr, domExpr, monExpr, dowExpr] = fields
+      // Scan forward minute-by-minute up to 7 days (10,080 minutes)
+      const cursor = new Date(from.getTime())
+      cursor.setSeconds(0, 0)
+      for (let i = 1; i <= 10080; i++) {
+        cursor.setMinutes(cursor.getMinutes() + 1)
+        if (
+          matchCronField(mExpr, cursor.getMinutes(), 0, 59) &&
+          matchCronField(hExpr, cursor.getHours(), 0, 23) &&
+          matchCronField(domExpr, cursor.getDate(), 1, 31) &&
+          matchCronField(monExpr, cursor.getMonth() + 1, 1, 12) &&
+          matchCronField(dowExpr, cursor.getDay(), 0, 6)
+        ) {
+          return cursor
+        }
+      }
+    }
+    // Fallback if non-standard cron string: 60 minutes
+    return new Date(from.getTime() + 60 * 60_000)
+  }
+
+  // Default: interval in minutes (minimum 1 minute)
+  const mins = Math.max(1, Number.parseFloat(clean) || 60)
+  return new Date(from.getTime() + mins * 60_000)
+}
+
+/** Execute one automation immediately and record its AutomationRun log. */
+export async function executeAutomation(automationId: string): Promise<{
+  ok: boolean
+  status: 'success' | 'error'
+  summary: string
+  runId?: string
+}> {
+  if (runningAutomations.has(automationId)) {
+    return { ok: false, status: 'error', summary: 'Automation is already running.' }
+  }
+  runningAutomations.add(automationId)
+
+  const startedAt = new Date()
+  let logRowId = ''
+  try {
+    await ensureSeeded()
+    const auto = await db.automation.findUnique({ where: { id: automationId } })
+    if (!auto) {
+      return { ok: false, status: 'error', summary: 'Automation not found.' }
+    }
+
+    const assignee = auto.assigneeId
+      ? await db.aiEmployee.findUnique({ where: { id: auto.assigneeId } })
+      : null
+
+    const logRow = await db.automationRun.create({
+      data: {
+        automationId: auto.id,
+        status: 'running',
+        startedAt,
+      },
+    })
+    logRowId = logRow.id
+
+    await db.automation.update({
+      where: { id: auto.id },
+      data: { lastStatus: 'running' },
+    })
+
+    // Create a dedicated conversation + run so full mission history is preserved
+    const conv = await db.conversation.create({
+      data: { title: `Automation · ${auto.name}`.slice(0, 60) },
+    })
+    const effectivePrompt = assignee
+      ? `[Scheduled Automation: ${auto.name} | Assigned to ${assignee.name} (${assignee.title})] ${auto.prompt}`
+      : `[Scheduled Automation: ${auto.name}] ${auto.prompt}`
+
+    const run = await db.run.create({
+      data: {
+        conversationId: conv.id,
+        userMessage: effectivePrompt,
+        status: 'planning',
+        phase: 'plan',
+      },
+    })
+    await db.message.create({
+      data: { conversationId: conv.id, role: 'user', content: effectivePrompt, runId: run.id },
+    })
+
+    let summary = ''
+    let status: 'success' | 'error' = 'success'
+
+    // If assigned to an active employee/bot with no heavy multi-step requirement, still run full orchestrator
+    let finalAnswer = ''
+    let stepErr = ''
+    for (let guard = 0; guard < 36; guard++) {
+      const step = await stepRun(run.id)
+      for (const ev of step.events) {
+        if (ev.type === 'final' && typeof ev.data.answer === 'string') {
+          finalAnswer = ev.data.answer
+        }
+      }
+      if (!step.ok && step.error) {
+        stepErr = step.error
+        status = 'error'
+        break
+      }
+      if (step.busy) {
+        await new Promise((r) => setTimeout(r, 500))
+        continue
+      }
+      if (['done', 'error', 'stopped'].includes(step.status)) {
+        if (step.status === 'error') status = 'error'
+        break
+      }
+    }
+
+    if (!finalAnswer && status === 'success') {
+      finalAnswer = await chatText(
+        [
+          {
+            role: 'system',
+            content: assignee
+              ? `You are ${assignee.name} (${assignee.title}). ${assignee.systemPrompt}`
+              : 'You are NEXUS, an autonomous agent.',
+          },
+          { role: 'user', content: auto.prompt },
+        ],
+        { maxTokens: 600 }
+      ).catch(() => 'Automation completed.')
+    }
+
+    summary = (status === 'error' ? stepErr || 'Automation execution failed.' : finalAnswer || 'Completed.')
+      .replace(/\s+/g, ' ')
+      .slice(0, 800)
+
+    const finishedAt = new Date()
+    const isOnce = auto.triggerType === 'once'
+    const nextRun = isOnce ? null : computeNextRunAt(auto.triggerType, auto.schedule, finishedAt)
+
+    await db.automationRun.update({
+      where: { id: logRow.id },
+      data: {
+        status,
+        runId: run.id,
+        summary: status === 'success' ? summary : '',
+        error: status === 'error' ? summary : '',
+        finishedAt,
+      },
+    })
+
+    await db.automation.update({
+      where: { id: auto.id },
+      data: {
+        lastRunAt: finishedAt,
+        nextRunAt: nextRun,
+        lastStatus: status,
+        lastResult: summary,
+        runCount: { increment: 1 },
+        ...(isOnce ? { enabled: false } : {}),
+      },
+    })
+
+    if (assignee && status === 'success') {
+      await db.aiEmployee.update({
+        where: { id: assignee.id },
+        data: { tasksCompleted: { increment: 1 }, lastActiveAt: finishedAt },
+      }).catch(() => undefined)
+    }
+
+    return { ok: status === 'success', status, summary, runId: run.id }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (logRowId) {
+      await db.automationRun.update({
+        where: { id: logRowId },
+        data: { status: 'error', error: msg.slice(0, 800), finishedAt: new Date() },
+      }).catch(() => undefined)
+    }
+    await db.automation.update({
+      where: { id: automationId },
+      data: { lastStatus: 'error', lastResult: msg.slice(0, 800), lastRunAt: new Date() },
+    }).catch(() => undefined)
+    return { ok: false, status: 'error', summary: msg }
+  } finally {
+    runningAutomations.delete(automationId)
+  }
+}
+
+/** Check all enabled automations and fire any whose nextRunAt has passed. */
+export async function tickDueAutomations(): Promise<number> {
+  try {
+    await ensureSeeded()
+    const now = new Date()
+    const all = await db.automation.findMany({ where: { enabled: true } })
+    let triggered = 0
+    for (const a of all) {
+      if (a.lastStatus === 'running' || runningAutomations.has(a.id)) continue
+      if (!a.nextRunAt) {
+        const next = computeNextRunAt(a.triggerType, a.schedule, now)
+        await db.automation.update({ where: { id: a.id }, data: { nextRunAt: next } })
+        continue
+      }
+      if (new Date(a.nextRunAt).getTime() <= now.getTime()) {
+        triggered++
+        void executeAutomation(a.id)
+      }
+    }
+    return triggered
+  } catch {
+    return 0
+  }
+}
+
+/** Start the background scheduler loop (idempotent across hot reloads). */
+export function startScheduler() {
+  if (globalScheduler.__nexusSchedulerStarted) return
+  globalScheduler.__nexusSchedulerStarted = true
+  // Initial check shortly after boot, then every 30s
+  setTimeout(() => void tickDueAutomations(), 5000)
+  globalScheduler.__nexusSchedulerTimer = setInterval(() => {
+    void tickDueAutomations()
+  }, 30_000)
+}

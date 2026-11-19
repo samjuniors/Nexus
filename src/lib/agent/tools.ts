@@ -1,8 +1,20 @@
 import { promises as fs } from 'fs'
 import vm from 'node:vm'
 import path from 'path'
+import { GoogleGenAI } from '@google/genai'
 import { db } from '@/lib/db'
 import { chatText, getZAI } from '@/lib/agent/zai'
+import { controlBus } from '@/lib/agent/control-bus'
+import { liveBrowser } from '@/lib/agent/browser-manager'
+import { requireCapabilityPermission } from '@/lib/agent/permissions'
+import { listConnectedDevices } from '@/lib/agent/device-bridge'
+import {
+  getAgentIdentity,
+  listAgentInbox,
+  provisionAgentEmail,
+  readAgentInboxMessage,
+  waitForVerificationCode,
+} from '@/lib/agent/agent-identity'
 import { recallMemories } from '@brain/index'
 import { buildAppGraph } from '@/lib/agent/graph-source'
 import { renderQueryResult } from '@brain/index'
@@ -12,7 +24,25 @@ import {
   saveWorkspaceFile,
   WORKSPACE_DIR,
 } from '@/lib/agent/workspace'
+import {
+  buildVectorIllustrationPrompts,
+  extractAndSanitizeSvg,
+  parseWikimediaImageResponse,
+  rasterizeSvgToPng,
+  resolveImageDimensions,
+} from '@/lib/agent/image-gen'
 import type { EffectiveTool, ToolExecResult } from '@/lib/agent/types'
+
+function createServerGemini(): GoogleGenAI | null {
+  const apiKey = process.env.GEMINI_API_KEY?.trim()
+  if (!apiKey) return null
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: { 'User-Agent': 'aistudio-build' },
+    },
+  })
+}
 
 // Canonical prompt-facing specs for built-in tools
 const BUILTIN_TOOL_SPECS: Record<string, { name: string; description: string; argSpec: string }> =
@@ -41,8 +71,8 @@ const BUILTIN_TOOL_SPECS: Record<string, { name: string; description: string; ar
     },
     generate_image: {
       name: 'Generate Image',
-      description: 'Create an original AI image from a text prompt.',
-      argSpec: '{"prompt": string, "size"?: "1024x1024"|"1344x768"|"768x1344"|"1440x720"}',
+      description: 'Create an original AI illustration/image from a text prompt and save it as a PNG artifact.',
+      argSpec: '{"prompt": string, "size"?: "1024x1024"|"1344x768"|"768x1344"|"1152x864"|"864x1152"|"1440x720", "aspectRatio"?: "1:1"|"16:9"|"9:16"|"4:3"|"3:4"}',
     },
     run_code: {
       name: 'Run Code',
@@ -104,6 +134,66 @@ const BUILTIN_TOOL_SPECS: Record<string, { name: string; description: string; ar
         'Control the app\'s computer: run shell commands, read/write/list workspace files, and open URLs. Actions are safety-tiered (read < write < destructive); destructive actions (rm, installs, POST requests) require "confirm": true after asking the user.',
       argSpec:
         '{"action": "shell"|"read_file"|"write_file"|"list_dir"|"open_url", "command"?: string, "path"?: string, "content"?: string, "url"?: string, "confirm"?: boolean}',
+    },
+    inspect_project: {
+      name: 'Inspect Project',
+      description:
+        'Scan the repository stack, Prisma data models, API routes, and portable brain modules, and optionally index architectural truths into the portable GBrain.',
+      argSpec: '{"indexIntoBrain"?: boolean}',
+    },
+    manage_org: {
+      name: 'Manage Org',
+      description:
+        'Manage AI employees, custom bots, and subagents reporting to Eva: list team, review performance/gaps, hire AI employee, create bot, create persistent subagent, delegate a focused task, or remove.',
+      argSpec:
+        '{"action": "list"|"review"|"hire"|"create_bot"|"create_subagent"|"delegate"|"remove", "id"?: string, "name"?: string, "title"?: string, "department"?: string, "role"?: string, "systemPrompt"?: string, "reportsTo"?: string, "skills"?: string[], "tools"?: string[], "task"?: string, "focus"?: string}',
+    },
+    manage_automation: {
+      name: 'Manage Automation',
+      description:
+        'List, create, toggle, run immediately, or delete scheduled recurring/cron/one-shot automations.',
+      argSpec:
+        '{"action": "list"|"create"|"toggle"|"run_now"|"delete", "id"?: string, "name"?: string, "description"?: string, "prompt"?: string, "triggerType"?: "interval"|"cron"|"once", "schedule"?: string, "assigneeName"?: string, "enabled"?: boolean}',
+    },
+    create_skill: {
+      name: 'Create Skill',
+      description: 'Create or update a reusable Agent Skill instruction pack.',
+      argSpec: '{"name": string, "description": string, "prompt": string, "category"?: string}',
+    },
+    browser_control: {
+      name: 'Live Browser Control',
+      description:
+        'Control a real server-side Playwright browser streamed live in the split-screen panel. Use "play_media" for songs/videos on YouTube (streams real interactive audio & video), "autopilot" for multi-step web goals completed end-to-end automatically, or single actions (navigate, click, type, scroll, press, back, reload, snapshot, clear_media, close).',
+      argSpec:
+        '{"action": "play_media"|"autopilot"|"navigate"|"click"|"type"|"scroll"|"press"|"back"|"reload"|"snapshot"|"clear_media"|"close", "query"?: string, "goal"?: string, "url"?: string, "maxSteps"?: number, "selector"?: string, "text"?: string, "x"?: number, "y"?: number, "submit"?: boolean, "key"?: string, "deltaY"?: number}',
+    },
+    agent_email: {
+      name: 'Eva Autonomous Email & Inbox',
+      description:
+        'Manage Eva\'s own persistent email address and live inbox so Eva can autonomously sign up, verify accounts, read incoming emails, and extract OTP verification codes/links without asking the user.',
+      argSpec:
+        '{"action": "provision"|"status"|"list_inbox"|"read_message"|"wait_for_code", "preferredLocal"?: string, "forceNew"?: boolean, "messageId"?: string, "senderFilter"?: string, "timeoutMs"?: number}',
+    },
+    app_control: {
+      name: 'App UI Self-Control',
+      description:
+        'Control the Nexus Agent OS interface visually with an animated live cursor: switch tabs, open or close split-screen panels (reasoning, browser, identity, permissions, devices, org, artifacts, tools, automations, brain), switch between standard and Voice Focus layout modes, collapse/expand the sidebar rail, open the interactive GBrain graph, show popups, click buttons/targets, or toggle light/dark theme.',
+      argSpec:
+        '{"action": "navigate_tab"|"open_split"|"close_split"|"set_layout_mode"|"toggle_sidebar"|"open_gbrain_graph"|"open_popup"|"close_popup"|"click_target"|"set_theme", "tab"?: string, "mode"?: "reasoning"|"browser"|"identity"|"permissions"|"devices"|"org"|"artifacts"|"tools"|"automations"|"brain"|"standard"|"focus", "collapsed"?: boolean, "title"?: string, "body"?: string, "selector"?: string, "label"?: string, "theme"?: "light"|"dark", "url"?: string}',
+    },
+    self_manage_extensions: {
+      name: 'Self-Install & Manage Extensions',
+      description:
+        'Autonomously list, install, uninstall, enable, or disable Plugins, Skills, Tools, and MCP servers so the user never has to install extensions manually. Protected by a one-time Allow Always permission.',
+      argSpec:
+        '{"action": "list"|"install_plugin"|"uninstall_plugin"|"toggle_plugin"|"toggle_skill"|"toggle_tool"|"connect_mcp"|"disconnect_mcp", "slug"?: string, "enabled"?: boolean}',
+    },
+    device_control: {
+      name: 'Connected Device Control',
+      description:
+        'List paired local Mac/Windows/Linux computers and execute approved actions (system_info, open_url, open_app, shell) on an online computer via the optional Nexus Companion Bridge.',
+      argSpec:
+        '{"action": "list"|"system_info"|"open_url"|"open_app"|"shell", "deviceId"?: string, "url"?: string, "app"?: string, "command"?: string}',
     },
   }
 
@@ -445,10 +535,15 @@ export async function executeTool(
   try {
     switch (slug) {
       case 'web_search': {
-        const query = str(args.query)
+        const query = str(args.query).trim()
+        if (!query) {
+          return { ok: false, summary: 'Empty search query', raw: 'Error: provide a non-empty "query".' }
+        }
         const num = Math.min(Math.max(Number(args.num) || 6, 1), 8)
-        // PROVIDER CHAIN: Tavily (if TAVILY_API_KEY is set) → built-in SDK search
-        let results: unknown[] = []
+        // PROVIDER CHAIN: Tavily (optional) -> Gemini Google Search Grounding (built-in free tier) -> ZAI SDK
+        let items: { title: string; url: string; snippet: string; host: string; date?: string }[] = []
+        let groundedAnswer = ''
+
         const tavilyKey = process.env.TAVILY_API_KEY?.trim()
         if (tavilyKey) {
           try {
@@ -456,52 +551,108 @@ export async function executeTool(
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ api_key: tavilyKey, query, max_results: num, search_depth: 'basic' }),
-              signal: AbortSignal.timeout(30_000),
+              signal: AbortSignal.timeout(25_000),
             })
             if (res.ok) {
               const json = (await res.json()) as { results?: { title?: string; url?: string; content?: string }[] }
-              results = (json.results ?? []).map((r) => ({
-                name: r.title ?? '(untitled)',
+              items = (json.results ?? []).slice(0, num).map((r) => ({
+                title: r.title ?? '(untitled)',
                 url: r.url ?? '',
-                snippet: r.content ?? '',
-                host_name: r.url ? new URL(r.url).hostname : '',
+                snippet: truncate(r.content ?? '', 300),
+                host: r.url ? (() => { try { return new URL(r.url).hostname } catch { return '' } })() : '',
               }))
             }
           } catch {
-            // Tavily failed — fall back to the SDK search below
+            /* fall through to Gemini Google Search Grounding */
           }
         }
-        if (!Array.isArray(results) || results.length === 0) {
-          const zai = await getZAI()
-          if (zai) {
-            results = (await zai.functions.invoke('web_search', { query, num })) as unknown[]
-          } else if (!tavilyKey) {
-            return {
-              ok: false,
-              summary: 'Web search provider not configured',
-              raw: 'Error: Web search requires TAVILY_API_KEY or a configured ZAI SDK.',
+
+        // Primary zero-config live web search: Gemini Google Search Grounding
+        if (items.length === 0) {
+          const gemini = createServerGemini()
+          if (gemini) {
+            try {
+              const resp = await gemini.models.generateContent({
+                model: 'gemini-4-hydrogen',
+                contents: `Search the live web for: ${query}\nProvide a concise, factual summary of the top current findings.`,
+                config: {
+                  tools: [{ googleSearch: {} }],
+                },
+              })
+              groundedAnswer = (resp.text ?? '').trim()
+              const chunks =
+                (
+                  resp.candidates?.[0] as
+                    | { groundingMetadata?: { groundingChunks?: Array<{ web?: { uri?: string; title?: string } }> } }
+                    | undefined
+                )?.groundingMetadata?.groundingChunks ?? []
+              const seen = new Set<string>()
+              for (const ch of chunks) {
+                const uri = ch.web?.uri?.trim()
+                if (!uri || seen.has(uri)) continue
+                seen.add(uri)
+                let host = ''
+                try {
+                  host = new URL(uri).hostname
+                } catch {
+                  host = ''
+                }
+                items.push({
+                  title: ch.web?.title?.trim() || host || uri,
+                  url: uri,
+                  snippet: truncate(groundedAnswer, 240),
+                  host,
+                })
+                if (items.length >= num) break
+              }
+            } catch {
+              /* fall through to ZAI SDK if present */
             }
           }
         }
-        if (!Array.isArray(results) || results.length === 0) {
-          return { ok: true, summary: `No results for "${query}"`, raw: 'No results found.' }
-        }
-        const items = results.slice(0, 8).map((raw) => {
-          const r = raw as { name?: string; url?: string; snippet?: string; host_name?: string; date?: string }
-          return {
-            title: str(r.name, '(untitled)'),
-            url: str(r.url),
-            snippet: truncate(str(r.snippet), 300),
-            host: str(r.host_name),
-            date: str(r.date) || undefined,
+
+        if (items.length === 0 && !groundedAnswer) {
+          const zai = await getZAI()
+          if (zai) {
+            const rawResults = (await zai.functions.invoke('web_search', { query, num })) as unknown[]
+            if (Array.isArray(rawResults)) {
+              items = rawResults.slice(0, num).map((raw) => {
+                const r = raw as { name?: string; url?: string; snippet?: string; host_name?: string; date?: string }
+                return {
+                  title: str(r.name, '(untitled)'),
+                  url: str(r.url),
+                  snippet: truncate(str(r.snippet), 300),
+                  host: str(r.host_name),
+                  date: str(r.date) || undefined,
+                }
+              })
+            }
           }
-        })
-        const raw = items.map((r, i) => `[${i + 1}] ${r.title} (${r.host})\n${r.url}\n${r.snippet}`).join('\n\n')
+        }
+
+        if (items.length === 0 && !groundedAnswer) {
+          return {
+            ok: false,
+            summary: 'Web search unavailable',
+            raw: 'Error: Web search could not reach Google Search Grounding, Tavily, or ZAI.',
+          }
+        }
+
+        const sourcesBlock = items
+          .map((r, i) => `[${i + 1}] ${r.title}${r.host ? ` (${r.host})` : ''}\n${r.url}\n${r.snippet}`)
+          .join('\n\n')
+        const raw = [groundedAnswer ? `SUMMARY:\n${groundedAnswer}` : '', sourcesBlock].filter(Boolean).join('\n\n')
         return {
           ok: true,
-          summary: `${items.length} results for "${query}"`,
+          summary:
+            items.length > 0
+              ? `${items.length} grounded results for "${query}"`
+              : `Web summary for "${query}"`,
           raw: truncate(raw, 6000),
-          display: { kind: 'search', results: items },
+          display:
+            items.length > 0
+              ? { kind: 'search', results: items }
+              : { kind: 'text', text: truncate(groundedAnswer, 1200) },
         }
       }
 
@@ -670,50 +821,168 @@ export async function executeTool(
       }
 
       case 'generate_image': {
-        const zai = await getZAI()
-        if (!zai) {
-          return { ok: false, summary: 'Image generator unavailable', raw: 'Image generation requires ZAI SDK configuration.' }
-        }
         const prompt = str(args.prompt)
-        const size = ['1024x1024', '768x1344', '864x1152', '1344x768', '1152x864', '1440x720', '720x1440'].includes(
-          str(args.size)
-        )
-          ? (str(args.size) as '1024x1024')
-          : '1024x1024'
-        const res = await zai.images.generations.create({ prompt, size })
-        const b64 = res?.data?.[0]?.base64
-        if (!b64) return { ok: false, summary: 'Image generation returned no data', raw: 'Image generation returned no data.' }
+        if (!prompt.trim()) {
+          return { ok: false, summary: 'Empty prompt', raw: 'Error: provide a prompt describing the image to generate.' }
+        }
+        const dims = resolveImageDimensions(str(args.size), str(args.aspectRatio))
         const name = `img_${Date.now()}.png`
-        await saveWorkspaceFile(name, Buffer.from(b64, 'base64'))
         const url = `/api/files?name=${name}`
+
+        // 1) Optional OpenAI Images path when user configured OPENAI_API_KEY
+        const openaiKey = process.env.OPENAI_API_KEY?.trim()
+        if (openaiKey && process.env.LLM_PROVIDER?.trim().toLowerCase() === 'openai') {
+          try {
+            const imgModel = process.env.OPENAI_IMAGE_MODEL?.trim() || 'gpt-image-1'
+            const res = await fetch('https://api.openai.com/v1/images/generations', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${openaiKey}`,
+              },
+              body: JSON.stringify({
+                model: imgModel,
+                prompt,
+                size: '1024x1024',
+              }),
+              signal: AbortSignal.timeout(45_000),
+            })
+            if (res.ok) {
+              const json = (await res.json()) as { data?: Array<{ b64_json?: string; url?: string }> }
+              const b64 = json.data?.[0]?.b64_json
+              if (b64) {
+                await saveWorkspaceFile(name, Buffer.from(b64, 'base64'))
+                return {
+                  ok: true,
+                  summary: `Generated image: ${truncate(prompt, 80)}`,
+                  raw: `Image generated successfully and saved as ${name}. Embed it with markdown: ![${prompt}](${url})`,
+                  display: { kind: 'image', url, prompt },
+                }
+              }
+            }
+          } catch {
+            /* fall through to ZAI or vector-PNG fallback */
+          }
+        }
+
+        // 2) Built-in ZAI SDK path if configured
+        const zai = await getZAI()
+        if (zai) {
+          const res = await zai.images.generations.create({
+            prompt,
+            size: dims.sizeLabel as '1024x1024',
+          })
+          const b64 = res?.data?.[0]?.base64
+          if (b64) {
+            await saveWorkspaceFile(name, Buffer.from(b64, 'base64'))
+            return {
+              ok: true,
+              summary: `Generated image: ${truncate(prompt, 80)}`,
+              raw: `Image generated successfully and saved as ${name}. Embed it with markdown: ![${prompt}](${url})`,
+              display: { kind: 'image', url, prompt },
+            }
+          }
+        }
+
+        // 3) Free-tier Gemini vector-to-PNG pipeline (active LLM crafts layered SVG → Sharp renders PNG)
+        const prompts = buildVectorIllustrationPrompts(prompt, dims)
+        let lastErr = 'Unable to produce valid SVG artwork'
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const rawSvg = await chatText(
+              [
+                { role: 'system', content: prompts.system },
+                {
+                  role: 'user',
+                  content:
+                    attempt === 0
+                      ? prompts.user
+                      : `${prompts.user}\n\nIMPORTANT: Your previous attempt could not be parsed (${lastErr}). Output ONLY strict, valid XML starting with <svg and ending with </svg>.`,
+                },
+              ],
+              { temperature: 0.7, maxTokens: 2800, thinkingLevel: 'low', timeoutMs: 16_000 }
+            )
+            const cleanSvg = extractAndSanitizeSvg(rawSvg, dims)
+            if (!cleanSvg) {
+              lastErr = 'Missing <svg>...</svg> block'
+              continue
+            }
+            const pngBuf = await rasterizeSvgToPng(cleanSvg)
+            await saveWorkspaceFile(name, pngBuf)
+            return {
+              ok: true,
+              summary: `Generated vector illustration (${dims.sizeLabel}): ${truncate(prompt, 70)}`,
+              raw: `Image generated as an AI-crafted vector illustration rendered to PNG (${dims.sizeLabel}) and saved as ${name}. Embed it with markdown: ![${prompt}](${url})`,
+              display: { kind: 'image', url, prompt },
+            }
+          } catch (err) {
+            lastErr = err instanceof Error ? err.message : String(err)
+          }
+        }
+
         return {
-          ok: true,
-          summary: `Generated image: ${truncate(prompt, 80)}`,
-          raw: `Image generated successfully and saved as ${name}. You can embed it with markdown: ![${prompt}](${url})`,
-          display: { kind: 'image', url, prompt },
+          ok: false,
+          summary: `Image generation failed: ${truncate(lastErr, 90)}`,
+          raw: `Image generation error: ${lastErr}`,
         }
       }
 
       case 'search_images': {
-        const zai = await getZAI()
-        if (!zai) {
-          return { ok: false, summary: 'Image search unavailable', raw: 'Image search requires ZAI SDK configuration.' }
-        }
         const query = str(args.query)
-        const res = await zai.images.search.create({ query, count: 6 })
-        if (!res?.results?.length) {
-          return { ok: true, summary: `No images found for "${query}"`, raw: 'No images found.' }
+        if (!query.trim()) {
+          return { ok: false, summary: 'Empty query', raw: 'Error: provide a search query.' }
         }
-        const items = res.results.slice(0, 6).map((r) => ({
-          url: str(r.original_url),
-          caption: truncate(str(r.caption), 120) || undefined,
-        }))
-        const raw = items.map((r, i) => `[${i + 1}] ${r.url} ${r.caption ?? ''}`).join('\n')
-        return {
-          ok: true,
-          summary: `${items.length} images for "${query}"`,
-          raw: truncate(raw, 3000),
-          display: { kind: 'images', items },
+        const zai = await getZAI()
+        if (zai) {
+          try {
+            const res = await zai.images.search.create({ query, count: 6 })
+            if (res?.results?.length) {
+              const items = res.results.slice(0, 6).map((r) => ({
+                url: str(r.original_url),
+                caption: truncate(str(r.caption), 120) || undefined,
+              }))
+              const raw = items.map((r, i) => `[${i + 1}] ${r.url} ${r.caption ?? ''}`).join('\n')
+              return {
+                ok: true,
+                summary: `${items.length} images for "${query}"`,
+                raw: truncate(raw, 3000),
+                display: { kind: 'images', items },
+              }
+            }
+          } catch {
+            /* fall back to Wikimedia Commons */
+          }
+        }
+
+        try {
+          const endpoint =
+            `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6&gsrsearch=${encodeURIComponent(query)}&gsrlimit=6&prop=imageinfo&iiprop=url|mime&iiurlwidth=960&format=json`
+          const res = await fetch(endpoint, {
+            headers: { 'User-Agent': 'NexusAgent/1.0 (https://localhost)' },
+            signal: AbortSignal.timeout(10_000),
+          })
+          if (!res.ok) {
+            return {
+              ok: false,
+              summary: `Image search HTTP ${res.status}`,
+              raw: `Image search failed with HTTP ${res.status}.`,
+            }
+          }
+          const json = (await res.json()) as unknown
+          const items = parseWikimediaImageResponse(json, 6)
+          if (items.length === 0) {
+            return { ok: true, summary: `No images found for "${query}"`, raw: 'No images found.' }
+          }
+          const raw = items.map((r, i) => `[${i + 1}] ${r.url} ${r.caption ?? ''}`).join('\n')
+          return {
+            ok: true,
+            summary: `${items.length} images for "${query}"`,
+            raw: truncate(raw, 3000),
+            display: { kind: 'images', items },
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          return { ok: false, summary: 'Image search unavailable', raw: `Image search failed: ${msg}` }
         }
       }
 
@@ -730,12 +999,53 @@ export async function executeTool(
       }
 
       case 'tts_speak': {
+        const text = str(args.text ?? args.input).trim()
+        if (!text) return { ok: false, summary: 'Empty text', raw: 'Error: empty text.' }
+        const voiceName = ['Zephyr', 'Kore', 'Puck', 'Charon', 'Fenrir'].includes(str(args.voice))
+          ? str(args.voice)
+          : 'Zephyr'
+
+        // 1) Primary zero-config TTS: Gemini 3.8 Flash Lite TTS (unary returns complete 24kHz WAV)
+        const gemini = createServerGemini()
+        if (gemini) {
+          try {
+            const resp = await gemini.models.generateContent({
+              model: 'gemini-3.8-flash-lite-tts',
+              contents: [{ role: 'user', parts: [{ text: text.slice(0, 1500) }] }],
+              config: {
+                responseModalities: ['AUDIO'],
+                speechConfig: {
+                  voiceConfig: {
+                    prebuiltVoiceConfig: { voiceName },
+                  },
+                },
+              },
+            })
+            const b64 = resp.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data
+            if (b64) {
+              const wavBuf = Buffer.from(b64, 'base64')
+              if (wavBuf.length >= 100) {
+                const name = `tts_${Date.now()}.wav`
+                await saveWorkspaceFile(name, wavBuf)
+                const url = `/api/files?name=${name}`
+                return {
+                  ok: true,
+                  summary: `Spoke ${text.length} chars (${voiceName})`,
+                  raw: `Speech audio generated via Gemini TTS (${(wavBuf.length / 1024).toFixed(0)} KB), available at ${url}`,
+                  display: { kind: 'audio', url, text: truncate(text, 300) },
+                }
+              }
+            }
+          } catch {
+            /* fall through to ZAI SDK if present */
+          }
+        }
+
+        // 2) Fallback: ZAI SDK if configured
         const zai = await getZAI()
         if (!zai) {
-          return { ok: false, summary: 'TTS unavailable', raw: 'Text-to-speech requires ZAI SDK configuration.' }
+          return { ok: false, summary: 'TTS unavailable', raw: 'Text-to-speech failed via Gemini TTS and ZAI is not configured.' }
         }
-        const text = str(args.text ?? args.input)
-        if (!text.trim()) return { ok: false, summary: 'Empty text', raw: 'Error: empty text.' }
         const res = await zai.audio.tts.create({ input: text, response_format: 'wav', stream: false })
         const buf = Buffer.from(new Uint8Array(await res.arrayBuffer()))
         if (buf.length < 100) return { ok: false, summary: 'TTS returned no audio', raw: 'TTS returned no audio.' }
@@ -862,11 +1172,18 @@ export async function executeTool(
           (program === 'curl' && /-X\s*(POST|PUT|DELETE|PATCH)|--data|-d\s|-T\s/.test(command))
 
         if (isDestructive && args.confirm !== true) {
-          return {
-            ok: false,
-            summary: `Needs confirmation: ${truncate(command, 80)}`,
-            raw: `This is a destructive/system-changing action. Ask the user for confirmation first; if they agree, re-run with "confirm": true.`,
-            display: { kind: 'text', text: `⚠ "${truncate(command, 90)}" needs your confirmation before running (destructive tier).` },
+          const perm = await requireCapabilityPermission({
+            capability: 'workspace_shell',
+            actionSummary: `Run shell command: ${truncate(command, 90)}`,
+            details: `Destructive-tier command inside workspace directory`,
+          })
+          if (!perm.allowed) {
+            return {
+              ok: false,
+              summary: `Permission required: ${truncate(command, 80)}`,
+              raw: perm.reason ?? 'Permission declined for workspace shell command.',
+              display: { kind: 'text', text: perm.reason ?? `Permission declined for "${truncate(command, 80)}"` },
+            }
           }
         }
 
@@ -1299,6 +1616,893 @@ export async function executeTool(
       case 'time.get_environment': {
         const info = `Platform: ${process.platform} | Node ${process.version} | CWD: ${process.cwd()} | Workspace: ${WORKSPACE_DIR} | PID ${process.pid}`
         return { ok: true, summary: 'Environment info', raw: info, display: { kind: 'text', text: info } }
+      }
+
+      case 'inspect_project': {
+        const shouldIndex = args.indexIntoBrain !== false
+        const { indexProjectIntoBrain, scanProjectStructure } = await import('@/lib/agent/project-intel')
+        if (shouldIndex) {
+          const { scan, memoriesSaved } = await indexProjectIntoBrain()
+          return {
+            ok: true,
+            summary: `Indexed ${scan.name} (${memoriesSaved} new truths)`,
+            raw: `${scan.summaryText}\n\nIndexed ${memoriesSaved} new architectural truths into portable GBrain memory.`,
+            display: {
+              kind: 'text',
+              text: `${scan.name} (${scan.framework}) — ${scan.prismaModels.length} models, ${scan.apiRoutes.length} API routes, ${memoriesSaved} truths indexed`,
+            },
+          }
+        }
+        const scan = await scanProjectStructure()
+        return {
+          ok: true,
+          summary: `Scanned ${scan.name}`,
+          raw: scan.summaryText,
+          display: { kind: 'text', text: scan.summaryText },
+        }
+      }
+
+      case 'manage_org': {
+        const action = str(args.action, 'list').toLowerCase()
+        const employees = await db.aiEmployee.findMany({ orderBy: { createdAt: 'asc' } })
+
+        if (action === 'list') {
+          const lines = employees.map(
+            (e) => `- ${e.name} [${e.kind}, ${e.status}] — ${e.title} (${e.department}) | tasks: ${e.tasksCompleted}`
+          )
+          return {
+            ok: true,
+            summary: `${employees.length} Org members`,
+            raw: lines.length ? `ORG AI TEAM (under Eva):\n${lines.join('\n')}` : 'No AI employees or bots yet.',
+            display: { kind: 'text', text: lines.join('\n') || 'No AI employees or bots yet.' },
+          }
+        }
+
+        if (action === 'review') {
+          const { evaluateOrgRoster } = await import('@/lib/agent/org-review')
+          const focus = str(args.focus ?? args.task).trim()
+          const targetKey = str(args.id ?? args.name).trim().toLowerCase()
+          const target = targetKey
+            ? employees.find(
+                (e) => e.id.toLowerCase() === targetKey || e.slug === targetKey || e.name.toLowerCase() === targetKey
+              )
+            : null
+          const rosterEval = evaluateOrgRoster(target ? [target] : employees, focus)
+          let aiCritique = ''
+          try {
+            aiCritique = await chatText(
+              [
+                {
+                  role: 'system',
+                  content:
+                    'You are Eva, Lead Agent reviewing your Org AI employees, bots, and subagents. Give a crisp, practical assessment: strengths, bottlenecks, and concrete hiring/bot recommendations if needed.',
+                },
+                {
+                  role: 'user',
+                  content: `${rosterEval.summaryText}${focus ? `\n\nREVIEW FOCUS: ${focus}` : ''}`,
+                },
+              ],
+              { temperature: 0.3, maxTokens: 500, thinkingLevel: 'low', timeoutMs: 12_000 }
+            )
+          } catch {
+            aiCritique = ''
+          }
+          const combined = aiCritique.trim()
+            ? `${rosterEval.summaryText}\n\nEVA EXECUTIVE ASSESSMENT:\n${aiCritique.trim()}`
+            : rosterEval.summaryText
+          return {
+            ok: true,
+            summary: target ? `Reviewed ${target.name}` : `Reviewed ${employees.length} Org members`,
+            raw: truncate(combined, 4500),
+            display: { kind: 'text', text: truncate(combined, 1400) },
+          }
+        }
+
+        if (action === 'hire' || action === 'create_bot' || action === 'create_subagent') {
+          const name = str(args.name).trim()
+          const role = str(args.role ?? args.description).trim()
+          if (!name || !role) {
+            return {
+              ok: false,
+              summary: 'Missing name or role',
+              raw: 'Error: manage_org hire/create_bot/create_subagent requires "name" and "role".',
+            }
+          }
+          const kind = action === 'create_bot' ? 'bot' : action === 'create_subagent' ? 'subagent' : 'employee'
+          const defaultTitle =
+            kind === 'bot' ? 'Autonomous Bot' : kind === 'subagent' ? 'Specialist Subagent' : 'AI Specialist'
+          const defaultDept = kind === 'bot' ? 'Automation' : 'Engineering'
+          const title = str(args.title, defaultTitle).trim()
+          const department = str(args.department, defaultDept).trim()
+          const systemPrompt = str(
+            args.systemPrompt,
+            `You are ${name}, ${title} reporting to Eva (Lead Agent). ${role}`
+          ).trim()
+          const skills = Array.isArray(args.skills) ? args.skills.map(String) : []
+          const tools = Array.isArray(args.tools) ? args.tools.map(String) : []
+          const reportsToName = str(args.reportsTo).trim().toLowerCase()
+          const manager = reportsToName && reportsToName !== 'eva' && reportsToName !== 'lead agent'
+            ? employees.find((e) => e.id === args.reportsTo || e.slug === reportsToName || e.name.toLowerCase() === reportsToName)
+            : null
+
+          const baseSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || kind
+          const slug = employees.some((e) => e.slug === baseSlug) ? `${baseSlug}-${Date.now().toString(36).slice(-4)}` : baseSlug
+
+          const created = await db.aiEmployee.create({
+            data: {
+              slug,
+              name: name.slice(0, 80),
+              title: title.slice(0, 80),
+              department: department.slice(0, 50),
+              kind,
+              role: role.slice(0, 400),
+              reportsToId: manager ? manager.id : null,
+              systemPrompt: systemPrompt.slice(0, 3000),
+              skillsJson: JSON.stringify(skills),
+              toolsJson: JSON.stringify(tools),
+              autonomy: 'autonomous',
+              status: 'active',
+              icon: 'bot',
+            },
+          })
+
+          // Bots also register a callable x_<slug> plugin tool so workflows/voice can invoke directly
+          if (kind === 'bot') {
+            const toolSlug = `x_${slug}`
+            await db.plugin.upsert({
+              where: { slug },
+              update: { installed: true, enabled: true, toolSlug, description: role.slice(0, 300) },
+              create: {
+                slug,
+                name: created.name,
+                description: role.slice(0, 300),
+                category: 'automation',
+                icon: 'bot',
+                source: 'custom',
+                installed: true,
+                enabled: true,
+                toolSlug,
+                configJson: JSON.stringify({
+                  type: 'llm',
+                  instructions: created.systemPrompt,
+                  endpoint: '',
+                  inputHint: '{"input": string}',
+                }),
+              },
+            })
+            await db.tool.upsert({
+              where: { slug: toolSlug },
+              update: { name: created.name, description: `${role.slice(0, 200)} Args: {"input": string}`, source: `plugin:${slug}`, enabled: true },
+              create: { slug: toolSlug, name: created.name, description: `${role.slice(0, 200)} Args: {"input": string}`, source: `plugin:${slug}`, enabled: true },
+            })
+          }
+
+          const verb = kind === 'bot' ? 'Created bot' : kind === 'subagent' ? 'Created subagent' : 'Hired'
+          return {
+            ok: true,
+            summary: `${verb} ${created.name}`,
+            raw: `Created ${kind} "${created.name}" (${created.title}, ${created.department}, id=${created.id})${manager ? ` reporting to ${manager.name}` : ' reporting to Eva'}.`,
+            display: { kind: 'text', text: `${created.name} · ${created.title} (${created.department})` },
+          }
+        }
+
+        if (action === 'delegate') {
+          const targetKey = str(args.id ?? args.name).trim().toLowerCase()
+          const task = str(args.task ?? args.prompt).trim()
+          const emp = employees.find((e) => e.id.toLowerCase() === targetKey || e.slug === targetKey || e.name.toLowerCase() === targetKey)
+          if (!emp) return { ok: false, summary: 'Employee not found', raw: `Error: no Org member matching "${targetKey}".` }
+          if (!task) return { ok: false, summary: 'Missing task', raw: 'Error: delegate requires a "task".' }
+
+          const out = await chatText(
+            [
+              {
+                role: 'system',
+                content: `You are ${emp.name}, ${emp.title} in ${emp.department}.\nRole: ${emp.role}\n${emp.systemPrompt}\nDeliver a thorough, actionable engineering/specialist response.`,
+              },
+              { role: 'user', content: task },
+            ],
+            { temperature: 0.4, maxTokens: 900 }
+          )
+          await db.aiEmployee.update({
+            where: { id: emp.id },
+            data: { tasksCompleted: { increment: 1 }, lastActiveAt: new Date() },
+          })
+          return {
+            ok: true,
+            summary: `Delegated to ${emp.name}`,
+            raw: `[Response from ${emp.name} — ${emp.title}]:\n${truncate(out, 4500)}`,
+            display: { kind: 'text', text: truncate(out, 1200) },
+          }
+        }
+
+        if (action === 'remove') {
+          const targetKey = str(args.id ?? args.name).trim().toLowerCase()
+          const emp = employees.find((e) => e.id.toLowerCase() === targetKey || e.slug === targetKey || e.name.toLowerCase() === targetKey)
+          if (!emp) return { ok: false, summary: 'Employee not found', raw: `Error: no Org member matching "${targetKey}".` }
+          await db.aiEmployee.delete({ where: { id: emp.id } })
+          return {
+            ok: true,
+            summary: `Removed ${emp.name}`,
+            raw: `Removed "${emp.name}" from the Org.`,
+            display: { kind: 'text', text: `Removed ${emp.name}` },
+          }
+        }
+
+        return { ok: false, summary: 'Invalid manage_org action', raw: `Error: unknown action "${action}".` }
+      }
+
+      case 'manage_automation': {
+        const action = str(args.action, 'list')
+        const { computeNextRunAt, executeAutomation } = await import('@/lib/agent/scheduler')
+        const list = await db.automation.findMany({ orderBy: { createdAt: 'desc' } })
+
+        if (action === 'list') {
+          const lines = list.map(
+            (a) => `- ${a.name} (${a.id}) [${a.enabled ? 'enabled' : 'paused'}] ${a.triggerType}:${a.schedule} | runs: ${a.runCount} | last: ${a.lastStatus}`
+          )
+          return {
+            ok: true,
+            summary: `${list.length} automations`,
+            raw: lines.length ? `AUTOMATIONS:\n${lines.join('\n')}` : 'No scheduled automations yet.',
+            display: { kind: 'text', text: lines.join('\n') || 'No scheduled automations yet.' },
+          }
+        }
+
+        if (action === 'create') {
+          const name = str(args.name).trim()
+          const prompt = str(args.prompt).trim()
+          if (!name || !prompt) {
+            return { ok: false, summary: 'Missing name or prompt', raw: 'Error: create requires "name" and "prompt".' }
+          }
+          const triggerType = ['interval', 'cron', 'once'].includes(str(args.triggerType)) ? str(args.triggerType) : 'interval'
+          const schedule = str(args.schedule, triggerType === 'cron' ? '0 9 * * *' : '60').trim()
+          const enabled = args.enabled !== false
+          let assigneeId: string | null = null
+          const assigneeName = str(args.assigneeName).trim().toLowerCase()
+          if (assigneeName) {
+            const emps = await db.aiEmployee.findMany()
+            const match = emps.find((e) => e.id.toLowerCase() === assigneeName || e.name.toLowerCase() === assigneeName || e.slug === assigneeName)
+            if (match) assigneeId = match.id
+          }
+          const nextRunAt = enabled ? computeNextRunAt(triggerType, schedule) : null
+          const created = await db.automation.create({
+            data: {
+              name: name.slice(0, 100),
+              description: str(args.description).slice(0, 300),
+              prompt: prompt.slice(0, 2000),
+              triggerType,
+              schedule,
+              assigneeId,
+              enabled,
+              nextRunAt,
+            },
+          })
+          return {
+            ok: true,
+            summary: `Scheduled "${created.name}"`,
+            raw: `Created automation "${created.name}" (${triggerType} "${schedule}"), next run: ${nextRunAt ? nextRunAt.toISOString() : 'paused'}.`,
+            display: { kind: 'text', text: `Scheduled "${created.name}" (${triggerType}: ${schedule})` },
+          }
+        }
+
+        const targetKey = str(args.id ?? args.name).trim().toLowerCase()
+        const target = list.find((a) => a.id.toLowerCase() === targetKey || a.name.toLowerCase() === targetKey)
+        if (!target) {
+          return { ok: false, summary: 'Automation not found', raw: `Error: no automation matching "${targetKey}".` }
+        }
+
+        if (action === 'toggle') {
+          const nextEnabled = typeof args.enabled === 'boolean' ? args.enabled : !target.enabled
+          const nextRunAt = nextEnabled ? computeNextRunAt(target.triggerType, target.schedule) : null
+          await db.automation.update({
+            where: { id: target.id },
+            data: { enabled: nextEnabled, nextRunAt },
+          })
+          return {
+            ok: true,
+            summary: `${target.name} ${nextEnabled ? 'enabled' : 'paused'}`,
+            raw: `Automation "${target.name}" is now ${nextEnabled ? 'enabled' : 'paused'}.`,
+            display: { kind: 'text', text: `${target.name}: ${nextEnabled ? 'enabled' : 'paused'}` },
+          }
+        }
+
+        if (action === 'run_now') {
+          const res = await executeAutomation(target.id)
+          return {
+            ok: res.ok,
+            summary: `Ran ${target.name} (${res.status})`,
+            raw: res.summary,
+            display: { kind: 'text', text: truncate(res.summary, 1000) },
+          }
+        }
+
+        if (action === 'delete') {
+          await db.automation.delete({ where: { id: target.id } })
+          return {
+            ok: true,
+            summary: `Deleted ${target.name}`,
+            raw: `Deleted automation "${target.name}".`,
+            display: { kind: 'text', text: `Deleted ${target.name}` },
+          }
+        }
+
+        return { ok: false, summary: 'Invalid action', raw: `Error: unsupported action "${action}".` }
+      }
+
+      case 'create_skill': {
+        const name = str(args.name).trim()
+        const prompt = str(args.prompt).trim()
+        if (!name || !prompt) {
+          return { ok: false, summary: 'Missing name or prompt', raw: 'Error: create_skill requires "name" and "prompt".' }
+        }
+        const description = str(args.description, `Custom skill: ${name}`).trim()
+        const category = str(args.category, 'custom').trim()
+        const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'skill'
+        const skill = await db.skill.upsert({
+          where: { slug },
+          update: { name: name.slice(0, 80), description: description.slice(0, 300), prompt: prompt.slice(0, 4000), category, enabled: true },
+          create: {
+            slug,
+            name: name.slice(0, 80),
+            description: description.slice(0, 300),
+            category,
+            icon: 'sparkles',
+            prompt: prompt.slice(0, 4000),
+            enabled: true,
+          },
+        })
+        return {
+          ok: true,
+          summary: `Skill ready: ${skill.name}`,
+          raw: `Skill "${skill.name}" (slug: ${skill.slug}) created and enabled.`,
+          display: { kind: 'text', text: `Skill enabled: ${skill.name}` },
+        }
+      }
+
+      case 'browser_control': {
+        const action = str(args.action, 'snapshot').toLowerCase()
+        const perm = await requireCapabilityPermission({
+          capability: 'browser_control',
+          actionSummary:
+            action === 'play_media'
+              ? `Play media on YouTube: ${truncate(str(args.query ?? args.url ?? args.text), 80)}`
+              : action === 'autopilot'
+                ? `Run autonomous browser task: ${truncate(str(args.goal ?? args.text ?? args.url), 80)}`
+                : action === 'navigate'
+                  ? `Open live browser at ${truncate(str(args.url), 80)}`
+                  : `Browser action "${action}"${args.selector ? ` on ${str(args.selector)}` : ''}`,
+          details: 'Streams a live Playwright Chromium window or embedded media player inside the split-screen panel.',
+        })
+        if (!perm.allowed) {
+          return {
+            ok: false,
+            summary: 'Browser control permission declined',
+            raw: perm.reason ?? 'Permission declined for browser_control.',
+            display: { kind: 'text', text: perm.reason ?? 'Permission declined.' },
+          }
+        }
+
+        controlBus.broadcastEvaMood('working', `Browser: ${action}`, 4500)
+        if (action === 'close') {
+          await liveBrowser.close()
+          controlBus.broadcastUiCommand({ command: 'close_split' })
+          return {
+            ok: true,
+            summary: 'Closed live browser',
+            raw: 'Live browser session closed.',
+            display: { kind: 'text', text: 'Closed live Playwright browser session.' },
+          }
+        }
+
+        let res
+        if (action === 'play_media') {
+          const query = str(args.query ?? args.url ?? args.text).trim()
+          if (!query) return { ok: false, summary: 'Missing media query', raw: 'Error: play_media requires "query" or "url".' }
+          res = await liveBrowser.playMedia(query)
+        } else if (action === 'autopilot') {
+          const goal = str(args.goal ?? args.text ?? args.query).trim()
+          if (!goal) return { ok: false, summary: 'Missing goal', raw: 'Error: autopilot requires "goal".' }
+          res = await liveBrowser.runAutopilot(
+            goal,
+            str(args.url) || undefined,
+            typeof args.maxSteps === 'number' ? args.maxSteps : 6
+          )
+        } else if (action === 'clear_media') {
+          res = await liveBrowser.clearMedia()
+        } else if (action === 'navigate') {
+          const url = str(args.url)
+          if (!url) return { ok: false, summary: 'Missing URL', raw: 'Error: navigate requires "url".' }
+          res = await liveBrowser.navigate(url)
+        } else if (action === 'click') {
+          res = await liveBrowser.click({
+            selector: str(args.selector) || undefined,
+            text: str(args.text) || undefined,
+            x: typeof args.x === 'number' ? args.x : undefined,
+            y: typeof args.y === 'number' ? args.y : undefined,
+          })
+        } else if (action === 'type') {
+          res = await liveBrowser.type({
+            text: str(args.text),
+            selector: str(args.selector) || undefined,
+            submit: Boolean(args.submit),
+          })
+        } else if (action === 'press') {
+          res = await liveBrowser.press(str(args.key, 'Enter'))
+        } else if (action === 'scroll') {
+          res = await liveBrowser.scroll(typeof args.deltaY === 'number' ? args.deltaY : 480)
+        } else if (action === 'back') {
+          res = await liveBrowser.back()
+        } else if (action === 'reload') {
+          res = await liveBrowser.reload()
+        } else {
+          res = await liveBrowser.snapshot()
+        }
+
+        const elementsText = res.elements
+          .slice(0, 14)
+          .map((e) => `[${e.index}] <${e.tag}> "${e.text}" (selector: ${e.selector})`)
+          .join('\n')
+        const stepsText = Array.isArray(res.steps) && res.steps.length > 0 ? `\nAUTOPILOT STEPS:\n${res.steps.join('\n')}` : ''
+        const raw = [
+          `LIVE BROWSER — ${res.title}`,
+          `URL: ${res.url}`,
+          res.error ? `ERROR: ${res.error}` : '',
+          stepsText,
+          elementsText ? `\nVISIBLE INTERACTIVE ELEMENTS:\n${elementsText}` : '',
+          res.textExcerpt ? `\nPAGE TEXT EXCERPT:\n${truncate(res.textExcerpt, 2800)}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+
+        if (res.ok) controlBus.broadcastEvaMood('happy', res.summary, 2400)
+        return {
+          ok: res.ok,
+          summary: res.summary,
+          raw: truncate(raw, 5500),
+          display: { kind: 'text', text: `${res.summary}\n${res.url}` },
+        }
+      }
+
+      case 'agent_email': {
+        const action = str(args.action, 'status').toLowerCase()
+        if (action === 'provision') {
+          const { identity, created } = await provisionAgentEmail({
+            preferredLocal: str(args.preferredLocal) || undefined,
+            forceNew: Boolean(args.forceNew),
+          })
+          controlBus.broadcastUiCommand({ command: 'open_split', mode: 'identity', title: 'Eva Email & Identity' })
+          controlBus.broadcastUiCommand({ command: 'refresh_state', scopes: ['identity'] })
+          return {
+            ok: true,
+            summary: created ? `Provisioned Eva email: ${identity.address}` : `Active Eva email: ${identity.address}`,
+            raw: `EVA AUTONOMOUS EMAIL\nAddress: ${identity.address}\nProvider: ${identity.provider}\nCreated: ${created ? 'new inbox created' : 'existing inbox reused'}`,
+            display: { kind: 'text', text: `Eva Email: ${identity.address}` },
+          }
+        }
+
+        if (action === 'status') {
+          const existing = await getAgentIdentity()
+          if (!existing) {
+            const { identity } = await provisionAgentEmail()
+            controlBus.broadcastUiCommand({ command: 'refresh_state', scopes: ['identity'] })
+            return {
+              ok: true,
+              summary: `Auto-provisioned Eva email: ${identity.address}`,
+              raw: `EVA AUTONOMOUS EMAIL\nAddress: ${identity.address}\nProvider: ${identity.provider}`,
+              display: { kind: 'text', text: `Eva Email: ${identity.address}` },
+            }
+          }
+          return {
+            ok: true,
+            summary: `Eva email: ${existing.address}`,
+            raw: `EVA AUTONOMOUS EMAIL\nAddress: ${existing.address}\nProvider: ${existing.provider}\nCreatedAt: ${existing.createdAt}`,
+            display: { kind: 'text', text: `Eva Email: ${existing.address}` },
+          }
+        }
+
+        if (action === 'list_inbox') {
+          let existing = await getAgentIdentity()
+          if (!existing) {
+            const prov = await provisionAgentEmail()
+            existing = prov.identity
+          }
+          const { messages } = await listAgentInbox()
+          controlBus.broadcastUiCommand({ command: 'refresh_state', scopes: ['identity'] })
+          const raw =
+            messages.length === 0
+              ? `Inbox (${existing.address}) has 0 messages right now.`
+              : `INBOX (${existing.address}) — ${messages.length} messages:\n` +
+                messages.map((m, i) => `[${i + 1}] id=${m.id} | From: ${m.from} | Subject: ${m.subject}\n${m.intro}`).join('\n\n')
+          return {
+            ok: true,
+            summary: `${messages.length} email${messages.length === 1 ? '' : 's'} in ${existing.address}`,
+            raw: truncate(raw, 4500),
+            display: { kind: 'text', text: `${existing.address}: ${messages.length} inbox message(s)` },
+          }
+        }
+
+        if (action === 'read_message') {
+          const messageId = str(args.messageId).trim()
+          if (!messageId) {
+            return { ok: false, summary: 'Missing messageId', raw: 'Error: read_message requires "messageId".' }
+          }
+          const detail = await readAgentInboxMessage(messageId)
+          const raw = [
+            `FROM: ${detail.from}`,
+            `SUBJECT: ${detail.subject}`,
+            detail.codes.length ? `VERIFICATION CODES: ${detail.codes.join(', ')}` : '',
+            detail.links.length ? `VERIFICATION LINKS:\n${detail.links.join('\n')}` : '',
+            `\nBODY:\n${detail.text}`,
+          ]
+            .filter(Boolean)
+            .join('\n')
+          return {
+            ok: true,
+            summary: `Read email: ${detail.subject}`,
+            raw: truncate(raw, 5000),
+            display: {
+              kind: 'text',
+              text: `${detail.subject}${detail.codes.length ? ` · Codes: ${detail.codes.join(', ')}` : ''}`,
+            },
+          }
+        }
+
+        if (action === 'wait_for_code') {
+          const existing = await getAgentIdentity()
+          if (!existing) await provisionAgentEmail()
+          const waited = await waitForVerificationCode({
+            senderFilter: str(args.senderFilter) || undefined,
+            timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : 20_000,
+          })
+          controlBus.broadcastUiCommand({ command: 'refresh_state', scopes: ['identity'] })
+          if (!waited.found || !waited.message) {
+            return { ok: false, summary: waited.note, raw: waited.note }
+          }
+          const m = waited.message
+          const raw = [
+            `RECEIVED VERIFICATION EMAIL`,
+            `From: ${m.from}`,
+            `Subject: ${m.subject}`,
+            m.codes.length ? `Codes: ${m.codes.join(', ')}` : '',
+            m.links.length ? `Links: ${m.links.join('\n')}` : '',
+            `\n${m.text}`,
+          ]
+            .filter(Boolean)
+            .join('\n')
+          return {
+            ok: true,
+            summary: m.codes.length ? `Got OTP code ${m.codes[0]}` : `Received "${m.subject}"`,
+            raw: truncate(raw, 4500),
+            display: { kind: 'text', text: m.codes.length ? `OTP Code: ${m.codes[0]}` : m.subject },
+          }
+        }
+
+        return { ok: false, summary: `Unknown agent_email action: ${action}`, raw: `Unsupported action "${action}".` }
+      }
+
+      case 'app_control': {
+        const action = str(args.action).trim()
+        if (!action) return { ok: false, summary: 'Missing action', raw: 'Error: app_control requires "action".' }
+        const perm = await requireCapabilityPermission({
+          capability: 'app_ui',
+          actionSummary: `UI control: ${action}${args.tab ? ` (${str(args.tab)})` : args.mode ? ` (${str(args.mode)})` : ''}`,
+          details: 'Allows Eva to navigate panels, open split-screen views, spawn popups, and glide her animated cursor.',
+        })
+        if (!perm.allowed) {
+          return {
+            ok: false,
+            summary: 'App UI permission declined',
+            raw: perm.reason ?? 'Permission declined for app_control.',
+            display: { kind: 'text', text: perm.reason ?? 'Permission declined.' },
+          }
+        }
+
+        if (action === 'navigate_tab') {
+          const tab = str(args.tab, 'agent')
+          controlBus.broadcastCursor({ visible: true, selector: `[data-eva-target="nav-${tab}"]`, label: `Opening ${tab}`, clicking: true, actor: 'Eva' })
+          controlBus.broadcastUiCommand({ command: 'navigate_tab', tab })
+          return {
+            ok: true,
+            summary: `Switched workspace to ${tab}`,
+            raw: `Navigated Nexus UI to tab "${tab}" with live cursor indicator.`,
+            display: { kind: 'text', text: `Opened tab: ${tab}` },
+          }
+        }
+        if (action === 'open_split') {
+          const validModes = [
+            'reasoning',
+            'browser',
+            'identity',
+            'permissions',
+            'devices',
+            'org',
+            'artifacts',
+            'tools',
+            'automations',
+            'brain',
+          ] as const
+          const rawMode = str(args.mode)
+          const mode = (validModes.includes(rawMode as (typeof validModes)[number])
+            ? rawMode
+            : 'browser') as (typeof validModes)[number]
+          controlBus.broadcastCursor({ visible: true, selector: `[data-eva-target="split-${mode}"]`, label: `Opening split: ${mode}`, clicking: true, actor: 'Eva' })
+          controlBus.broadcastUiCommand({
+            command: 'open_split',
+            mode,
+            title: str(args.title) || undefined,
+            url: str(args.url) || undefined,
+          })
+          return {
+            ok: true,
+            summary: `Opened split panel: ${mode}`,
+            raw: `Opened right-hand split-screen panel in "${mode}" mode.`,
+            display: { kind: 'text', text: `Split-screen opened: ${mode}` },
+          }
+        }
+        if (action === 'close_split') {
+          controlBus.broadcastUiCommand({ command: 'close_split' })
+          controlBus.broadcastCursor({ visible: false })
+          return {
+            ok: true,
+            summary: 'Closed split panel',
+            raw: 'Closed the split-screen panel.',
+            display: { kind: 'text', text: 'Split-screen panel closed.' },
+          }
+        }
+        if (action === 'set_layout_mode') {
+          const mode = str(args.mode) === 'focus' ? 'focus' : 'standard'
+          controlBus.broadcastUiCommand({ command: 'set_layout_mode', mode })
+          return {
+            ok: true,
+            summary: mode === 'focus' ? 'Switched to Voice Focus mode' : 'Switched to Standard workspace',
+            raw: `Workspace layout switched to "${mode}" mode.`,
+            display: { kind: 'text', text: `Layout mode: ${mode}` },
+          }
+        }
+        if (action === 'toggle_sidebar') {
+          const collapsed = typeof args.collapsed === 'boolean' ? args.collapsed : undefined
+          controlBus.broadcastUiCommand({ command: 'toggle_sidebar', collapsed })
+          return {
+            ok: true,
+            summary: collapsed === true ? 'Collapsed navigation rail' : collapsed === false ? 'Expanded navigation rail' : 'Toggled navigation rail',
+            raw: `Navigation sidebar ${collapsed === true ? 'collapsed to slim rail' : collapsed === false ? 'expanded' : 'toggled'}.`,
+            display: { kind: 'text', text: 'Updated sidebar rail state.' },
+          }
+        }
+        if (action === 'open_gbrain_graph') {
+          controlBus.broadcastUiCommand({ command: 'open_gbrain_graph' })
+          return {
+            ok: true,
+            summary: 'Opened GBrain interactive knowledge graph',
+            raw: 'Opened fullscreen interactive GBrain knowledge graph.',
+            display: { kind: 'text', text: 'Interactive GBrain knowledge graph opened.' },
+          }
+        }
+        if (action === 'open_popup') {
+          const id = `pop_${Date.now().toString(36)}`
+          const title = str(args.title, 'Eva Workspace Card')
+          const body = str(args.body, '')
+          const actions = Array.isArray(args.actions)
+            ? (args.actions as { label: string; tab?: string; splitMode?: string; url?: string }[])
+            : undefined
+          controlBus.broadcastUiCommand({
+            command: 'open_popup',
+            id,
+            title,
+            body,
+            kind: 'action',
+            actions,
+          })
+          return {
+            ok: true,
+            summary: `Opened popup: ${title}`,
+            raw: `Displayed interactive popup "${title}" to the user.`,
+            display: { kind: 'text', text: `Popup opened: ${title}` },
+          }
+        }
+        if (action === 'close_popup') {
+          controlBus.broadcastUiCommand({ command: 'close_popup', id: str(args.id) || undefined })
+          return { ok: true, summary: 'Closed popup', raw: 'Dismissed workspace popup.' }
+        }
+        if (action === 'click_target') {
+          const selector = str(args.selector) || undefined
+          const label = str(args.label) || undefined
+          controlBus.broadcastCursor({
+            visible: true,
+            selector,
+            label: label ? `Clicking "${label}"` : 'Clicking control',
+            clicking: true,
+            actor: 'Eva',
+          })
+          controlBus.broadcastUiCommand({ command: 'click_target', selector, label })
+          return {
+            ok: true,
+            summary: `Clicked ${label ?? selector ?? 'target'}`,
+            raw: `Guided Eva cursor and clicked target (${label ?? selector ?? 'control'}).`,
+            display: { kind: 'text', text: `Clicked UI control: ${label ?? selector}` },
+          }
+        }
+        if (action === 'set_theme') {
+          const theme = str(args.theme) === 'light' ? 'light' : 'dark'
+          controlBus.broadcastUiCommand({ command: 'set_theme', theme })
+          return {
+            ok: true,
+            summary: `Switched theme to ${theme}`,
+            raw: `Workspace theme switched to ${theme} mode.`,
+            display: { kind: 'text', text: `Theme set to ${theme} mode.` },
+          }
+        }
+        return { ok: false, summary: `Unknown app_control action: ${action}`, raw: `Unsupported app_control action "${action}".` }
+      }
+
+      case 'self_manage_extensions': {
+        const action = str(args.action, 'list').toLowerCase()
+        if (action === 'list') {
+          const [plugins, skills, mcps] = await Promise.all([
+            db.plugin.findMany({ orderBy: { name: 'asc' } }),
+            db.skill.findMany({ orderBy: { name: 'asc' } }),
+            db.mcpServer.findMany({ orderBy: { name: 'asc' } }),
+          ])
+          const raw = [
+            `PLUGINS (${plugins.length}):`,
+            ...plugins.map((p) => `- ${p.slug} (${p.name}): ${p.installed ? (p.enabled ? 'installed+on' : 'installed+off') : 'available'}`),
+            `\nSKILLS (${skills.length}):`,
+            ...skills.map((s) => `- ${s.slug} (${s.name}): ${s.enabled ? 'on' : 'off'}`),
+            `\nMCP SERVERS (${mcps.length}):`,
+            ...mcps.map((m) => `- ${m.slug} (${m.name}): ${m.status}`),
+          ].join('\n')
+          return { ok: true, summary: `${plugins.length} plugins, ${skills.length} skills, ${mcps.length} MCPs`, raw }
+        }
+
+        const slug = str(args.slug).trim()
+        if (!slug) return { ok: false, summary: 'Missing slug', raw: 'Error: provide "slug" of the plugin, skill, tool, or MCP server.' }
+
+        const perm = await requireCapabilityPermission({
+          capability: 'self_install',
+          actionSummary: `${action.replace(/_/g, ' ')}: ${slug}`,
+          details: 'Allows Eva to self-install or configure plugins, skills, tools, and MCP servers autonomously.',
+        })
+        if (!perm.allowed) {
+          return {
+            ok: false,
+            summary: 'Self-install permission declined',
+            raw: perm.reason ?? 'Permission declined for self_manage_extensions.',
+            display: { kind: 'text', text: perm.reason ?? 'Permission declined.' },
+          }
+        }
+
+        if (action === 'install_plugin' || action === 'uninstall_plugin' || action === 'toggle_plugin') {
+          const plugin = await db.plugin.findUnique({ where: { slug } })
+          if (!plugin) return { ok: false, summary: `Plugin not found: ${slug}`, raw: `No plugin found with slug "${slug}".` }
+          const nextInstalled = action === 'install_plugin' ? true : action === 'uninstall_plugin' ? false : plugin.installed
+          const nextEnabled =
+            action === 'install_plugin'
+              ? true
+              : action === 'uninstall_plugin'
+                ? false
+                : typeof args.enabled === 'boolean'
+                  ? args.enabled
+                  : !plugin.enabled
+          await db.plugin.update({
+            where: { slug },
+            data: { installed: nextInstalled, enabled: nextEnabled },
+          })
+          if (plugin.toolSlug) {
+            if (nextInstalled) {
+              await db.tool.upsert({
+                where: { slug: plugin.toolSlug },
+                create: {
+                  slug: plugin.toolSlug,
+                  name: plugin.name,
+                  description: plugin.description,
+                  source: `plugin:${plugin.slug}`,
+                  enabled: nextEnabled,
+                },
+                update: { enabled: nextEnabled },
+              })
+            } else {
+              await db.tool.updateMany({ where: { slug: plugin.toolSlug }, data: { enabled: false } }).catch(() => {})
+            }
+          }
+          controlBus.broadcastUiCommand({ command: 'refresh_state', scopes: ['plugins', 'tools'] })
+          return {
+            ok: true,
+            summary: `Plugin ${plugin.name}: ${nextInstalled ? (nextEnabled ? 'installed & enabled' : 'disabled') : 'uninstalled'}`,
+            raw: `Updated plugin "${plugin.name}" (${slug}) -> installed=${nextInstalled}, enabled=${nextEnabled}.`,
+            display: { kind: 'text', text: `Eva updated plugin "${plugin.name}".` },
+          }
+        }
+
+        if (action === 'toggle_skill') {
+          const skill = await db.skill.findUnique({ where: { slug } })
+          if (!skill) return { ok: false, summary: `Skill not found: ${slug}`, raw: `No skill found with slug "${slug}".` }
+          const enabled = typeof args.enabled === 'boolean' ? args.enabled : !skill.enabled
+          await db.skill.update({ where: { slug }, data: { enabled } })
+          controlBus.broadcastUiCommand({ command: 'refresh_state', scopes: ['skills'] })
+          return { ok: true, summary: `Skill ${skill.name}: ${enabled ? 'enabled' : 'disabled'}`, raw: `Skill "${skill.name}" set to enabled=${enabled}.` }
+        }
+
+        if (action === 'toggle_tool') {
+          const tool = await db.tool.findUnique({ where: { slug } })
+          if (!tool) return { ok: false, summary: `Tool not found: ${slug}`, raw: `No tool found with slug "${slug}".` }
+          const enabled = typeof args.enabled === 'boolean' ? args.enabled : !tool.enabled
+          await db.tool.update({ where: { slug }, data: { enabled } })
+          controlBus.broadcastUiCommand({ command: 'refresh_state', scopes: ['tools'] })
+          return { ok: true, summary: `Tool ${tool.name}: ${enabled ? 'enabled' : 'disabled'}`, raw: `Tool "${tool.name}" set to enabled=${enabled}.` }
+        }
+
+        if (action === 'connect_mcp' || action === 'disconnect_mcp') {
+          const mcp = await db.mcpServer.findUnique({ where: { slug } })
+          if (!mcp) return { ok: false, summary: `MCP server not found: ${slug}`, raw: `No MCP server found with slug "${slug}".` }
+          const connected = action === 'connect_mcp'
+          await db.mcpServer.update({
+            where: { slug },
+            data: { status: connected ? 'connected' : 'disconnected', enabled: connected },
+          })
+          controlBus.broadcastUiCommand({ command: 'refresh_state', scopes: ['mcps', 'tools'] })
+          return {
+            ok: true,
+            summary: `MCP ${mcp.name}: ${connected ? 'connected' : 'disconnected'}`,
+            raw: `MCP server "${mcp.name}" is now ${connected ? 'connected' : 'disconnected'}.`,
+          }
+        }
+
+        return { ok: false, summary: `Unsupported action: ${action}`, raw: `Unknown self_manage_extensions action "${action}".` }
+      }
+
+      case 'device_control': {
+        const action = str(args.action, 'list').toLowerCase()
+        const devices = await listConnectedDevices()
+        if (action === 'list') {
+          if (devices.length === 0) {
+            controlBus.broadcastUiCommand({ command: 'open_split', mode: 'devices', title: 'Connected Devices' })
+            return {
+              ok: true,
+              summary: 'No local devices paired yet',
+              raw: 'No connected desktop computers are paired yet. I opened the Connected Devices panel so the user can pair a Mac/Windows/Linux machine with one command.',
+              display: { kind: 'text', text: 'Opened Connected Devices panel for one-time pairing.' },
+            }
+          }
+          const raw = devices
+            .map((d) => `- ${d.name} (${d.platform}, id: ${d.id}) — ${d.status.toUpperCase()}`)
+            .join('\n')
+          return { ok: true, summary: `${devices.filter((d) => d.status === 'online').length}/${devices.length} devices online`, raw }
+        }
+
+        const target =
+          (str(args.deviceId) ? devices.find((d) => d.id === str(args.deviceId)) : null) ??
+          devices.find((d) => d.status === 'online')
+        if (!target || target.status !== 'online') {
+          controlBus.broadcastUiCommand({ command: 'open_split', mode: 'devices', title: 'Connected Devices' })
+          return {
+            ok: false,
+            summary: 'No online desktop bridge connected',
+            raw: 'No paired desktop computer is currently online. Opened the Connected Devices panel so the user can start the Nexus Companion Bridge.',
+            display: { kind: 'text', text: 'No online paired device — opened Connected Devices panel.' },
+          }
+        }
+
+        const perm = await requireCapabilityPermission({
+          capability: 'desktop_bridge',
+          actionSummary: `${action} on ${target.name} (${target.platform})`,
+          details: JSON.stringify(args).slice(0, 180),
+        })
+        if (!perm.allowed) {
+          return {
+            ok: false,
+            summary: 'Desktop bridge permission declined',
+            raw: perm.reason ?? 'Permission declined for device_control.',
+            display: { kind: 'text', text: perm.reason ?? 'Permission declined.' },
+          }
+        }
+
+        const res = await controlBus.sendDeviceCommand(target.id, action, args)
+        return {
+          ok: res.ok,
+          summary: res.ok ? `Executed ${action} on ${target.name}` : `Device action failed: ${res.error ?? 'error'}`,
+          raw: res.ok ? res.output : `Error: ${res.error ?? res.output}`,
+          display: { kind: 'text', text: res.ok ? `${target.name}: ${truncate(res.output, 600)}` : `Error: ${res.error}` },
+        }
       }
 
       default: {

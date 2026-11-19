@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import {
+  ArrowRight,
   Download,
   FileJson,
   FileText,
@@ -10,12 +11,29 @@ import {
   Loader2,
   Music,
   RefreshCw,
+  RotateCcw,
   Trash2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { EmptyState, type EmptyStateGuideStep } from '@/components/agent/empty-state'
 import { useApp } from '@/lib/agent/store'
 import { cn } from '@/lib/utils'
 import type { ArtifactDTO } from '@/lib/agent/client'
+
+const ARTIFACT_GUIDE: EmptyStateGuideStep[] = [
+  {
+    title: 'Prompt the Agent',
+    detail: 'Ask for an image, specification, script, CSV dataset, or audio output in chat or voice.',
+  },
+  {
+    title: 'Automatic Capture',
+    detail: 'Files written by built-in tools, plugins, or subagents are saved directly to the workspace.',
+  },
+  {
+    title: 'Preview & Export',
+    detail: 'Filter by file type, inspect previews inline, or download deliverables anytime.',
+  },
+]
 
 const KIND_META: Record<ArtifactDTO['kind'], { label: string; icon: typeof ImageIcon; accent: string }> = {
   image: { label: 'Image', icon: ImageIcon, accent: 'text-sky-300/80' },
@@ -46,11 +64,11 @@ function ArtifactCard({ artifact }: { artifact: ArtifactDTO }) {
       {/* preview area */}
       {artifact.kind === 'image' ? (
         <a href={artifact.url} target="_blank" rel="noreferrer" className="block">
-          { }
           <img
             src={artifact.url}
             alt={artifact.name}
             loading="lazy"
+            referrerPolicy="no-referrer"
             className="aspect-[4/3] w-full bg-black/30 object-cover transition-transform duration-300 group-hover:scale-[1.03]"
           />
         </a>
@@ -115,7 +133,7 @@ function ArtifactCard({ artifact }: { artifact: ArtifactDTO }) {
 }
 
 export function ArtifactsView() {
-  const { artifacts, refreshArtifacts } = useApp()
+  const { artifacts, refreshArtifacts, setTab } = useApp()
   const [filter, setFilter] = useState<Filter>('all')
   const [refreshing, setRefreshing] = useState(false)
 
@@ -188,17 +206,52 @@ export function ArtifactsView() {
               <ArtifactCard key={a.name} artifact={a} />
             ))}
           </div>
+        ) : artifacts.length > 0 ? (
+          <EmptyState
+            className="mt-6"
+            icon={FolderOpen}
+            eyebrow="// filter empty"
+            title={`No ${FILTERS.find((f) => f.key === filter)?.label.toLowerCase() ?? filter} artifacts`}
+            description="No files in this category yet. Switch back to All to inspect your existing deliverables."
+            actions={
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 gap-1.5 border-white/10 bg-transparent text-xs"
+                onClick={() => setFilter('all')}
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                Show all artifacts
+              </Button>
+            }
+          />
         ) : (
-          <div className="mt-10 flex flex-col items-center py-10 text-center">
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03]">
-              <FolderOpen className="h-5.5 w-5.5 text-zinc-500" />
-            </div>
-            <p className="mt-4 text-[13px] text-zinc-300">No artifacts yet</p>
-            <p className="mt-1.5 max-w-sm text-[12px] leading-relaxed text-muted-foreground">
-              Ask the agent to generate an image, write a document, speak a script or save a file —
-              everything it creates lands here.
-            </p>
-          </div>
+          <EmptyState
+            className="mt-6"
+            icon={FolderOpen}
+            eyebrow="// workspace outputs"
+            title="No artifacts created yet"
+            description="Generated images, technical documents, code files, audio renders, and structured data created during missions appear here automatically."
+            steps={ARTIFACT_GUIDE}
+            actions={
+              <>
+                <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={() => setTab('agent')}>
+                  Get Started in Agent
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 gap-1.5 border-white/10 bg-transparent text-xs"
+                  onClick={() => void onRefresh()}
+                  disabled={refreshing}
+                >
+                  {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                  Check workspace
+                </Button>
+              </>
+            }
+          />
         )}
       </div>
     </div>

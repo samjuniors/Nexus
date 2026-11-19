@@ -74,12 +74,14 @@ export function getBrain(): Brain {
       set: setBrainState,
     },
     capabilities: async () => {
-      const [tools, skills, plugins, mcps, memCount] = await Promise.all([
+      const [tools, skills, plugins, mcps, memCount, employees, automations] = await Promise.all([
         getEffectiveTools(),
         db.skill.findMany({ where: { enabled: true } }),
         db.plugin.findMany({ where: { installed: true, enabled: true } }),
         db.mcpServer.findMany({ where: { status: 'connected', enabled: true } }),
         db.memory.count(),
+        db.aiEmployee.findMany({ where: { status: 'active' }, orderBy: { name: 'asc' } }),
+        db.automation.findMany({ orderBy: { createdAt: 'desc' } }),
       ])
       return {
         tools: tools.map((t) => ({ slug: t.slug, name: t.name, description: t.description })),
@@ -87,6 +89,19 @@ export function getBrain(): Brain {
         plugins: plugins.map((p) => ({ slug: p.slug, name: p.name, description: p.description })),
         mcps: mcps.map((m) => ({ slug: m.slug, name: m.name, description: m.description })),
         memoryCount: memCount,
+        employees: employees.map((e) => ({
+          slug: e.slug,
+          name: e.name,
+          title: e.title,
+          department: e.department,
+          kind: e.kind,
+        })),
+        automations: automations.map((a) => ({
+          id: a.id,
+          name: a.name,
+          triggerType: a.triggerType,
+          enabled: a.enabled,
+        })),
       }
     },
     now: () => new Date(),

@@ -4,21 +4,20 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
   BrainCog,
+  Focus,
+  GitBranch,
+  Globe,
   Hexagon,
   History,
   Loader2,
   MessageSquarePlus,
   Mic,
-  MicOff,
-  PhoneOff,
+  Shield,
   Sparkles as SparklesIcon,
-  Square,
   Trash2,
-  Volume2,
   Wrench,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
 import {
   Sheet,
   SheetContent,
@@ -28,15 +27,16 @@ import {
   SheetTrigger,
 } from '@/components/ui/sheet'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { useEva } from '@/components/agent/eva-provider'
+import { MochiEyes } from '@/components/agent/mochi-eyes'
+import { useEvaControl } from '@/lib/agent/eva-control-store'
 import { useApp } from '@/lib/agent/store'
-import { useLiveVoice, type VoiceName } from '@/lib/agent/use-live-voice'
 import { MissionBlock } from '@/components/agent/mission-block'
 import { Typewriter } from '@/components/agent/typewriter'
+import { VoiceComposer } from '@/components/agent/voice-composer'
 import { cn } from '@/lib/utils'
 import { useToast } from '@/hooks/use-toast'
 import type { SuggestionDTO } from '@/lib/agent/client'
-
-const VOICES: VoiceName[] = ['Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir']
 
 const SUGGESTIONS = [
   { text: "What's today's date and time?", kind: 'instant' },
@@ -76,15 +76,13 @@ export function ChatView() {
   } = useApp()
   const { toast } = useToast()
   const streamingAssistantId = useApp((s) => s.streamingAssistantId)
-  const voice = useLiveVoice({
-    onError: (msg) => {
-      toast({
-        title: 'Live voice error',
-        description: msg,
-        variant: 'destructive',
-      })
-    },
-  })
+  const { voice, wake, evaExpression, onToggleSleepMode } = useEva()
+  const splitOpen = useEvaControl((s) => s.splitOpen)
+  const splitMode = useEvaControl((s) => s.splitMode)
+  const openSplit = useEvaControl((s) => s.openSplit)
+  const closeSplit = useEvaControl((s) => s.closeSplit)
+  const setLayoutMode = useEvaControl((s) => s.setLayoutMode)
+  const pendingPermissions = useEvaControl((s) => s.pendingPermissions.length)
   const [input, setInput] = useState('')
   const [historyOpen, setHistoryOpen] = useState(false)
   const [isSending, setIsSending] = useState(false)
@@ -196,30 +194,94 @@ export function ChatView() {
     <div className="flex h-full min-h-0 flex-col">
       {/* header */}
       <header className="flex items-center gap-3 border-b border-white/[0.06] bg-sidebar px-4 py-3 md:px-6">
-        <AssistantAvatar />
+        <MochiEyes
+          expression={evaExpression}
+          archetype="eva"
+          size="xs"
+          amplitude={voice.isActive ? (voice.isSpeaking ? 0.65 : 0.3) : 0}
+          trackGaze={false}
+          label={`Eva header eyes (${evaExpression})`}
+        />
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-sm font-semibold">{conversation?.title ?? 'New chat'}</h1>
-          <p className="text-[10.5px] text-muted-foreground">
+          <p className="truncate text-[10.5px] text-muted-foreground">
             {brainConnected
               ? 'NEXUS brain connected — recall, graph & dream intelligence active'
               : 'app brain active · connect the NEXUS brain for recall, dream & graph intelligence'}
           </p>
         </div>
         <button
-          onClick={() => setTab('brain')}
-          title={brainConnected ? 'NEXUS overlay connected — manage in the Brain tab' : 'Spine mode — normal LLM app. Click to reconnect the smart overlay'}
+          type="button"
+          data-eva-target="header-voice-focus"
+          onClick={() => setLayoutMode('focus')}
+          title="Enter Voice Focus Mode"
+          className="hidden sm:flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-transparent px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <Focus className="h-3.5 w-3.5" />
+          <span className="hidden lg:inline">Focus</span>
+        </button>
+        <button
+          type="button"
+          data-eva-target="header-reasoning"
+          onClick={() => (splitOpen && splitMode === 'reasoning' ? closeSplit() : openSplit('reasoning', 'Reasoning Chain'))}
+          title="Toggle Reasoning Chain Panel"
           className={cn(
-            'flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[10.5px] font-mono transition-colors',
+            'hidden sm:flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap transition-colors',
+            splitOpen && splitMode === 'reasoning'
+              ? 'border-sky-500/40 bg-sky-500/12 text-sky-600 dark:text-sky-400'
+              : 'border-border bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground'
+          )}
+        >
+          <GitBranch className="h-3.5 w-3.5" />
+          <span className="hidden lg:inline">Reasoning</span>
+        </button>
+        <button
+          type="button"
+          data-eva-target="header-browser"
+          onClick={() => (splitOpen && splitMode === 'browser' ? closeSplit() : openSplit('browser', 'Live Browser'))}
+          title="Open Live Split Browser"
+          className={cn(
+            'hidden sm:flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap transition-colors',
+            splitOpen && splitMode === 'browser'
+              ? 'border-sky-500/40 bg-sky-500/12 text-sky-600 dark:text-sky-400'
+              : 'border-border bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground'
+          )}
+        >
+          <Globe className="h-3.5 w-3.5" />
+          <span className="hidden lg:inline">Browser</span>
+        </button>
+        <button
+          type="button"
+          data-eva-target="header-permissions"
+          onClick={() =>
+            splitOpen && splitMode === 'permissions' ? closeSplit() : openSplit('permissions', 'Permissions Vault')
+          }
+          title="Permissions Vault"
+          className={cn(
+            'relative hidden sm:flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition-colors',
+            splitOpen && splitMode === 'permissions'
+              ? 'border-amber-500/40 bg-amber-500/12 text-amber-600 dark:text-amber-400'
+              : 'border-border bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground'
+          )}
+        >
+          <Shield className="h-3.5 w-3.5" />
+          {pendingPermissions > 0 && (
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('brain')}
+          title={brainConnected ? 'NEXUS overlay connected — manage in the Brain tab' : 'Spine mode — click to reconnect the smart overlay'}
+          className={cn(
+            'flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap transition-colors',
             brainConnected
-              ? 'border-emerald-400/25 bg-emerald-400/8 text-emerald-300 hover:border-emerald-400/45'
-              : 'border-amber-400/30 bg-amber-400/8 text-amber-300 hover:border-amber-400/55'
+              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:border-emerald-500/50 dark:text-emerald-300'
+              : 'border-amber-500/30 bg-amber-500/10 text-amber-700 hover:border-amber-500/50 dark:text-amber-300'
           )}
         >
           <BrainCog className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">{brainConnected ? 'brain' : 'spine'}</span>
-          <span
-            className={cn('h-1.5 w-1.5 rounded-full', brainConnected ? 'bg-emerald-400 pulse-dot' : 'bg-amber-400')}
-          />
+          <span className="hidden sm:inline">{brainConnected ? 'Brain' : 'Spine'}</span>
         </button>
         <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
           <SheetTrigger asChild>
@@ -300,15 +362,20 @@ export function ChatView() {
             </div>
           ) : empty ? (
             <div className="flex flex-col items-center pt-10 sm:pt-16 text-center">
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] shimmer-ring">
-                <Hexagon className="h-7 w-7 shimmer-text" />
-              </div>
+              <MochiEyes
+                expression={evaExpression}
+                archetype="eva"
+                size="lg"
+                amplitude={voice.isActive ? (voice.isSpeaking ? 0.72 : 0.35) : 0}
+                trackGaze
+                label={`Eva hero eyes (${evaExpression})`}
+              />
               <h2 className="mt-5 text-xl font-semibold tracking-tight">
-                <span className="shimmer-text">Nexus</span> <span className="text-foreground/80">Agent</span>
+                <span className="shimmer-text">Eva</span> <span className="text-foreground/80">· Lead Agent</span>
               </h2>
               <p className="mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
-                Ask me anything — quick questions get instant answers. Real missions get planned and executed
-                with tools, plugins, MCP servers and subagents.
+                Eva&apos;s ear stays active across every view — say &quot;Hey Eva&quot; anytime to talk live until
+                you switch her to Sleep Mode. Eva coordinates subagents, hires AI employees, and creates bots &amp; skills.
               </p>
               <div className="mt-7 grid w-full gap-2 sm:grid-cols-2">
                 {SUGGESTIONS.map((s) => (
@@ -449,18 +516,27 @@ export function ChatView() {
               )}
 
               {/* live voice assistant draft bubble */}
-              {(voice.liveOutputTranscript || (voice.isActive && (voice.isSpeaking || voice.activeTool))) && (
+              {(voice.liveOutputTranscript ||
+                (voice.isActive &&
+                  (voice.isSpeaking || voice.activeTool || voice.agentState === 'thinking'))) && (
                 <div className="flex gap-3" aria-live="polite">
-                  <AssistantAvatar thinking={voice.isSpeaking || Boolean(voice.activeTool)} />
+                  <AssistantAvatar
+                    thinking={voice.isSpeaking || Boolean(voice.activeTool) || voice.agentState === 'thinking'}
+                  />
                   <div className="min-w-0 flex-1">
                     {voice.activeTool && (
-                      <div className="mb-1.5 inline-flex items-center gap-1.5 rounded-md border border-sky-400/25 bg-sky-400/[0.07] px-2 py-0.5 font-mono text-[10.5px] text-sky-200">
+                      <div className="mb-1.5 inline-flex items-center gap-1.5 rounded-md border border-amber-400/30 bg-amber-400/[0.08] px-2 py-0.5 font-mono text-[10.5px] text-amber-200">
                         <Loader2 className="h-3 w-3 animate-spin" />
                         <span>Executing {voice.activeTool.tool}…</span>
                       </div>
                     )}
+                    {voice.agentState === 'thinking' && !voice.liveOutputTranscript && !voice.activeTool && (
+                      <div className="flex h-7 items-center">
+                        <span className="shimmer-text text-[13px]">Thinking…</span>
+                      </div>
+                    )}
                     {voice.liveOutputTranscript && (
-                      <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-zinc-200">
+                      <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-foreground">
                         {voice.liveOutputTranscript}
                       </p>
                     )}
@@ -473,13 +549,14 @@ export function ChatView() {
                 !voice.liveInputTranscript &&
                 !voice.liveOutputTranscript &&
                 !voice.activeTool &&
+                voice.agentState !== 'thinking' &&
                 (!conversation || conversation.messages.length === 0) && (
                   <div className="flex gap-3" aria-live="polite">
                     <AssistantAvatar thinking={voice.status === 'connecting'} />
                     <div className="flex h-7 items-center font-mono text-xs text-zinc-400">
                       {voice.status === 'connecting'
-                        ? `Connecting Gemini Live voice (${voice.voiceName})…`
-                        : `Listening (${voice.voiceName}) — ask anything, run tools, spawn subagents, or create bots & skills.`}
+                        ? `Connecting Eva Live voice (${voice.voiceName})…`
+                        : `Eva listening (${voice.voiceName}) — ask anything, review the team, hire specialists, or create bots & skills.`}
                     </div>
                   </div>
                 )}
@@ -499,191 +576,22 @@ export function ChatView() {
         </div>
       </div>
 
-      {/* input */}
-      <div className="border-t border-white/[0.06] bg-sidebar px-4 py-3.5 md:px-6">
-        <div className="mx-auto w-full max-w-3xl">
-          {(voice.isActive || (voice.status === 'error' && voice.lastError)) && (
-            <div
-              className={cn(
-                'mb-2 flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-xs',
-                voice.status === 'error'
-                  ? 'border-red-400/30 bg-red-500/10 text-red-200'
-                  : 'border-emerald-400/25 bg-emerald-400/[0.06] text-zinc-200'
-              )}
-            >
-              <div className="flex min-w-0 items-center gap-2.5">
-                {voice.status === 'connecting' ? (
-                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-emerald-300" />
-                ) : voice.isSpeaking ? (
-                  <Volume2 className="h-3.5 w-3.5 shrink-0 text-emerald-300" />
-                ) : voice.muted ? (
-                  <MicOff className="h-3.5 w-3.5 shrink-0 text-amber-300" />
-                ) : (
-                  <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400 pulse-dot" />
-                )}
-
-                <span className="truncate font-mono text-[11px]">
-                  {voice.status === 'error'
-                    ? voice.lastError
-                    : voice.status === 'connecting'
-                      ? `Connecting ${voice.voiceName}…`
-                      : voice.activeTool
-                        ? `Running ${voice.activeTool.tool}…`
-                        : voice.isSpeaking
-                          ? `Speaking (${voice.voiceName})`
-                          : voice.muted
-                            ? `Mic muted (${voice.voiceName})`
-                            : `Listening (${voice.voiceName})`}
-                </span>
-
-                {voice.status === 'connected' && (
-                  <div className="flex h-4 items-center gap-0.5" aria-hidden>
-                    {[0.35, 0.7, 1, 0.7, 0.35].map((scale, i) => {
-                      const barPct = voice.muted
-                        ? 18
-                        : Math.max(18, Math.min(100, Math.round((voice.isSpeaking ? 0.45 : voice.micLevel) * 100 * scale + 18)))
-                      return (
-                        <span
-                          key={i}
-                          style={{ height: `${barPct}%` }}
-                          className={cn(
-                            'w-0.5 rounded-full transition-[height] duration-75',
-                            voice.muted ? 'bg-zinc-600' : voice.isSpeaking ? 'bg-sky-300' : 'bg-emerald-400'
-                          )}
-                        />
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-
-              <div className="flex shrink-0 items-center gap-1.5">
-                {voice.status === 'error' ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 border-white/15 bg-transparent px-2.5 text-[11px]"
-                    onClick={() => void voice.startVoice(activeConvId)}
-                  >
-                    Retry
-                  </Button>
-                ) : (
-                  <>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 gap-1 border-white/15 bg-transparent px-2 text-[11px]"
-                      onClick={voice.toggleMute}
-                      aria-label={voice.muted ? 'Unmute microphone' : 'Mute microphone'}
-                    >
-                      {voice.muted ? <MicOff className="h-3 w-3 text-amber-300" /> : <Mic className="h-3 w-3" />}
-                      <span className="hidden sm:inline">{voice.muted ? 'Unmute' : 'Mute'}</span>
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      className="h-7 gap-1 px-2.5 text-[11px]"
-                      onClick={voice.stopVoice}
-                      aria-label="End live voice session"
-                    >
-                      <PhoneOff className="h-3 w-3" />
-                      <span className="hidden sm:inline">End</span>
-                    </Button>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="flex items-end gap-2 rounded-2xl border border-white/10 bg-black/25 p-2 transition-colors focus-within:border-white/25">
-            <Textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={
-                isRunning
-                  ? 'Agent is working…'
-                  : voice.status === 'connected'
-                    ? 'Speak aloud, or type into the live voice session…'
-                    : 'Ask anything, or describe a mission…'
-              }
-              disabled={isRunning}
-              rows={1}
-              className="max-h-40 min-h-9 flex-1 resize-none border-0 bg-transparent px-2 py-1.5 text-[13.5px] focus-visible:ring-0 focus-visible:ring-offset-0 disabled:opacity-50"
-              aria-label="Message input"
-            />
-            <div className="flex items-center gap-1.5">
-              {!voice.isActive && (
-                <select
-                  aria-label="Select voice"
-                  value={voice.voiceName}
-                  onChange={(e) => voice.setVoiceName(e.target.value as VoiceName)}
-                  disabled={isRunning}
-                  className="hidden h-9 rounded-xl border border-white/10 bg-white/[0.03] px-2 font-mono text-[11px] text-zinc-300 outline-none transition-colors hover:border-white/20 focus:border-white/30 sm:block"
-                  title="Gemini Live voice"
-                >
-                  {VOICES.map((v) => (
-                    <option key={v} value={v} className="bg-zinc-900 text-zinc-100">
-                      {v}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <Button
-                size="sm"
-                variant={voice.isActive ? 'destructive' : 'outline'}
-                className={cn(
-                  'h-9 gap-1.5 rounded-xl px-2.5 text-xs',
-                  !voice.isActive && 'border-white/10 bg-white/[0.03] text-zinc-200 hover:bg-white/[0.08]'
-                )}
-                disabled={voice.status === 'connecting' && !voice.isActive}
-                onClick={() => {
-                  if (voice.isActive) {
-                    voice.stopVoice()
-                  } else {
-                    void voice.startVoice(activeConvId)
-                  }
-                }}
-                aria-label={voice.isActive ? 'Stop voice conversation' : 'Start voice conversation'}
-                title={voice.isActive ? 'End Live Voice' : `Talk to NEXUS Live (${voice.voiceName})`}
-              >
-                {voice.status === 'connecting' ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : voice.isActive ? (
-                  <PhoneOff className="h-3.5 w-3.5" />
-                ) : (
-                  <Mic className="h-3.5 w-3.5" />
-                )}
-                <span className="hidden sm:inline">{voice.isActive ? 'Live' : 'Voice'}</span>
-              </Button>
-              {isRunning ? (
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  className="h-9 gap-1.5 rounded-xl px-3 text-xs"
-                  onClick={() => void stopTask()}
-                >
-                  <Square className="h-3.5 w-3.5 fill-current" /> Stop
-                </Button>
-              ) : (
-                <Button
-                  size="sm"
-                  className="h-9 rounded-xl px-3 text-xs"
-                  disabled={!input.trim() || isSending}
-                  onClick={() => void submit()}
-                  aria-label="Send message"
-                >
-                  {isSending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
-                </Button>
-              )}
-            </div>
-          </div>
-          <p className="mt-1.5 text-center text-[10px] text-muted-foreground/60">
-            Enter to send · Shift+Enter for a new line · Voice supports live tools, subagents, skills & bots
-          </p>
-        </div>
-      </div>
+      {/* voice & text composer with state-reactive rainbow aura */}
+      <VoiceComposer
+        voice={voice}
+        wake={wake}
+        onToggleWake={onToggleSleepMode}
+        input={input}
+        setInput={setInput}
+        textareaRef={textareaRef}
+        isRunning={isRunning}
+        isSending={isSending}
+        isThinking={isThinking}
+        activeConvId={activeConvId}
+        onSubmit={submit}
+        onStopTask={stopTask}
+        onKeyDown={handleKeyDown}
+      />
     </div>
   )
 }

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Loader2, Plus, Sparkles, Trash2, Undo2, Zap } from 'lucide-react'
+import { Loader2, Plus, Sparkles, Store, Trash2, Undo2, Zap } from 'lucide-react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,14 +26,30 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { EmptyState, type EmptyStateGuideStep } from '@/components/agent/empty-state'
 import { useApp } from '@/lib/agent/store'
 import { pluginIcon } from '@/components/agent/icons'
 import { api } from '@/lib/agent/client'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 
+const SKILL_GUIDE: EmptyStateGuideStep[] = [
+  {
+    title: 'Define expertise',
+    detail: 'Write reusable engineering rules, checklists, or domain instructions in a skill prompt.',
+  },
+  {
+    title: 'Restore or import',
+    detail: 'Re-enable built-in defaults in one click or import SKILL.md packs from GitHub.',
+  },
+  {
+    title: 'Auto-matched execution',
+    detail: 'Armed skills load automatically whenever a chat, mission, or voice request matches.',
+  },
+]
+
 export function SkillsView() {
-  const { skills, refreshSkills } = useApp()
+  const { skills, refreshSkills, setTab } = useApp()
   const { toast } = useToast()
   const [busyId, setBusyId] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<{ id: string; name: string } | null>(null)
@@ -185,9 +201,41 @@ export function SkillsView() {
             )
           })}
           {skills.length === 0 && (
-            <p className="col-span-full rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-muted-foreground">
-              No skills installed — restore the defaults or create your own.
-            </p>
+            <EmptyState
+              className="col-span-full"
+              icon={Sparkles}
+              eyebrow="// knowledge packs"
+              title="No skills armed yet"
+              description="Skills inject reusable playbooks and engineering standards into the agent's context whenever a matching task runs."
+              steps={SKILL_GUIDE}
+              actions={
+                <>
+                  <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={() => setCreateOpen(true)}>
+                    <Plus className="h-3.5 w-3.5" />
+                    Get Started — Create Skill
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 gap-1.5 border-white/10 bg-transparent text-xs"
+                    disabled={restoreBusy}
+                    onClick={() => void restoreDefaults()}
+                  >
+                    {restoreBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />}
+                    Restore defaults
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 gap-1.5 border-white/10 bg-transparent text-xs"
+                    onClick={() => setTab('marketplace')}
+                  >
+                    <Store className="h-3.5 w-3.5" />
+                    Browse Marketplace
+                  </Button>
+                </>
+              }
+            />
           )}
         </div>
       </div>

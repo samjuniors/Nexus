@@ -77,6 +77,8 @@ export interface BrainCapabilitySet {
   plugins: { slug: string; name: string; description: string }[]
   mcps: { slug: string; name: string; description: string }[]
   memoryCount: number
+  employees?: { slug: string; name: string; title: string; department: string; kind: string }[]
+  automations?: { id: string; name: string; triggerType: string; enabled: boolean }[]
 }
 
 export interface BrainHost {

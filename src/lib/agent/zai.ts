@@ -81,6 +81,8 @@ export function resolveLLMProvider(): Provider {
 export interface LLMOptions {
   temperature?: number
   maxTokens?: number
+  thinkingLevel?: 'low' | 'medium' | 'high'
+  timeoutMs?: number
 }
 
 // ---------------------------------------------------------------- Gemini path (@google/genai)
@@ -122,6 +124,9 @@ function formatGeminiError(err: unknown): Error {
   if (/RESOURCE_EXHAUSTED|429/i.test(raw)) {
     return new Error('Gemini API rate limit or quota exceeded (429). Please retry shortly or check your quota in Settings > Secrets.')
   }
+  if (/503|UNAVAILABLE|high demand|overloaded/i.test(raw)) {
+    return new Error('Gemini service is temporarily busy (503). Please retry in a few seconds.')
+  }
   if (/NOT_FOUND|404/i.test(raw)) {
     return new Error(`Gemini model not found: ${raw}`)
   }
@@ -145,23 +150,34 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 async function geminiComplete(
   p: Extract<Provider, { kind: 'gemini' }>,
   messages: ChatMessage[],
-  opts: LLMOptions
+  opts: LLMOptions,
+  overrideModel?: string
 ): Promise<string> {
   const ai = createGeminiClient(p.key)
+  const model = overrideModel ?? p.model
   const { systemInstruction, contents } = toGeminiPayload(messages)
-  const level = opts.maxTokens && opts.maxTokens <= 300 ? ThinkingLevel.LOW : ThinkingLevel.MEDIUM
+  const level =
+    opts.thinkingLevel === 'low'
+      ? ThinkingLevel.LOW
+      : opts.thinkingLevel === 'high'
+        ? ThinkingLevel.HIGH
+        : opts.maxTokens && opts.maxTokens <= 300
+          ? ThinkingLevel.LOW
+          : ThinkingLevel.MEDIUM
+  const timeoutMs = opts.timeoutMs ?? (level === ThinkingLevel.LOW ? 18_000 : 22_000)
   try {
     const response = await withTimeout(
       ai.models.generateContent({
-        model: p.model,
+        model,
         contents,
         config: {
           ...(systemInstruction ? { systemInstruction } : {}),
-          ...geminiThinkingConfig(p.model, level),
+          ...(typeof opts.temperature === 'number' ? { temperature: opts.temperature } : {}),
+          ...geminiThinkingConfig(model, level),
         },
       }),
-      35_000,
-      'Gemini request'
+      timeoutMs,
+      `Gemini (${model})`
     )
     const text = response.text
     if (typeof text === 'string' && text.trim().length > 0) return text
@@ -171,6 +187,16 @@ async function geminiComplete(
   }
 }
 
+let geminiPrimaryCooldownUntil = 0
+
+function activeGeminiModel(configuredModel: string, forceFallback = false): string {
+  if (configuredModel === 'gemini-3.1-flash-lite') return configuredModel
+  if (forceFallback || Date.now() < geminiPrimaryCooldownUntil) {
+    return 'gemini-3.1-flash-lite'
+  }
+  return configuredModel
+}
+
 async function geminiStream(
   p: Extract<Provider, { kind: 'gemini' }>,
   messages: ChatMessage[],
@@ -178,20 +204,21 @@ async function geminiStream(
 ): Promise<string> {
   const onToken = opts.onToken ?? (() => {})
   const ai = createGeminiClient(p.key)
+  const model = activeGeminiModel(p.model)
   const { systemInstruction, contents } = toGeminiPayload(messages)
   let full = ''
   try {
     const stream = await withTimeout(
       ai.models.generateContentStream({
-        model: p.model,
+        model,
         contents,
         config: {
           ...(systemInstruction ? { systemInstruction } : {}),
-          ...geminiThinkingConfig(p.model, ThinkingLevel.LOW),
+          ...geminiThinkingConfig(model, ThinkingLevel.LOW),
         },
       }),
-      25_000,
-      'Gemini stream'
+      22_000,
+      `Gemini stream (${model})`
     )
     for await (const chunk of stream) {
       const piece = chunk.text
@@ -519,13 +546,37 @@ export async function chatText(messages: ChatMessage[], opts: LLMOptions = {}): 
   const p = resolveLLMProvider()
   if (p.kind !== 'sdk') {
     let lastErr: unknown = null
-    for (let attempt = 0; attempt < 2; attempt++) {
+    let prevModel = ''
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const t0 = Date.now()
+      const activeModel =
+        p.kind === 'gemini'
+          ? attempt === 0
+            ? activeGeminiModel(p.model, false)
+            : attempt === 1
+              ? prevModel === 'gemini-3.1-flash-lite'
+                ? p.model
+                : 'gemini-3.1-flash-lite'
+              : p.model
+          : p.model
+      prevModel = activeModel
       try {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, 1200 + Math.random() * 600))
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 500 * attempt + Math.random() * 300))
+        if (p.kind === 'gemini') {
+          return await geminiComplete(p, messages, opts, activeModel)
+        }
         return await runExternalComplete(p, messages, opts)
       } catch (err) {
         lastErr = err
         const msg = err instanceof Error ? err.message : String(err)
+        console.warn(`[LLM] ${activeModel} attempt ${attempt + 1} failed (${Date.now() - t0}ms): ${msg}`)
+        const isTransientPrimary = /503|timed out|busy|unavailable|429|quota|rate limit/i.test(msg)
+        if (p.kind === 'gemini' && activeModel === p.model && isTransientPrimary) {
+          geminiPrimaryCooldownUntil = Date.now() + 60_000
+          if (/429|quota|rate limit/i.test(msg) && attempt === 0) {
+            continue
+          }
+        }
         if (/invalid|missing permissions|not found|401|403|404|429|quota|rate limit/i.test(msg)) break
       }
     }

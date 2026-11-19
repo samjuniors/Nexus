@@ -27,6 +27,10 @@ export type GraphNodeType =
   | 'conversation'
   | 'run'
   | 'artifact'
+  | 'employee'
+  | 'bot'
+  | 'automation'
+  | 'project'
 
 export interface GraphNode {
   id: string
@@ -92,6 +96,29 @@ export interface GraphSource {
     conversationId: string
     usedTools: string[]
     producedFiles: string[]
+  }[]
+  employees?: {
+    id: string
+    slug: string
+    name: string
+    title: string
+    department: string
+    kind: string
+    reportsToId: string | null
+    skills: string[]
+    tools: string[]
+  }[]
+  automations?: {
+    id: string
+    name: string
+    triggerType: string
+    enabled: boolean
+    assigneeId: string | null
+  }[]
+  projectEntities?: {
+    slug: string
+    name: string
+    kind: string
   }[]
 }
 
@@ -305,6 +332,60 @@ export function buildGraph(src: GraphSource): BrainGraph {
       addNode({ id, label: f, type: 'artifact' })
       addEdge(`run:${r.id}`, id, 'produced', 'EXTRACTED')
     }
+  }
+
+  // ---- org AI employees, bots & automations (EXTRACTED from registry) ----
+  const employees = src.employees ?? []
+  const empNodeId = (e: { id: string; kind: string }) =>
+    `${e.kind === 'bot' ? 'bot' : 'emp'}:${e.id}`
+  const empById = new Map(employees.map((e) => [e.id, e]))
+
+  for (const e of employees) {
+    const id = empNodeId(e)
+    const nodeType: GraphNodeType = e.kind === 'bot' ? 'bot' : 'employee'
+    addNode({
+      id,
+      label: e.name,
+      type: nodeType,
+      meta: { title: e.title, department: e.department, kind: e.kind },
+    })
+    if (e.reportsToId && empById.has(e.reportsToId)) {
+      const mgr = empById.get(e.reportsToId)!
+      addEdge(empNodeId(mgr), id, 'manages', 'EXTRACTED')
+    } else {
+      addEdge('brain', id, 'manages', 'EXTRACTED')
+    }
+    for (const sk of e.skills) {
+      if (nodes.some((n) => n.id === `skill:${sk}`)) {
+        addEdge(id, `skill:${sk}`, 'uses-skill', 'EXTRACTED')
+      }
+    }
+    for (const tl of e.tools) {
+      if (nodes.some((n) => n.id === `tool:${tl}`)) {
+        addEdge(id, `tool:${tl}`, 'uses-tool', 'EXTRACTED')
+      }
+    }
+  }
+
+  for (const a of src.automations ?? []) {
+    const id = `auto:${a.id}`
+    addNode({
+      id,
+      label: a.name.slice(0, 36),
+      type: 'automation',
+      meta: { triggerType: a.triggerType, enabled: a.enabled ? 1 : 0 },
+    })
+    if (a.assigneeId && empById.has(a.assigneeId)) {
+      addEdge(empNodeId(empById.get(a.assigneeId)!), id, 'runs', 'EXTRACTED')
+    } else {
+      addEdge('brain', id, 'schedules', 'EXTRACTED')
+    }
+  }
+
+  for (const pe of src.projectEntities ?? []) {
+    const id = `proj:${pe.slug}`
+    addNode({ id, label: pe.name.slice(0, 36), type: 'project', meta: { kind: pe.kind } })
+    addEdge('brain', id, 'indexes', 'EXTRACTED')
   }
 
   // ---- memories (EXTRACTED links to runs; INFERRED/AMBIGUOUS memory↔memory) ----

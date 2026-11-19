@@ -1,9 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
+  ArrowDown,
   Check,
   Download,
+  FileJson,
   Loader2,
   PackageX,
   Puzzle,
@@ -25,11 +27,27 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { EmptyState, type EmptyStateGuideStep } from '@/components/agent/empty-state'
 import { useApp } from '@/lib/agent/store'
 import { pluginIcon } from '@/components/agent/icons'
 import { api } from '@/lib/agent/client'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
+
+const PLUGIN_GUIDE: EmptyStateGuideStep[] = [
+  {
+    title: 'Install from catalog',
+    detail: 'Enable built-in capabilities below or import external manifests from GitHub and URLs.',
+  },
+  {
+    title: 'Or author JSON',
+    detail: 'Define custom LLM-powered or HTTP webhook plugins using the templates at the bottom.',
+  },
+  {
+    title: 'Arm agent tools',
+    detail: 'Every installed plugin automatically exposes a callable tool during agent missions.',
+  },
+]
 
 const JSON_TEMPLATE = `{
   "name": "Sentiment Analyzer",
@@ -60,6 +78,8 @@ export function PluginsView() {
   const [jsonText, setJsonText] = useState('')
   const [jsonBusy, setJsonBusy] = useState(false)
   const [confirm, setConfirm] = useState<{ id: string; name: string; source: string } | null>(null)
+  const catalogRef = useRef<HTMLElement>(null)
+  const jsonInputRef = useRef<HTMLTextAreaElement>(null)
 
   const installed = plugins.filter((p) => p.installed)
   const marketplace = plugins.filter((p) => !p.installed)
@@ -209,15 +229,52 @@ export function PluginsView() {
               )
             })}
             {installed.length === 0 && (
-              <p className="col-span-2 rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-muted-foreground">
-                No plugins installed — install from the marketplace below.
-              </p>
+              <EmptyState
+                className="col-span-full"
+                icon={Puzzle}
+                eyebrow="// capability extensions"
+                title="No plugins installed yet"
+                description="Plugins extend the agent with new callable tools backed by AI instructions or HTTP endpoints."
+                steps={PLUGIN_GUIDE}
+                actions={
+                  <>
+                    {marketplace.length > 0 ? (
+                      <Button
+                        size="sm"
+                        className="h-8 gap-1.5 text-xs"
+                        onClick={() => catalogRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                      >
+                        <ArrowDown className="h-3.5 w-3.5" />
+                        Get Started — Browse Catalog
+                      </Button>
+                    ) : (
+                      <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={() => setTab('marketplace')}>
+                        <Store className="h-3.5 w-3.5" />
+                        Get Started — Open Marketplace
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 gap-1.5 border-white/10 bg-transparent text-xs"
+                      onClick={() => {
+                        setJsonText(JSON_TEMPLATE)
+                        jsonInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                        jsonInputRef.current?.focus()
+                      }}
+                    >
+                      <FileJson className="h-3.5 w-3.5" />
+                      Start with LLM JSON template
+                    </Button>
+                  </>
+                }
+              />
             )}
           </div>
         </section>
 
         {/* marketplace (local catalog) */}
-        <section aria-label="Plugin catalog" className="space-y-3">
+        <section ref={catalogRef} aria-label="Plugin catalog" className="space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="terminal-label text-[10px] text-muted-foreground">{'// catalog'}</h2>
             <Button
@@ -268,9 +325,24 @@ export function PluginsView() {
               )
             })}
             {marketplace.length === 0 && (
-              <p className="col-span-2 rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-muted-foreground">
-                Everything from the catalog is installed — find more in the Marketplace (GitHub, Smithery, npm).
-              </p>
+              <EmptyState
+                className="col-span-full"
+                icon={Store}
+                eyebrow="// catalog synced"
+                title="All catalog plugins are installed"
+                description="Every built-in catalog plugin is already active. Discover additional integrations from GitHub, npm, or custom manifests."
+                actions={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 gap-1.5 border-primary/30 bg-primary/10 text-xs text-primary hover:bg-primary/20 hover:text-primary"
+                    onClick={() => setTab('marketplace')}
+                  >
+                    <Store className="h-3.5 w-3.5" />
+                    Explore Marketplace
+                  </Button>
+                }
+              />
             )}
           </div>
         </section>
@@ -286,6 +358,7 @@ export function PluginsView() {
               installed from the Marketplace.
             </p>
             <Textarea
+              ref={jsonInputRef}
               value={jsonText}
               onChange={(e) => setJsonText(e.target.value)}
               placeholder={JSON_TEMPLATE}

@@ -3,7 +3,9 @@
 import { create } from 'zustand'
 import {
   api,
+  type AiEmployeeDTO,
   type ArtifactDTO,
+  type AutomationDTO,
   type BrainInfo,
   type ConversationDTO,
   type McpDTO,
@@ -26,6 +28,8 @@ interface AppState {
   mcps: McpDTO[]
   memories: MemoryDTO[]
   artifacts: ArtifactDTO[]
+  employees: AiEmployeeDTO[]
+  automations: AutomationDTO[]
   brain: BrainInfo | null
   loading: boolean
   runningRunId: string | null
@@ -48,6 +52,8 @@ interface AppState {
   refreshMcps: () => Promise<void>
   refreshMemories: () => Promise<void>
   refreshArtifacts: () => Promise<void>
+  refreshOrg: () => Promise<void>
+  refreshAutomations: () => Promise<void>
   refreshBrain: () => Promise<void>
   toggleBrain: (connect: boolean) => Promise<void>
   setBrainPrefs: (prefs: Partial<BrainInfo['appPrefs']>) => Promise<void>
@@ -77,6 +83,8 @@ export const useApp = create<AppState>((set, get) => ({
   mcps: [],
   memories: [],
   artifacts: [],
+  employees: [],
+  automations: [],
   brain: null,
   loading: true,
   runningRunId: null,
@@ -87,8 +95,10 @@ export const useApp = create<AppState>((set, get) => ({
   setTab: (tab) => set({ activeTab: tab }),
 
   bootstrap: async () => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 10_000)
     try {
-      const { conversations } = await api.conversations()
+      const { conversations } = await api.conversations({ signal: controller.signal })
       set({
         conversations,
         activeConvId: conversations[0]?.id ?? null,
@@ -96,6 +106,8 @@ export const useApp = create<AppState>((set, get) => ({
       })
     } catch {
       set({ loading: false })
+    } finally {
+      clearTimeout(timer)
     }
     // capabilities load lazily but kick off now for sidebar badges
     get().refreshPlugins()
@@ -104,6 +116,8 @@ export const useApp = create<AppState>((set, get) => ({
     get().refreshMcps()
     get().refreshMemories()
     get().refreshArtifacts()
+    get().refreshOrg()
+    get().refreshAutomations()
     get().refreshBrain()
   },
 
@@ -164,6 +178,18 @@ export const useApp = create<AppState>((set, get) => ({
     try {
       const { artifacts } = await api.artifacts()
       set({ artifacts })
+    } catch { /* ignore */ }
+  },
+  refreshOrg: async () => {
+    try {
+      const { employees } = await api.orgList()
+      set({ employees })
+    } catch { /* ignore */ }
+  },
+  refreshAutomations: async () => {
+    try {
+      const { automations } = await api.automationsList()
+      set({ automations })
     } catch { /* ignore */ }
   },
 
@@ -516,6 +542,14 @@ export const useApp = create<AppState>((set, get) => ({
           const step = await api.stepRun(runId)
           if (step.events?.length) {
             get().appendEvents(runId, step.events, step.status)
+            const touchedOrg = step.events.some(
+              (ev) => ev.type === 'tool_result' && (ev.data as { tool?: string } | undefined)?.tool === 'manage_org'
+            )
+            if (touchedOrg) {
+              void get().refreshOrg()
+              void get().refreshPlugins()
+              void get().refreshTools()
+            }
           } else if (step.status) {
             get().appendEvents(runId, [], step.status)
           }
@@ -536,6 +570,8 @@ export const useApp = create<AppState>((set, get) => ({
         get().refreshMcps()
         get().refreshSkills()
         get().refreshArtifacts()
+        get().refreshOrg()
+        get().refreshAutomations()
 
         // refetch conversations so the final mission answer + its next-step
         // suggestions appear live in the chat (and stream in via typewriter)

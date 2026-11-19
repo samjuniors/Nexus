@@ -7,6 +7,7 @@ import { getEffectiveTools, executeTool } from '@/lib/agent/tools'
 import { getBrainPrefs } from '@/lib/agent/brain-host'
 import { stepRun } from '@/lib/agent/orchestrator'
 import { chatText, extractJson } from '@/lib/agent/zai'
+import { reasoningChain } from '@/lib/agent/reasoning-chain'
 import type { EventOut, RunEventData } from '@/lib/agent/types'
 
 const LIVE_MODEL = 'gemini-3.8-live'
@@ -143,6 +144,151 @@ const LIVE_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       required: ['action'],
     },
   },
+  {
+    name: 'manage_org',
+    description:
+      'List or review AI employees, bots, and subagents under Eva, hire a new persistent AI employee, create an automated bot or specialist subagent, or delegate a focused task directly to an Org member.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: { type: Type.STRING, description: 'One of: list, review, hire, create_bot, create_subagent, delegate, remove.' },
+        name: { type: Type.STRING, description: 'Name of the AI employee, bot, or subagent.' },
+        title: { type: Type.STRING, description: 'Job title (e.g. "Staff Security Engineer").' },
+        department: { type: Type.STRING, description: 'Department (e.g. "Engineering", "QA", "Research", "Automation").' },
+        role: { type: Type.STRING, description: 'Clear role summary and responsibilities.' },
+        reportsTo: { type: Type.STRING, description: 'Optional manager name in the Org hierarchy (defaults to Eva).' },
+        task: { type: Type.STRING, description: 'Task to delegate when action is delegate.' },
+        focus: { type: Type.STRING, description: 'Optional task/capability focus when action is review.' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'manage_automation',
+    description:
+      'List, create, toggle, run immediately, or delete scheduled tasks and recurring automations.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: { type: Type.STRING, description: 'One of: list, create, toggle, run_now, delete.' },
+        name: { type: Type.STRING, description: 'Automation name.' },
+        prompt: { type: Type.STRING, description: 'Mission or task prompt executed on schedule.' },
+        triggerType: { type: Type.STRING, description: 'One of: interval, cron, once.' },
+        schedule: { type: Type.STRING, description: 'Minutes (e.g. "60"), 5-field cron (e.g. "0 9 * * *"), or ISO timestamp.' },
+        assigneeName: { type: Type.STRING, description: 'Optional Org AI employee/bot name.' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'inspect_project',
+    description:
+      'Scan the repository stack, database models, API routes, and portable brain modules, indexing key architectural facts into portable GBrain memory.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        indexIntoBrain: { type: Type.BOOLEAN, description: 'Save discovered project truths into GBrain memory (default true).' },
+      },
+    },
+  },
+  {
+    name: 'enter_sleep_mode',
+    description:
+      'Put Eva into Sleep Mode and pause her always-on ear when the user says goodnight, go to sleep, sleep mode, or stop listening.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: 'app_control',
+    description:
+      'Control the Nexus UI visually with Eva\'s animated cursor: switch tabs, open/close split-screen panels (reasoning, browser, identity, permissions, devices, org, artifacts, tools, automations, brain), switch between Voice Focus mode and Standard layout (set_layout_mode), collapse/expand the navigation rail (toggle_sidebar), open the interactive GBrain graph (open_gbrain_graph), spawn popups, click buttons, or toggle theme.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: { type: Type.STRING, description: 'One of: navigate_tab, open_split, close_split, set_layout_mode, toggle_sidebar, open_gbrain_graph, open_popup, close_popup, click_target, set_theme.' },
+        tab: { type: Type.STRING, description: 'Tab slug for navigate_tab (agent, org, automations, brain, artifacts, marketplace, plugins, skills, tools, mcps, memory).' },
+        mode: { type: Type.STRING, description: 'Split panel mode for open_split (reasoning, browser, identity, permissions, devices, org, artifacts, tools, automations, brain) OR layout mode for set_layout_mode (focus, standard).' },
+        collapsed: { type: Type.BOOLEAN, description: 'Optional explicit collapsed state for toggle_sidebar.' },
+        title: { type: Type.STRING, description: 'Optional popup or split title.' },
+        body: { type: Type.STRING, description: 'Popup body markdown/text.' },
+        label: { type: Type.STRING, description: 'Visible label of button to click.' },
+        selector: { type: Type.STRING, description: 'Optional CSS selector to click.' },
+        theme: { type: Type.STRING, description: 'light or dark for set_theme.' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'browser_control',
+    description:
+      'Control the live browser & embedded media player inside the split panel. ALWAYS use action="play_media" with query when the user asks to play a song/video/music on YouTube (e.g. "open youtube.com and play rafta rafta" -> play_media, query="rafta rafta"). ALWAYS use action="autopilot" with goal (+ optional url) for any multi-step web task so it finishes end-to-end autonomously without stopping halfway!',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: {
+          type: Type.STRING,
+          description: 'One of: play_media, autopilot, navigate, click, type, scroll, press, back, reload, snapshot, clear_media, close.',
+        },
+        query: { type: Type.STRING, description: 'Song, video title, or YouTube URL when action is play_media.' },
+        goal: { type: Type.STRING, description: 'Full end-to-end web goal when action is autopilot.' },
+        url: { type: Type.STRING, description: 'Target or starting URL for navigate or autopilot.' },
+        maxSteps: { type: Type.NUMBER, description: 'Optional max steps (2-8) for autopilot.' },
+        selector: { type: Type.STRING, description: 'CSS selector to click or type into.' },
+        text: { type: Type.STRING, description: 'Visible text to click or text to type.' },
+        submit: { type: Type.BOOLEAN, description: 'Press Enter after typing.' },
+        deltaY: { type: Type.NUMBER, description: 'Scroll delta in pixels.' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'agent_email',
+    description:
+      'Provision and access Eva\'s own working email address and inbox (Mail.tm) so Eva can autonomously sign up for services, receive verification codes/OTPs, and read incoming emails without asking the user for their personal email.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: { type: Type.STRING, description: 'One of: provision, status, list_inbox, read_message, wait_for_code.' },
+        preferredLocal: { type: Type.STRING, description: 'Optional username prefix for provision.' },
+        forceNew: { type: Type.BOOLEAN, description: 'Set true to generate a brand-new email address.' },
+        messageId: { type: Type.STRING, description: 'Message ID when action is read_message.' },
+        senderFilter: { type: Type.STRING, description: 'Optional sender/brand keyword when action is wait_for_code.' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'self_manage_extensions',
+    description:
+      'Autonomously list, install, uninstall, enable, or connect Plugins, Skills, Tools, and MCP servers so the user does not have to install them manually.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: { type: Type.STRING, description: 'One of: list, install_plugin, uninstall_plugin, toggle_plugin, toggle_skill, toggle_tool, connect_mcp, disconnect_mcp.' },
+        slug: { type: Type.STRING, description: 'Slug of the plugin, skill, tool, or MCP server.' },
+        enabled: { type: Type.BOOLEAN, description: 'Optional explicit enabled state.' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'device_control',
+    description:
+      'List paired local computers or execute approved actions (system_info, open_url, open_app, shell) on an online computer connected via the Nexus Companion Bridge.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: { type: Type.STRING, description: 'One of: list, system_info, open_url, open_app, shell.' },
+        deviceId: { type: Type.STRING, description: 'Optional specific paired device ID.' },
+        url: { type: Type.STRING, description: 'URL to open on desktop when action is open_url.' },
+        app: { type: Type.STRING, description: 'Application name to open when action is open_app.' },
+        command: { type: Type.STRING, description: 'Command string when action is shell.' },
+      },
+      required: ['action'],
+    },
+  },
 ]
 
 function safeSend(ws: WebSocket, payload: unknown) {
@@ -176,13 +322,15 @@ async function buildLiveSystemInstruction(conversationId: string): Promise<{
   instruction: string
   brainConnected: boolean
 }> {
-  const [tools, skills, plugins, mcps, messages, brainPrefs] = await Promise.all([
+  const [tools, skills, plugins, mcps, messages, brainPrefs, employees, automations] = await Promise.all([
     getEffectiveTools(),
     db.skill.findMany({ where: { enabled: true }, orderBy: { name: 'asc' } }),
     db.plugin.findMany({ where: { installed: true, enabled: true }, orderBy: { name: 'asc' } }),
     db.mcpServer.findMany({ where: { status: 'connected', enabled: true }, orderBy: { name: 'asc' } }),
     db.message.findMany({ where: { conversationId }, orderBy: { createdAt: 'asc' } }),
     getBrainPrefs(),
+    db.aiEmployee.findMany({ where: { status: 'active' }, orderBy: { name: 'asc' } }),
+    db.automation.findMany({ where: { enabled: true }, orderBy: { name: 'asc' } }),
   ])
 
   let coreMemory = ''
@@ -201,26 +349,52 @@ async function buildLiveSystemInstruction(conversationId: string): Promise<{
   const skillsSummary = skills.map((s) => `- ${s.slug} (${s.name}): ${s.description}`).join('\n') || '(none)'
   const pluginsSummary = plugins.map((p) => `- ${p.slug} (${p.name}): ${p.description}`).join('\n') || '(none)'
   const mcpsSummary = mcps.map((m) => `- ${m.slug} (${m.name})`).join('\n') || '(none)'
+  const orgSummary =
+    employees.map((e) => `- ${e.name} [${e.kind}] (${e.title}, ${e.department}): ${e.role}`).join('\n') || '(none)'
+  const automationsSummary =
+    automations.map((a) => `- ${a.name} (${a.triggerType}: ${a.schedule})`).join('\n') || '(none)'
   const recentHistory = messages
     .slice(-10)
-    .map((m) => `${m.role === 'user' ? 'User' : 'Nexus'}: ${m.content.slice(0, 300)}`)
+    .map((m) => `${m.role === 'user' ? 'User' : 'Eva'}: ${m.content.slice(0, 300)}`)
     .join('\n')
 
-  const instruction = `You are NEXUS, a real-time voice autonomous AI agent OS.
-You are having a live, low-latency spoken conversation with the operator inside the exact same NEXUS workspace used for text chat and missions.
+  const instruction = `You are Eva, the Lead Agent of NEXUS, speaking in real-time voice with the operator.
+Users may wake you hands-free with "Hey Eva" and talk to you directly inside the exact same NEXUS workspace used for text chat and missions.
 
-HOW TO ACT BY VOICE:
+HOW EVA ACTS & MANAGES THE ORG BY VOICE:
 - For casual conversation, quick explanations, definitions, or answers you already know, speak concisely and naturally (2-4 sentences unless the user asks for depth).
 - When the user asks you to DO something that needs real tools, live data, images, charts, code, files, or web lookups:
   * Call \`execute_tool\` for single direct tool actions (weather, web search, generating an image, running JavaScript, Wikipedia, reading a URL, creating a chart, saving/recalling memory, or calling a custom x_* bot tool).
   * Call \`run_agent_mission\` for complex multi-step tasks, deep research with sources, or tasks that need automated planning + multiple steps + subagents.
-  * Call \`spawn_subagent\` when the user asks you to create/spawn a specialist subagent or delegate a focused task to a specific role (Researcher, Coder, Analyst, Designer, or a custom specialist).
+  * Call \`spawn_subagent\` when a task benefits from a specialist subagent (Researcher, Coder, Analyst, Designer, QA, or a custom specialist).
   * Call \`create_skill\` when the user asks to create a new reusable skill/workflow.
   * Call \`create_bot_or_plugin\` when the user asks to create a new bot, custom agent, or plugin tool.
+  * Call \`manage_org\` to \`review\` active AI employees/subagents/bots and capability gaps, \`hire\` a persistent AI employee when a recurring role is needed, \`create_bot\` or \`create_subagent\` when specialized agents/bots are required for the task, or \`delegate\` work to an Org member. You have full authority as Lead Agent (Eva) to grow or tune the Org team proactively based on task needs and review findings.
+  * Call \`manage_automation\` when the user wants to schedule recurring tasks, list automations, toggle schedules, or run an automation immediately.
+  * Call \`inspect_project\` when the user asks how the project works or wants the repo architecture indexed into the portable brain.
   * Call \`manage_capabilities\` when the user asks what tools/skills/plugins are available, or wants to enable/disable capabilities or save/recall memory.
-- Briefly let the user know before or while executing a longer mission/subagent, and after receiving tool results, summarize the outcome clearly in spoken language (mention any created files/images/bots/skills by name).
+  * Call \`app_control\` to control the entire dynamic workspace by voice: switch tabs, open/close split-screen panels (\`reasoning\`, \`browser\`, \`identity\`, \`permissions\`, \`devices\`, \`org\`, \`artifacts\`, \`tools\`, \`automations\`, \`brain\`), enter/exit minimal Voice Focus mode (\`set_layout_mode\` with \`focus\` or \`standard\`), collapse/expand the navigation rail (\`toggle_sidebar\`), open the interactive GBrain graph (\`open_gbrain_graph\`), show popups, click buttons with your live animated cursor, or switch light/dark theme.
+  * Call \`browser_control\` to finish web & media tasks END-TO-END in one autonomous call:
+    - For playing ANY song, music, or video on YouTube (e.g. "open youtube.com and play rafta rafta"): IMMEDIATELY call \`browser_control({ action: "play_media", query: "rafta rafta" })\` — NEVER just navigate to youtube.com and stop!
+    - For ANY multi-step website task (searching a site, filling forms, checking prices, signing up, navigating multiple pages): IMMEDIATELY call \`browser_control({ action: "autopilot", goal: "<full user goal>", url: "<optional start url>" })\` so your autopilot completes all clicks/typing autonomously without asking the user to guide each click!
+  * Call \`agent_email\` whenever a task needs an email address, account registration, verification OTP, or when the user asks about your email/inbox. You own your own persistent email account and can provision or check it autonomously.
+  * Call \`self_manage_extensions\` to autonomously install, uninstall, toggle, or connect Plugins, Skills, Tools, and MCP servers yourself so the user never has to install them manually (one-time permission applies).
+  * Call \`device_control\` to list paired computers or run approved desktop actions (system_info, open_url, open_app, shell) on an online computer paired via the Nexus Companion Bridge.
+  * Call \`enter_sleep_mode\` when the user asks you to go to sleep, enter sleep mode, goodnight, or stop listening. Say a brief confirmation ("Going to sleep — click Wake Eva whenever you need me.") so your spoken reply finishes cleanly before your ear pauses.
 
-${coreMemory ? `${coreMemory}\n` : ''}ACTIVE SKILLS:
+AUTONOMOUS DECISION DOCTRINE (CRITICAL):
+- Own every goal from start to finish. NEVER stop halfway after step 1 and ask the user "what next?" when you can finish the task yourself.
+- If one approach hits a wall (e.g. bot check, login wall, missing plugin), autonomously pivot to an alternative strategy (e.g. \`play_media\`, \`autopilot\`, \`agent_email\`, \`web_search\`, or \`self_manage_extensions\`) and finish the job.
+- Only confirm back to the user AFTER the task is actually completed (or after exhausting real alternatives).
+- Briefly let the user know before or while executing a longer mission/subagent, and after receiving tool results, summarize the outcome clearly in spoken language (mention any playing track, created email, files/images/bots/skills/employees/subagents/automations by name).
+
+${coreMemory ? `${coreMemory}\n` : ''}ORG AI TEAM, BOTS & SUBAGENTS (reporting to Eva):
+${orgSummary}
+
+ACTIVE AUTOMATIONS:
+${automationsSummary}
+
+ACTIVE SKILLS:
 ${skillsSummary}
 
 INSTALLED PLUGINS:
@@ -272,8 +446,8 @@ async function runLiveToolCall(
     const evs: EventOut[] = []
     evs.push(
       await addEvent(run.id, 'analysis', {
-        analysis: `Voice agent invoking tool "${toolSlug}".`,
-        steps: [{ id: 1, description: `Run ${toolSlug}`, assignee: 'Lead Agent', uses: [toolSlug] }],
+        analysis: `Eva voice agent invoking tool "${toolSlug}".`,
+        steps: [{ id: 1, description: `Run ${toolSlug}`, assignee: 'Eva', uses: [toolSlug] }],
         subagents: [],
         task: note,
       })
@@ -282,19 +456,19 @@ async function runLiveToolCall(
       await addEvent(run.id, 'capability', {
         type: 'tool',
         name: toolSlug,
-        reason: 'Requested during live voice session',
+        reason: 'Requested during live voice session with Eva',
       })
     )
     evs.push(
       await addEvent(run.id, 'step_start', {
         stepId: 1,
         description: `Execute ${toolSlug}`,
-        assignee: 'Lead Agent',
+        assignee: 'Eva',
       })
     )
     evs.push(
       await addEvent(run.id, 'tool_call', {
-        actor: 'Lead Agent',
+        actor: 'Eva',
         stepId: 1,
         tool: toolSlug,
         toolName: toolSlug,
@@ -316,11 +490,15 @@ async function runLiveToolCall(
     doneEvs.push(
       await addEvent(run.id, 'step_done', {
         stepId: 1,
-        assignee: 'Lead Agent',
+        assignee: 'Eva',
         result: res.raw.slice(0, 1500),
       })
     )
-    const finalText = res.ok ? res.summary : `Tool ${toolSlug} error: ${res.summary}`
+    let finalText = res.ok ? res.summary : `Tool ${toolSlug} error: ${res.summary}`
+    if (res.ok && res.display?.kind === 'image' && typeof res.display.url === 'string') {
+      const alt = String(res.display.prompt ?? toolSlug).replace(/[\[\]]/g, '')
+      finalText = `${res.summary}\n\n![${alt}](${res.display.url})`
+    }
     doneEvs.push(
       await addEvent(run.id, 'final', {
         answer: finalText,
@@ -472,7 +650,8 @@ async function runLiveToolCall(
       const convo: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
         {
           role: 'system',
-          content: `You are ${subName}, a specialist subagent of NEXUS. Role: ${role}.
+          content: `You are ${subName}, a specialist subagent reporting to Eva (Lead Agent of NEXUS). Role: ${role}.
+If your task requires extra specialist bots, subagents, or AI employees, you may invoke \`manage_org\` (actions: create_bot, create_subagent, hire, review).
 Available tools:\n${toolList}
 Respond ONLY with minified JSON:
 {"action":"use_tool","tool":"<slug>","args":{...},"thought":"<one sentence>"} or {"action":"finish","result":"<concise answer>","thought":"<one sentence>"}`,
@@ -662,6 +841,81 @@ Respond ONLY with minified JSON:
     return { ok: false, error: `Unsupported action: ${action}` }
   }
 
+  if (name === 'manage_org') {
+    const res = await executeTool('manage_org', args, '', conversationId)
+    safeSend(ws, { type: 'sync', target: 'org' })
+    return { ok: res.ok, summary: res.summary, output: res.raw }
+  }
+
+  if (name === 'manage_automation') {
+    const res = await executeTool('manage_automation', args, '', conversationId)
+    safeSend(ws, { type: 'sync', target: 'automations' })
+    return { ok: res.ok, summary: res.summary, output: res.raw }
+  }
+
+  if (name === 'inspect_project') {
+    const res = await executeTool('inspect_project', args, '', conversationId)
+    safeSend(ws, { type: 'sync', target: 'all' })
+    return { ok: res.ok, summary: res.summary, output: res.raw }
+  }
+
+  if (name === 'enter_sleep_mode') {
+    safeSend(ws, { type: 'eva_sleep' })
+    return { ok: true, sleeping: true, message: 'Eva entering Sleep Mode.' }
+  }
+
+  if (
+    name === 'app_control' ||
+    name === 'browser_control' ||
+    name === 'agent_email' ||
+    name === 'self_manage_extensions' ||
+    name === 'device_control'
+  ) {
+    const voiceChain =
+      name !== 'browser_control'
+        ? reasoningChain.startChain({
+            source: 'voice_live',
+            goal: `Voice command: ${name}${typeof args.action === 'string' ? ` (${args.action})` : ''}`,
+            actor: 'Eva',
+            goalDetail: `Executing spoken workspace directive via ${name}.`,
+          })
+        : null
+    if (voiceChain) {
+      reasoningChain.addNode(voiceChain.id, {
+        kind: 'decision',
+        title: `Dispatch ${name}`,
+        detail: `Arguments: ${JSON.stringify(args).slice(0, 260)}`,
+        actor: 'Eva',
+        tool: name,
+      })
+    }
+    const res = await executeTool(name, args, '', conversationId)
+    if (voiceChain) {
+      if (!res.ok) {
+        reasoningChain.addNode(voiceChain.id, {
+          kind: 'self_correction',
+          title: `${name} returned an error`,
+          detail: res.summary,
+          actor: 'Eva',
+          tool: name,
+          correction: {
+            whatFailed: res.summary,
+            pivotStrategy: 'Report issue clearly to operator or choose fallback capability.',
+          },
+        })
+      }
+      reasoningChain.completeChain(voiceChain.id, {
+        ok: res.ok,
+        verificationDetail: res.summary,
+        actor: 'Eva',
+      })
+    }
+    if (name === 'self_manage_extensions') {
+      safeSend(ws, { type: 'sync', target: 'all' })
+    }
+    return { ok: res.ok, summary: res.summary, output: res.raw }
+  }
+
   return { ok: false, error: `Unknown function: ${name}` }
 }
 
@@ -770,6 +1024,11 @@ export async function handleLiveSocket(ws: WebSocket, req: IncomingMessage): Pro
           const trimmed = msg.text.trim()
           userTranscriptBuf = userTranscriptBuf ? `${userTranscriptBuf}\n${trimmed}` : trimmed
           session.sendRealtimeInput({ text: trimmed })
+        } else if (msg.type === 'wake_ack') {
+          // User woke Eva with "Hey Eva" and no trailing command — respond aloud warmly & briefly
+          session.sendRealtimeInput({
+            text: '[System wake cue: The user just said "Hey Eva" to wake you up. Greet them aloud in 3 to 5 friendly words like "Yes, I\'m listening!" and wait for their request.]',
+          })
         } else if (msg.type === 'stop') {
           closed = true
           void flushTurn()

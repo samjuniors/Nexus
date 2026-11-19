@@ -7,6 +7,7 @@ import { ensureCodeFenced, recallMemories, formatRecallBlock, missionVerbosityDi
 import { graphRecallMemories, touchRecalledMemories } from '@/lib/agent/memory-graph-store'
 import { brainCache, refineStats, coachLessonsFor, coachBlock, coachReviewRun, gradeLessons } from '@/lib/agent/brain-runtime'
 import { appBrainAnswerMessages, routeWithAppBrain } from '@/lib/agent/app-brain'
+import { reasoningChain } from '@/lib/agent/reasoning-chain'
 import type {
   AgentPlan,
   CapabilityRef,
@@ -17,10 +18,10 @@ import type {
   SubagentDef,
 } from '@/lib/agent/types'
 
-const MAX_STEPS = 6
-const MAX_TOOL_USES_PER_STEP = 3
-const MAX_RUN_TOOL_CALLS = 14
-const LEAD = 'Lead Agent'
+const MAX_STEPS = 8
+const MAX_TOOL_USES_PER_STEP = 5
+const MAX_RUN_TOOL_CALLS = 24
+const LEAD = 'Eva'
 
 const busy = new Set<string>()
 
@@ -453,11 +454,12 @@ export async function stepRun(runId: string): Promise<StepResponse> {
 // ---------- planning ----------
 
 async function doPlan(run: { id: string; conversationId: string; userMessage: string }): Promise<StepResponse> {
-  const [skills, tools, plugins, mcps] = await Promise.all([
+  const [skills, tools, plugins, mcps, employees] = await Promise.all([
     db.skill.findMany({ where: { enabled: true } }),
     getEffectiveTools(),
     db.plugin.findMany({ where: { installed: true, enabled: true } }),
     db.mcpServer.findMany({ where: { status: 'connected', enabled: true } }),
+    db.aiEmployee.findMany({ where: { status: 'active' }, orderBy: { name: 'asc' } }),
   ])
   const [memoryBlock, historyBlock] = await Promise.all([
     getMemoriesBlock(),
@@ -478,6 +480,10 @@ async function doPlan(run: { id: string; conversationId: string; userMessage: st
       return `- ${m.name} (tools: ${ts.map((t) => t.slug).join(', ') || 'none'})`
     })
     .join('\n') || '(none)'
+  const orgList =
+    employees
+      .map((e) => `- ${e.name} [${e.kind}] — ${e.title} (${e.department}): ${e.role}`)
+      .join('\n') || '(none hired yet)'
 
   // ---- NEXUS brain overlay: GRAPH-FIRST recall (walk the entity graph
   // ---- under a token budget, keyword fallback) + THE COACH's lessons from
@@ -551,7 +557,7 @@ async function doPlan(run: { id: string; conversationId: string; userMessage: st
     }
   }
 
-  const system = `You are NEXUS, an autonomous AI agent planner. Given a user task, decide HOW to accomplish it using the available capabilities. You must reference ONLY items from the lists below.
+  const system = `You are Eva, the Lead Agent and Executive Orchestrator of NEXUS. Given a user task, decide HOW to accomplish it using the available capabilities. You must reference ONLY items from the lists below.
 
 AVAILABLE SKILLS (knowledge packs you may load):
 ${skillsList}
@@ -565,16 +571,21 @@ ${pluginsList}
 MCP SERVERS:
 ${mcpsList}
 
+ORG AI TEAM & BOTS (reporting to Eva — assign matching specialist work by exact name, or use manage_org to review/hire/create bots & subagents when needed):
+${orgList}
+
 RULES:
 - Choose capabilities that are genuinely useful for THIS task. Do not pad the list.
 - Break the task into 1-${MAX_STEPS} concrete, verifiable steps. Merge tiny sub-tasks; do not create filler steps.
-- For multi-step or specialized work, delegate steps to named specialist subagents (e.g. "Researcher", "Analyst", "Designer", "Writer", "Coder"). Use "Lead Agent" for simple or final-synthesis steps.
-- Trivial tasks (greetings, simple Q&A, single questions) need exactly ONE step assigned to "Lead Agent" with no tools.
+- For multi-step or specialized work, delegate steps to matching AI Team members above (using their exact name) or specialist subagents (e.g. "Researcher", "Analyst", "Designer", "Writer", "Coder"). Use "${LEAD}" for Lead Agent orchestration or final synthesis steps.
+- Workforce authority: If a task needs a new recurring AI employee, custom bot, or dedicated subagent (or asks to review/audit your AI employees/subagents), plan a step using \`manage_org\` (\`review\`, \`hire\`, \`create_bot\`, \`create_subagent\`). Both Eva and specialist subagents may create bots or agents when the task calls for it.
+- Autonomous completion & browser/media mastery: NEVER stop halfway through a web or media task. For playing music or YouTube videos (e.g. "open youtube.com and play rafta rafta"), plan ONE direct step using \`browser_control\` with \`action: "play_media"\` and \`query\`. For multi-step web workflows, use \`browser_control\` with \`action: "autopilot"\` and \`goal\`. If a site needs an email address or verification OTP, use \`agent_email\` autonomously.
+- Trivial tasks (greetings, simple Q&A, single questions) need exactly ONE step assigned to "${LEAD}" with no tools.
 - If app memory contains something relevant, note it in a capability of type "memory".
 - If the task needs current facts, use web_search. For math/data, use run_code. For images, use generate_image or search_images.
 
 Respond ONLY with minified JSON:
-{"analysis":"one or two sentences of mission analysis","capabilities":[{"type":"skill|tool|plugin|mcp|memory","name":"<exact name from the lists>","reason":"<short reason>"}],"steps":[{"description":"<what to do>","assignee":"Lead Agent|<SubagentName>","uses":["<tool_slug>"]}],"subagents":[{"name":"<SubagentName>","role":"<specialty description>"}]}`
+{"analysis":"one or two sentences of mission analysis","capabilities":[{"type":"skill|tool|plugin|mcp|memory","name":"<exact name from the lists>","reason":"<short reason>"}],"steps":[{"description":"<what to do>","assignee":"${LEAD}|<SubagentName>","uses":["<tool_slug>"]}],"subagents":[{"name":"<SubagentName>","role":"<specialty description>"}]}`
 
   const user = `APP MEMORY (what you already remember about the user and past missions):
 ${memoryBlock}
@@ -592,11 +603,11 @@ Produce the mission plan JSON now.`
       { role: 'system', content: system },
       { role: 'user', content: user },
     ],
-    { temperature: 0.4 }
+    { temperature: 0.4, thinkingLevel: 'low' }
   )
 
   const parsed = extractJson<AgentPlan>(raw)
-  const plan = normalizePlan(parsed, run.userMessage)
+  const plan = normalizePlan(parsed, run.userMessage, employees)
   if (injectedLessonIds.length > 0) plan.lessons = injectedLessonIds
 
   // bump skill usage for loaded skills
@@ -642,10 +653,28 @@ Produce the mission plan JSON now.`
     data: { planJson: JSON.stringify(plan), phase: 'execute', stepIndex: 0, status: 'executing' },
   })
 
+  const chain = reasoningChain.startChain({
+    source: 'mission',
+    goal: run.userMessage,
+    actor: LEAD,
+    runId: run.id,
+    goalDetail: plan.analysis || `Decomposed into ${plan.steps.length} execution step(s).`,
+  })
+  reasoningChain.addNode(chain.id, {
+    kind: 'decision',
+    title: `Mission plan ready (${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'})`,
+    detail: plan.steps.map((s, i) => `${i + 1}. [${s.assignee}] ${s.description}`).join(' · '),
+    actor: LEAD,
+  })
+
   return { ok: true, status: 'executing', events }
 }
 
-function normalizePlan(parsed: AgentPlan | null, task: string): AgentPlan {
+function normalizePlan(
+  parsed: AgentPlan | null,
+  task: string,
+  employees: { name: string; title: string; role: string }[] = []
+): AgentPlan {
   const fallback: AgentPlan = {
     analysis: 'Executing the task directly.',
     capabilities: [],
@@ -666,7 +695,7 @@ function normalizePlan(parsed: AgentPlan | null, task: string): AgentPlan {
   const rawSubagents: SubagentDef[] = Array.isArray(parsed.subagents)
     ? parsed.subagents
         .filter((s) => s && typeof s.name === 'string' && s.name.trim())
-        .slice(0, 4)
+        .slice(0, 6)
         .map((s) => ({
           name: String(s.name).slice(0, 40),
           role: String(s.role ?? 'Specialist').slice(0, 300),
@@ -674,15 +703,29 @@ function normalizePlan(parsed: AgentPlan | null, task: string): AgentPlan {
         }))
     : []
 
+  // Ensure any Org AI employee referenced in steps is preserved in subagents with their official role
+  const empByLower = new Map(employees.map((e) => [e.name.toLowerCase(), e]))
+  for (const st of rawSteps) {
+    const emp = empByLower.get(st.assignee.toLowerCase())
+    if (emp && !rawSubagents.some((s) => s.name.toLowerCase() === emp.name.toLowerCase())) {
+      rawSubagents.push({
+        name: emp.name,
+        role: `${emp.title}: ${emp.role}`.slice(0, 300),
+        steps: [],
+      })
+    }
+  }
+
   // attach subagents to their steps
   for (const sa of rawSubagents) {
     for (const st of rawSteps) {
       if (st.assignee.toLowerCase() === sa.name.toLowerCase()) sa.steps.push(st.id)
     }
   }
-  // any assignee without a definition becomes Lead Agent
+  // any assignee without a definition (or legacy "Lead Agent") becomes Eva
   const saNames = new Set(rawSubagents.map((s) => s.name.toLowerCase()))
   for (const st of rawSteps) {
+    if (st.assignee.toLowerCase() === 'lead agent') st.assignee = LEAD
     if (st.assignee !== LEAD && !saNames.has(st.assignee.toLowerCase())) st.assignee = LEAD
   }
 
@@ -737,7 +780,13 @@ async function doExecuteStep(
   const events: EventOut[] = []
   const isSubagent = step.assignee !== LEAD
   const subagentDef = plan.subagents.find((s) => s.name.toLowerCase() === step.assignee.toLowerCase())
-  const tools = await getEffectiveTools()
+  const [tools, orgEmployees] = await Promise.all([
+    getEffectiveTools(),
+    db.aiEmployee.findMany({ where: { status: 'active' } }),
+  ])
+  const matchedEmployee = isSubagent
+    ? orgEmployees.find((e) => e.name.toLowerCase() === step.assignee.toLowerCase())
+    : undefined
   const events0 = await db.runEvent.findMany({
     where: { runId: run.id },
     orderBy: { seq: 'asc' },
@@ -762,7 +811,9 @@ async function doExecuteStep(
         events.push(
           await addEvent(run.id, 'subagent_spawn', {
             name: step.assignee,
-            role: subagentDef?.role ?? 'Specialist subagent',
+            role: matchedEmployee
+              ? `${matchedEmployee.title} (${matchedEmployee.department}) — ${matchedEmployee.role}`
+              : (subagentDef?.role ?? 'Specialist subagent'),
           })
         )
       }
@@ -770,10 +821,22 @@ async function doExecuteStep(
 
     const loadedSkills = plan.capabilities
       .filter((c) => c.type === 'skill')
-      .map((c) => c.name)
+      .map((c) => c.name.toLowerCase())
+    let empSkillSlugs: string[] = []
+    let empToolSlugs: string[] = []
+    if (matchedEmployee) {
+      try { empSkillSlugs = (JSON.parse(matchedEmployee.skillsJson) as string[]).map((s) => s.toLowerCase()) } catch { /* ignore */ }
+      try { empToolSlugs = (JSON.parse(matchedEmployee.toolsJson) as string[]).map((t) => t.toLowerCase()) } catch { /* ignore */ }
+    }
     const skillsRows = await db.skill.findMany({ where: { enabled: true } })
     const skillBlocks = skillsRows
-      .filter((s) => loadedSkills.some((n) => n.toLowerCase() === s.name.toLowerCase() || n.toLowerCase() === s.slug.toLowerCase()))
+      .filter(
+        (s) =>
+          loadedSkills.includes(s.name.toLowerCase()) ||
+          loadedSkills.includes(s.slug.toLowerCase()) ||
+          empSkillSlugs.includes(s.slug.toLowerCase()) ||
+          empSkillSlugs.includes(s.name.toLowerCase())
+      )
       .map((s) => `SKILL "${s.name}": ${s.prompt}`)
       .join('\n')
 
@@ -784,7 +847,13 @@ async function doExecuteStep(
 
     const priorResults = await getStepResults(run.id)
 
-    const system = `You are ${step.assignee}${isSubagent ? `, a specialist subagent of NEXUS (an autonomous AI agent)` : `, the Lead Agent of NEXUS (an autonomous AI agent)`}.${isSubagent && subagentDef ? `\nYour specialty: ${subagentDef.role}` : ''}
+    const orgPersona = matchedEmployee
+      ? `\nORG IDENTITY: ${matchedEmployee.title} · ${matchedEmployee.department} (${matchedEmployee.kind})\nROLE INSTRUCTIONS: ${matchedEmployee.systemPrompt || matchedEmployee.role}${empToolSlugs.length ? `\nPREFERRED TOOLS: ${empToolSlugs.join(', ')}` : ''}`
+      : isSubagent && subagentDef
+        ? `\nYour specialty: ${subagentDef.role}`
+        : ''
+
+    const system = `You are ${step.assignee}${isSubagent ? `, a specialist subagent reporting to Eva (Lead Agent of NEXUS)` : `, the Lead Agent of NEXUS (an autonomous AI agent)`}.${orgPersona}
 
 MISSION (from the user): ${run.userMessage}
 
@@ -792,9 +861,11 @@ ${skillBlocks ? `LOADED SKILLS:\n${skillBlocks}\n` : ''}AVAILABLE TOOLS (referen
 ${toolList}
 
 RULES:
-- Use tools when they genuinely help complete YOUR step. Do not repeat a tool call you already made with the same args.
-- If no tool is needed (or you already have the answer), finish immediately.
-- Your step result must be concise (< 1500 chars), factual, and self-contained so the Lead Agent can use it.
+- Use tools decisively to COMPLETE the goal end-to-end. Never stop halfway or ask the user to click/guide individual steps when you can finish with \`browser_control\` (\`play_media\` for songs/videos, \`autopilot\` for multi-step web tasks), \`agent_email\` (Eva's own inbox & OTP reader), or \`self_manage_extensions\`.
+- Do not repeat a tool call you already made with the exact same args — if one strategy hits a block, pivot autonomously to a better tool/action.
+- If this step or task requires creating a dedicated helper bot, spinning up a persistent subagent, reviewing Org staff, or hiring an AI employee, you are authorized to call \`manage_org\` (\`review\`, \`hire\`, \`create_bot\`, \`create_subagent\`).
+- If no tool is needed (or you already have the verified result), finish immediately.
+- Your step result must be concise (< 1500 chars), factual, and self-contained so Eva can use it.
 ${step.uses.length ? `- This step was planned to use: ${step.uses.join(', ')} (only if actually useful)\n` : ''}
 Respond ONLY with minified JSON, one of:
 {"action":"use_tool","tool":"<slug>","args":{...},"thought":"<one short sentence>"}
@@ -840,6 +911,30 @@ Begin.`
         display: result.display ?? null,
       })
     )
+    const activeChain = reasoningChain.getChainByRunId(run.id)
+    if (activeChain) {
+      if (result.ok) {
+        reasoningChain.addNode(activeChain.id, {
+          kind: 'observation',
+          title: `Tool succeeded: ${pending.tool}`,
+          detail: result.summary,
+          actor: step.assignee,
+          tool: pending.tool,
+        })
+      } else {
+        reasoningChain.addNode(activeChain.id, {
+          kind: 'self_correction',
+          title: `Tool failed: ${pending.tool} — pivoting`,
+          detail: result.summary,
+          actor: step.assignee,
+          tool: pending.tool,
+          correction: {
+            whatFailed: result.summary,
+            pivotStrategy: 'Pass error context to the next reasoning turn to select a fallback tool or strategy.',
+          },
+        })
+      }
+    }
     state.convo.push({ role: 'assistant', content: JSON.stringify(pending.decision) })
     state.convo.push({
       role: 'user',
@@ -852,7 +947,7 @@ Begin.`
   }
 
   // ----- one LLM turn -----
-  const raw = await chatText(state.convo, { temperature: 0.4 })
+  const raw = await chatText(state.convo, { temperature: 0.4, thinkingLevel: 'low' })
   const decision = extractJson<{
     action?: string
     tool?: string
@@ -863,12 +958,31 @@ Begin.`
 
   if (!decision) {
     state.parseFails++
+    const activeChain = reasoningChain.getChainByRunId(run.id)
+    if (activeChain) {
+      reasoningChain.addNode(activeChain.id, {
+        kind: 'self_correction',
+        title: 'Structured JSON retry',
+        detail: 'Step reply was not valid minified JSON; requesting a strictly formatted decision payload.',
+        actor: step.assignee,
+        correction: {
+          whatFailed: 'Unstructured LLM step output',
+          pivotStrategy: state.parseFails >= 2 ? 'Capture raw text output and complete step.' : 'Re-prompt with explicit JSON schema reminder.',
+        },
+      })
+    }
     if (state.parseFails >= 2) {
       const result = truncate(raw.replace(/\s+/g, ' '), 1500)
       events.push(await addEvent(run.id, 'thought', { actor: step.assignee, text: 'collected output, finishing step' }))
       events.push(
         await addEvent(run.id, 'step_done', { stepId: step.id, assignee: step.assignee, result })
       )
+      if (matchedEmployee) {
+        await db.aiEmployee.update({
+          where: { id: matchedEmployee.id },
+          data: { tasksCompleted: { increment: 1 }, lastActiveAt: new Date() },
+        }).catch(() => undefined)
+      }
       await advanceStep(run, plan)
       return { ok: true, status: nextStatus(run, plan), events }
     }
@@ -888,6 +1002,19 @@ Begin.`
     const toolSlug = decision.tool
     const known = tools.find((t) => t.slug === toolSlug)
     if (!known) {
+      const activeChain = reasoningChain.getChainByRunId(run.id)
+      if (activeChain) {
+        reasoningChain.addNode(activeChain.id, {
+          kind: 'self_correction',
+          title: `Unknown tool "${toolSlug}" — retrying`,
+          detail: `Requested unavailable tool "${toolSlug}"; re-grounding on active tool inventory.`,
+          actor: step.assignee,
+          correction: {
+            whatFailed: `Tool "${toolSlug}" does not exist or is disabled.`,
+            pivotStrategy: 'Select an enabled tool from the live tool registry.',
+          },
+        })
+      }
       state.convo.push({ role: 'assistant', content: JSON.stringify(decision) })
       state.convo.push({
         role: 'user',
@@ -908,6 +1035,16 @@ Begin.`
         args: JSON.parse(JSON.stringify(args).slice(0, 1200)) as Record<string, unknown>,
       })
     )
+    const activeChain = reasoningChain.getChainByRunId(run.id)
+    if (activeChain) {
+      reasoningChain.addNode(activeChain.id, {
+        kind: 'decision',
+        title: `Invoke ${known.name}`,
+        detail: thought || `Selected tool "${toolSlug}" for step ${step.id}.`,
+        actor: step.assignee,
+        tool: toolSlug,
+      })
+    }
 
     // progressive execution: return after the tool_call event so the UI can
     // render the in-flight state (e.g. the image generating card); the tool
@@ -928,6 +1065,22 @@ Begin.`
   events.push(
     await addEvent(run.id, 'step_done', { stepId: step.id, assignee: step.assignee, result })
   )
+  const activeChain = reasoningChain.getChainByRunId(run.id)
+  if (activeChain) {
+    reasoningChain.addNode(activeChain.id, {
+      kind: 'verification',
+      title: `Step ${step.id} verified`,
+      detail: truncate(result, 240),
+      actor: step.assignee,
+      verified: true,
+    })
+  }
+  if (matchedEmployee) {
+    await db.aiEmployee.update({
+      where: { id: matchedEmployee.id },
+      data: { tasksCompleted: { increment: 1 }, lastActiveAt: new Date() },
+    }).catch(() => undefined)
+  }
   await advanceStep(run, plan)
   return { ok: true, status: nextStatus(run, plan), events }
 }
@@ -1011,7 +1164,7 @@ async function fixHallucinatedImages(runId: string, answer: string): Promise<str
   }
 
   let used = 0
-  return answer.replace(/(!\[[^\]]*\]\()([^)\s]+)(\))/g, (full, pre: string, url: string, post: string) => {
+  let patched = answer.replace(/(!\[[^\]]*\]\()([^)\s]+)(\))/g, (full, pre: string, url: string, post: string) => {
     let isLegit: boolean
     if (/^https?:\/\//.test(url)) {
       // absolute URLs are trusted only when a tool actually produced them
@@ -1033,6 +1186,16 @@ async function fixHallucinatedImages(runId: string, answer: string): Promise<str
     const alt = pre.startsWith('![') ? pre.slice(2, -1) : 'image'
     return alt || full
   })
+
+  // Ensure any generated workspace image not yet referenced in the final answer is embedded visibly
+  for (const genUrl of generated) {
+    const fileName = extractName(genUrl)
+    if (!realFiles.has(fileName)) continue
+    if (!patched.includes(genUrl) && !patched.includes(fileName)) {
+      patched = `${patched.trimEnd()}\n\n![Generated image](${genUrl})`
+    }
+  }
+  return patched
 }
 
 
@@ -1048,7 +1211,7 @@ async function doSynthesize(run: { id: string; conversationId: string; userMessa
     ? missionVerbosityDirective(brainPrefs.prefs.missionVerbosity)
     : 'VERBOSITY: a well-structured medium-length report — result first, then the key findings.'
 
-  const system = `You are NEXUS, the Lead Agent. Your mission is complete. Now write the FINAL ANSWER for the user.
+  const system = `You are Eva, the Lead Agent of NEXUS. Your mission is complete. Now write the FINAL ANSWER for the user.
 
 MISSION: ${run.userMessage}
 
@@ -1078,7 +1241,7 @@ Respond ONLY with minified JSON:
       { role: 'system', content: system },
       { role: 'user', content: 'Write the final answer JSON now.' },
     ],
-    { temperature: 0.5 }
+    { temperature: 0.5, thinkingLevel: 'low' }
   )
 
   const parsed = extractJson<{
@@ -1115,6 +1278,15 @@ Respond ONLY with minified JSON:
   await db.message.create({
     data: { conversationId: run.conversationId, role: 'assistant', content: answer, runId: run.id },
   })
+
+  const activeChain = reasoningChain.getChainByRunId(run.id)
+  if (activeChain) {
+    reasoningChain.completeChain(activeChain.id, {
+      ok: true,
+      verificationDetail: `Synthesized verified final answer (${answer.length} chars) for "${truncate(run.userMessage, 120)}".`,
+      actor: LEAD,
+    })
+  }
 
   for (const m of memories) {
     const type = ['fact', 'preference', 'insight', 'decision', 'note'].includes(String(m.type)) ? String(m.type) : 'note'

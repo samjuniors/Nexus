@@ -9,6 +9,7 @@ import {
   ExternalLink,
   FileJson,
   Github,
+  Globe,
   Link2,
   Loader2,
   Package,
@@ -30,18 +31,20 @@ import type {
   FetchUrlResolutionDTO,
   GithubResolutionDTO,
   NpmPackageDTO,
+  OfficialMcpServerDTO,
   SmitheryServerDTO,
 } from '@/lib/agent/client'
 import { pluginIcon } from '@/components/agent/icons'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 
-type MarketTab = 'featured' | 'github' | 'smithery' | 'npm' | 'paste'
+type MarketTab = 'featured' | 'official-mcp' | 'smithery' | 'github' | 'npm' | 'paste'
 
 const TABS: { id: MarketTab; label: string }[] = [
-  { id: 'featured', label: 'Featured' },
+  { id: 'featured', label: 'Featured & Packs' },
+  { id: 'official-mcp', label: 'Official MCP' },
+  { id: 'smithery', label: 'Smithery MCP' },
   { id: 'github', label: 'GitHub' },
-  { id: 'smithery', label: 'MCP Registry' },
   { id: 'npm', label: 'npm' },
   { id: 'paste', label: 'JSON / URL' },
 ]
@@ -60,13 +63,19 @@ function formatCount(n: number): string {
 
 export function MarketplaceView() {
   const { toast } = useToast()
-  const { refreshPlugins, refreshSkills, refreshTools, refreshMcps } = useApp()
+  const { refreshPlugins, refreshSkills, refreshTools, refreshMcps, refreshOrg } = useApp()
   const [tab, setTab] = useState<MarketTab>('featured')
   const [installing, setInstalling] = useState<string | null>(null)
 
   // featured
   const [catalog, setCatalog] = useState<CatalogDTO | null>(null)
   const [catalogBusy, setCatalogBusy] = useState(false)
+
+  // official mcp registry
+  const [officialQuery, setOfficialQuery] = useState('')
+  const [officialServers, setOfficialServers] = useState<OfficialMcpServerDTO[] | null>(null)
+  const [officialBusy, setOfficialBusy] = useState(false)
+  const [officialError, setOfficialError] = useState('')
 
   // github
   const [ghUrl, setGhUrl] = useState('')
@@ -108,6 +117,19 @@ export function MarketplaceView() {
     }
   }, [toast])
 
+  const loadOfficialMcp = useCallback(async (query: string) => {
+    setOfficialBusy(true)
+    setOfficialError('')
+    try {
+      const { servers } = await api.marketplaceOfficialMcp(query)
+      setOfficialServers(servers)
+    } catch (e) {
+      setOfficialError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setOfficialBusy(false)
+    }
+  }, [])
+
   const loadSmithery = useCallback(
     async (query: string) => {
       setSmBusy(true)
@@ -139,16 +161,34 @@ export function MarketplaceView() {
 
   useEffect(() => {
     if (tab === 'featured' && !catalog && !catalogBusy) void loadCatalog()
+    if (tab === 'official-mcp' && officialServers === null && !officialBusy) void loadOfficialMcp('')
     if (tab === 'smithery' && smServers === null && !smBusy) void loadSmithery('')
     if (tab === 'npm' && npmPkgs === null && !npmBusy) void loadNpm('mcp-server')
-  }, [tab, catalog, catalogBusy, smServers, smBusy, npmPkgs, npmBusy, loadCatalog, loadSmithery, loadNpm])
+  }, [
+    tab,
+    catalog,
+    catalogBusy,
+    officialServers,
+    officialBusy,
+    smServers,
+    smBusy,
+    npmPkgs,
+    npmBusy,
+    loadCatalog,
+    loadOfficialMcp,
+    loadSmithery,
+    loadNpm,
+  ])
 
   // shared install runner
   const runInstall = async (key: string, payload: Parameters<typeof api.marketplaceInstall>[0], doneMsg: string) => {
     setInstalling(key)
     try {
       await api.marketplaceInstall(payload)
-      await Promise.all([refreshPlugins(), refreshSkills(), refreshTools(), refreshMcps()])
+      await Promise.all([refreshPlugins(), refreshSkills(), refreshTools(), refreshMcps(), refreshOrg()])
+      if (payload.type === 'pack') {
+        void loadCatalog()
+      }
       toast({ title: doneMsg })
       return true
     } catch (e) {
@@ -163,19 +203,22 @@ export function MarketplaceView() {
     }
   }
 
-  const resolveGithub = async () => {
-    if (!ghUrl.trim()) return
+  const resolveGithubWithUrl = async (targetUrl: string) => {
+    if (!targetUrl.trim()) return
+    setGhUrl(targetUrl.trim())
     setGhBusy(true)
     setGhError('')
     setGhResult(null)
     try {
-      setGhResult(await api.marketplaceGithub(ghUrl.trim()))
+      setGhResult(await api.marketplaceGithub(targetUrl.trim()))
     } catch (e) {
       setGhError(e instanceof Error ? e.message : String(e))
     } finally {
       setGhBusy(false)
     }
   }
+
+  const resolveGithub = async () => resolveGithubWithUrl(ghUrl)
 
   const resolveUrl = async () => {
     if (!urlText.trim()) return
@@ -227,8 +270,8 @@ export function MarketplaceView() {
             </Badge>
           </div>
           <p className="text-[13px] text-muted-foreground">
-            Install plugins, skills and MCP servers from real sources — the Smithery MCP registry, the npm
-            registry, GitHub repositories, or any https URL serving a manifest.
+            Install one-click bundles, official MCP registry servers, Smithery servers, npm packages, GitHub skills
+            (anthropics/skills &amp; skills.sh), or custom JSON manifests.
           </p>
         </header>
 
@@ -255,9 +298,131 @@ export function MarketplaceView() {
         {/* ------------------------------ FEATURED ------------------------------ */}
         {tab === 'featured' && (
           <div className="space-y-8">
+            {/* One-Click Recommended Packs */}
+            {catalog?.packs && catalog.packs.length > 0 && (
+              <section aria-label="One-click packs" className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Boxes className="h-3.5 w-3.5 text-primary" />
+                    <h2 className="terminal-label text-[10px] text-muted-foreground">One-Click Recommended Packs</h2>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground"
+                    disabled={catalogBusy}
+                    onClick={() => void loadCatalog()}
+                  >
+                    <RefreshCw className={cn('h-3.5 w-3.5', catalogBusy && 'animate-spin')} />
+                    Refresh
+                  </Button>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {catalog.packs.map((pack) => (
+                    <div
+                      key={pack.id}
+                      className="flex flex-col justify-between rounded-xl border border-white/[0.08] bg-black/20 p-4"
+                    >
+                      <div>
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <h3 className="text-sm font-medium">{pack.name}</h3>
+                              <Badge variant="outline" className="h-4 border-white/15 bg-white/5 px-1.5 text-[9px] text-zinc-300">
+                                {pack.installed ? 'Installed' : 'Pack'}
+                              </Badge>
+                            </div>
+                            <p className="mt-0.5 text-[11px] text-zinc-300">{pack.tagline}</p>
+                            <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{pack.description}</p>
+                          </div>
+                        </div>
+                        <div className="mt-2.5 flex flex-wrap gap-1.5">
+                          {pack.pluginSlugs.map((slug) => (
+                            <code key={slug} className="rounded bg-white/[0.04] px-1.5 py-0.5 font-mono text-[9.5px] text-zinc-300">
+                              plugin:{slug}
+                            </code>
+                          ))}
+                          {pack.skillSlugs.map((slug) => (
+                            <code key={slug} className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[9.5px] text-primary">
+                              skill:{slug}
+                            </code>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between border-t border-white/[0.06] pt-3">
+                        <span className="font-mono text-[10px] text-muted-foreground tabular-nums">
+                          {pack.pluginSlugs.length} plugins · {pack.skillSlugs.length} skills
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 gap-1.5 border-primary/30 bg-primary/10 px-2.5 text-[11px] text-primary hover:bg-primary/20 hover:text-primary"
+                          disabled={installing === `pack-${pack.id}`}
+                          onClick={() =>
+                            void runInstall(
+                              `pack-${pack.id}`,
+                              { type: 'pack', packId: pack.id },
+                              `Installed ${pack.name}`
+                            )
+                          }
+                        >
+                          {installing === `pack-${pack.id}` ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Download className="h-3.5 w-3.5" />
+                          )}
+                          {pack.installed ? 'Re-apply Pack' : 'One-Click Install'}
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Curated Sources */}
+            {catalog?.sources && catalog.sources.length > 0 && (
+              <section aria-label="Curated sources" className="space-y-3">
+                <h2 className="terminal-label text-[10px] text-muted-foreground">Curated Plugin &amp; Skill Sources</h2>
+                <div className="grid gap-2.5 sm:grid-cols-3">
+                  {catalog.sources.map((src) => {
+                    const isGithub = src.url.includes('github.com/')
+                    return (
+                      <button
+                        key={src.id}
+                        type="button"
+                        onClick={() => {
+                          if (src.id === 'official-mcp') {
+                            setTab('official-mcp')
+                          } else if (src.id === 'smithery') {
+                            setTab('smithery')
+                          } else {
+                            setTab('github')
+                            void resolveGithubWithUrl(src.url)
+                          }
+                        }}
+                        className="flex flex-col items-start rounded-xl border border-white/[0.08] bg-black/20 p-3.5 text-left transition-colors hover:border-white/20 hover:bg-white/[0.03]"
+                      >
+                        <div className="flex w-full items-center justify-between gap-2">
+                          <span className="text-[12.5px] font-medium text-zinc-100">{src.name}</span>
+                          <Badge variant="outline" className="h-4 border-white/10 bg-white/[0.04] px-1.5 text-[9px] text-muted-foreground">
+                            {isGithub ? 'github' : 'registry'}
+                          </Badge>
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-muted-foreground">{src.description}</p>
+                        <span className="mt-2 font-mono text-[10px] text-primary">
+                          {isGithub ? 'Scan repo in 1 click →' : 'Browse live registry →'}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </section>
+            )}
+
             <section aria-label="Featured plugins" className="space-y-3">
               <div className="flex items-center justify-between">
-                <h2 className="terminal-label text-[10px] text-muted-foreground">{'// plugins'}</h2>
+                <h2 className="terminal-label text-[10px] text-muted-foreground">Available Plugins</h2>
                 <Button
                   size="sm"
                   variant="ghost"
@@ -330,7 +495,7 @@ export function MarketplaceView() {
             </section>
 
             <section aria-label="Restorable default skills" className="space-y-3">
-              <h2 className="terminal-label text-[10px] text-muted-foreground">{'// default skills (not installed)'}</h2>
+              <h2 className="terminal-label text-[10px] text-muted-foreground">Default Skills (not installed)</h2>
               <div className="grid gap-3 sm:grid-cols-2">
                 {catalog?.skills.map((s) => {
                   const Icon = pluginIcon(s.icon)
@@ -371,6 +536,123 @@ export function MarketplaceView() {
                 )}
               </div>
             </section>
+          </div>
+        )}
+
+        {/* ------------------------------ OFFICIAL MCP REGISTRY ------------------------------ */}
+        {tab === 'official-mcp' && (
+          <div className="space-y-4">
+            <form
+              className="flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault()
+                void loadOfficialMcp(officialQuery)
+              }}
+            >
+              <div className="relative flex-1">
+                <Globe className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={officialQuery}
+                  onChange={(e) => setOfficialQuery(e.target.value)}
+                  placeholder="Search Official Model Context Protocol Registry…"
+                  className="border-white/10 bg-black/40 pl-9 text-[13px] focus-visible:ring-primary/40"
+                  aria-label="Search Official MCP Registry"
+                />
+              </div>
+              <Button type="submit" size="sm" className="gap-1.5 text-xs" disabled={officialBusy}>
+                {officialBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                Search
+              </Button>
+            </form>
+            <p className="text-[11px] text-muted-foreground">
+              Live from{' '}
+              <a
+                href="https://registry.modelcontextprotocol.io"
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary hover:underline"
+              >
+                registry.modelcontextprotocol.io
+              </a>{' '}
+              — the official Model Context Protocol server registry. Connect any server in one click.
+            </p>
+            {officialError && (
+              <p className="rounded-lg border border-red-400/30 bg-red-400/10 px-4 py-3 text-[12px] text-red-300" role="alert">
+                {officialError}
+              </p>
+            )}
+            <div className="grid gap-3 sm:grid-cols-2">
+              {officialServers?.map((s) => (
+                <div key={s.name} className="flex flex-col rounded-xl border border-white/8 bg-black/20 p-4">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/[0.1] bg-white/[0.04]">
+                      <Server className="h-4.5 w-4.5 text-zinc-300" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <h3 className="truncate font-mono text-[13px] font-medium">{s.name}</h3>
+                        {s.version && (
+                          <Badge variant="outline" className="h-4 border-white/15 bg-white/5 px-1.5 font-mono text-[9px] text-zinc-300">
+                            v{s.version}
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-[12px] leading-relaxed text-muted-foreground">
+                        {s.description || 'Official MCP server'}
+                      </p>
+                      {s.packages.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground/80">
+                          {s.packages.slice(0, 2).map((pkg) => (
+                            <code key={pkg} className="rounded bg-white/[0.04] px-1.5 py-0.5 font-mono text-[9.5px]">
+                              {pkg}
+                            </code>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-2 border-t border-white/6 pt-3">
+                    {s.repositoryUrl ? (
+                      <a
+                        href={s.repositoryUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-primary"
+                      >
+                        <ExternalLink className="h-3 w-3" /> repository
+                      </a>
+                    ) : (
+                      <span />
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 gap-1.5 border-primary/30 bg-primary/10 px-2.5 text-[11px] text-primary hover:bg-primary/20 hover:text-primary"
+                      disabled={installing === `official-${s.name}`}
+                      onClick={() =>
+                        void runInstall(
+                          `official-${s.name}`,
+                          { type: 'official-mcp', payload: { ...s } },
+                          `${s.name} connected`
+                        )
+                      }
+                    >
+                      {installing === `official-${s.name}` ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Download className="h-3.5 w-3.5" />
+                      )}
+                      Connect
+                    </Button>
+                  </div>
+                </div>
+              ))}
+              {officialServers?.length === 0 && !officialBusy && (
+                <p className="col-span-2 rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-muted-foreground">
+                  No official MCP servers matched “{officialQuery}”.
+                </p>
+              )}
+            </div>
           </div>
         )}
 
@@ -715,7 +997,7 @@ export function MarketplaceView() {
         {tab === 'paste' && (
           <div className="space-y-4">
             <div className="rounded-xl border border-white/8 bg-black/20 p-4">
-              <h2 className="terminal-label mb-3 text-[10px] text-muted-foreground">{'// install from url'}</h2>
+              <h2 className="terminal-label mb-3 text-[10px] text-muted-foreground">Install from URL</h2>
               <form
                 className="flex flex-col gap-2 sm:flex-row"
                 onSubmit={(e) => {
@@ -757,7 +1039,7 @@ export function MarketplaceView() {
             </div>
 
             <div className="rounded-xl border border-white/8 bg-black/20 p-4">
-              <h2 className="terminal-label mb-3 text-[10px] text-muted-foreground">{'// paste manifest json'}</h2>
+              <h2 className="terminal-label mb-3 text-[10px] text-muted-foreground">Paste Manifest JSON</h2>
               <Textarea
                 value={jsonText}
                 onChange={(e) => setJsonText(e.target.value)}

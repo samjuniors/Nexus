@@ -4,6 +4,8 @@
 
 export type Tab =
   | 'agent'
+  | 'org'
+  | 'automations'
   | 'brain'
   | 'artifacts'
   | 'marketplace'
@@ -317,11 +319,14 @@ export interface FetchUrlResolutionDTO {
 
 // ---------- GBRAIN graph (interactive memory graph) ----------
 
+export type GBrainCategoryId = 'agents' | 'projects' | 'tools' | 'concepts' | 'people' | 'facts'
+
 export interface GBrainNodeDTO {
   id: string
   name: string
   variants: string[]
   origin: 'auto' | 'manual'
+  category?: GBrainCategoryId
   degree: number
   memoryCount: number
   createdAt: string
@@ -339,7 +344,16 @@ export interface GBrainEdgeDTO {
 export interface GBrainGraphDTO {
   nodes: GBrainNodeDTO[]
   edges: GBrainEdgeDTO[]
-  stats: { nodes: number; edges: number; extracted: number; inferred: number; manual: number; auto: number; orphaned: number }
+  stats: {
+    nodes: number
+    edges: number
+    extracted: number
+    inferred: number
+    manual: number
+    auto: number
+    orphaned: number
+    byCategory?: Record<GBrainCategoryId, number>
+  }
 }
 
 export interface GBrainNodeDetailDTO {
@@ -358,9 +372,99 @@ export interface GBrainNodeDetailDTO {
   }[]
 }
 
+export interface CuratedPackDTO {
+  id: string
+  name: string
+  tagline: string
+  description: string
+  icon: string
+  pluginSlugs: string[]
+  skillSlugs: string[]
+  installed: boolean
+  indexesProject?: boolean
+}
+
+export interface CuratedSourceDTO {
+  id: string
+  name: string
+  url: string
+  description: string
+}
+
+export interface OfficialMcpServerDTO {
+  name: string
+  description: string
+  version: string
+  repositoryUrl: string | null
+  packages: string[]
+}
+
+export interface AiEmployeeDTO {
+  id: string
+  slug: string
+  name: string
+  title: string
+  department: string
+  kind: 'employee' | 'bot' | 'subagent' | string
+  role: string
+  reportsToId: string | null
+  systemPrompt: string
+  skillsJson: string
+  toolsJson: string
+  autonomy: string
+  status: string
+  icon: string
+  tasksCompleted: number
+  lastActiveAt: string | null
+  createdAt: string
+}
+
+export interface AutomationRunDTO {
+  id: string
+  automationId: string
+  status: string
+  runId: string | null
+  summary: string
+  error: string
+  startedAt: string
+  finishedAt: string | null
+}
+
+export interface AutomationDTO {
+  id: string
+  name: string
+  description: string
+  prompt: string
+  triggerType: 'interval' | 'cron' | 'once' | string
+  schedule: string
+  assigneeId: string | null
+  assignee?: AiEmployeeDTO | null
+  enabled: boolean
+  lastRunAt: string | null
+  nextRunAt: string | null
+  lastStatus: string
+  lastResult: string
+  runCount: number
+  runs?: AutomationRunDTO[]
+  createdAt: string
+}
+
+export interface PortableBrainBundleDTO {
+  format: 'nexus-portable-brain/v1'
+  exportedAt: string
+  personality: string
+  appPrefs: BrainInfo['appPrefs']
+  memories: { content: string; type: string; kind: string; importance: number; alwaysLoad?: boolean; truth?: string | null; createdAt?: string }[]
+  entities: { name: string; variants: string[]; origin: string }[]
+  edges: { source: string; target: string; relation: string; kind: string }[]
+  skills: { slug: string; name: string; description: string; category: string; prompt: string }[]
+}
+
 export interface CatalogDTO {
   plugins: PluginDTO[]
   skills: { slug: string; name: string; description: string; category: string; icon: string; prompt: string }[]
+  packs?: CuratedPackDTO[]
+  sources?: CuratedSourceDTO[]
 }
 
 // ---------- API helpers ----------
@@ -378,7 +482,7 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  conversations: () => jsonFetch<{ conversations: ConversationDTO[] }>('/api/conversations'),
+  conversations: (init?: RequestInit) => jsonFetch<{ conversations: ConversationDTO[] }>('/api/conversations', init),
   createConversation: () => jsonFetch<{ conversation: ConversationDTO }>('/api/conversations', { method: 'POST' }),
   deleteConversation: (id: string) => jsonFetch<{ ok: boolean }>(`/api/conversations?id=${id}`, { method: 'DELETE' }),
 
@@ -403,9 +507,25 @@ export const api = {
   brainGraph: () =>
     jsonFetch<{ graph: BrainGraphDTO; report: GraphReportDTO }>('/api/brain?graph=1'),
   gbrainGraph: () => jsonFetch<GBrainGraphDTO>('/api/brain/graph'),
-  gbrainGraphAction: (action: 'inspect' | 'create' | 'remove' | 'rename' | 'alias' | 'prune', extra?: { nodeId?: string; name?: string; note?: string; alias?: string }) =>
+  gbrainGraphAction: (
+    action: 'inspect' | 'create' | 'remove' | 'rename' | 'alias' | 'prune' | 'sync_workspace' | 'link' | 'set_category',
+    extra?: {
+      nodeId?: string
+      targetId?: string
+      relation?: string
+      name?: string
+      note?: string
+      alias?: string
+      category?: GBrainCategoryId
+    }
+  ) =>
     jsonFetch<
-      (GBrainNodeDetailDTO & { removed?: { unlinked: number; edges: number } }) | { kind: string; entity?: GBrainNodeDTO; hint?: string; via?: string } | { pruned: number }
+      | (GBrainNodeDetailDTO & { removed?: { unlinked: number; edges: number } })
+      | { kind: 'created' | 'exists' | 'near_match'; entity?: GBrainNodeDTO; hint?: string; via?: string }
+      | { pruned: number }
+      | { entities: number; edges: number }
+      | { relation: string }
+      | { category: GBrainCategoryId }
     >('/api/brain/graph', {
       method: 'POST',
       body: JSON.stringify({ action, ...extra }),
@@ -462,6 +582,10 @@ export const api = {
 
   // ---------- Marketplace ----------
   marketplaceCatalog: () => jsonFetch<CatalogDTO>('/api/marketplace?action=catalog'),
+  marketplaceOfficialMcp: (query: string) =>
+    jsonFetch<{ servers: OfficialMcpServerDTO[]; total: number }>(
+      `/api/marketplace?action=official-mcp&query=${encodeURIComponent(query)}`
+    ),
   marketplaceSmithery: (query: string) =>
     jsonFetch<{ servers: SmitheryServerDTO[]; total: number }>(
       `/api/marketplace?action=smithery&query=${encodeURIComponent(query)}`
@@ -473,10 +597,126 @@ export const api = {
   marketplaceFetchUrl: (url: string) =>
     jsonFetch<FetchUrlResolutionDTO>(`/api/marketplace?action=fetch-url&url=${encodeURIComponent(url)}`),
   marketplaceInstall: (payload: {
-    type: 'plugin' | 'skill' | 'mcp' | 'smithery' | 'npm'
+    type: 'plugin' | 'skill' | 'mcp' | 'smithery' | 'npm' | 'pack' | 'official-mcp'
+    packId?: string
     payload?: unknown
     origin?: Record<string, unknown>
-  }) => jsonFetch<{ ok: boolean; kind: string }>('/api/marketplace', { method: 'POST', body: JSON.stringify(payload) }),
+  }) =>
+    jsonFetch<{ ok: boolean; kind: string; installedPlugins?: number; enabledSkills?: number; memoriesSaved?: number }>(
+      '/api/marketplace',
+      { method: 'POST', body: JSON.stringify(payload) }
+    ),
+
+  // ---------- Org / AI Employees & Bots ----------
+  orgList: () =>
+    jsonFetch<{
+      employees: AiEmployeeDTO[]
+      availableSkills: { slug: string; name: string }[]
+      availableTools: { slug: string; name: string }[]
+    }>('/api/org'),
+  orgCreate: (payload: {
+    name: string
+    title?: string
+    department?: string
+    kind?: string
+    role: string
+    reportsToId?: string | null
+    systemPrompt?: string
+    skills?: string[]
+    tools?: string[]
+    autonomy?: string
+  }) => jsonFetch<{ employee: AiEmployeeDTO }>('/api/org', { method: 'POST', body: JSON.stringify(payload) }),
+  orgDelegate: (id: string, task: string) =>
+    jsonFetch<{ output: string; employee: AiEmployeeDTO }>('/api/org', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'delegate', id, task }),
+    }),
+  orgReview: (params?: { id?: string; focus?: string }) =>
+    jsonFetch<{
+      ok: boolean
+      review: {
+        total: number
+        active: number
+        paused: number
+        employees: number
+        bots: number
+        subagents: number
+        totalTasksCompleted: number
+        underutilized: string[]
+        recommendations: {
+          suggestedKind: 'employee' | 'bot' | 'subagent'
+          suggestedName: string
+          department: string
+          reason: string
+        }[]
+        summaryText: string
+      }
+      assessment: string
+    }>('/api/org', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'review', ...params }),
+    }),
+  orgUpdate: (payload: {
+    id: string
+    name?: string
+    title?: string
+    department?: string
+    kind?: string
+    role?: string
+    reportsToId?: string | null
+    systemPrompt?: string
+    skills?: string[]
+    tools?: string[]
+    autonomy?: string
+    status?: string
+  }) => jsonFetch<{ employee: AiEmployeeDTO }>('/api/org', { method: 'PATCH', body: JSON.stringify(payload) }),
+  orgDelete: (id: string) => jsonFetch<{ ok: boolean }>(`/api/org?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ---------- Automations / Scheduled Tasks ----------
+  automationsList: () => jsonFetch<{ automations: AutomationDTO[] }>('/api/automations'),
+  automationCreate: (payload: {
+    name: string
+    description?: string
+    prompt: string
+    triggerType: 'interval' | 'cron' | 'once'
+    schedule: string
+    assigneeId?: string | null
+    enabled?: boolean
+  }) => jsonFetch<{ automation: AutomationDTO }>('/api/automations', { method: 'POST', body: JSON.stringify(payload) }),
+  automationRunNow: (id: string) =>
+    jsonFetch<{ ok: boolean; result: { ok: boolean; status: string; summary: string }; automation: AutomationDTO }>(
+      '/api/automations',
+      { method: 'POST', body: JSON.stringify({ action: 'run', id }) }
+    ),
+  automationUpdate: (payload: {
+    id: string
+    name?: string
+    description?: string
+    prompt?: string
+    triggerType?: string
+    schedule?: string
+    assigneeId?: string | null
+    enabled?: boolean
+  }) => jsonFetch<{ automation: AutomationDTO }>('/api/automations', { method: 'PATCH', body: JSON.stringify(payload) }),
+  automationDelete: (id: string) =>
+    jsonFetch<{ ok: boolean }>(`/api/automations?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ---------- Portable Brain & Project Indexing ----------
+  brainIndexProject: () =>
+    jsonFetch<{ ok: boolean; projectIndex: { scan: { name: string; framework: string; prismaModels: string[]; apiRoutes: string[] }; memoriesSaved: number } }>(
+      '/api/brain',
+      { method: 'POST', body: JSON.stringify({ action: 'index-project' }) }
+    ),
+  brainExportPortable: () =>
+    jsonFetch<{ ok: boolean; bundle: PortableBrainBundleDTO }>('/api/brain', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'export-portable' }),
+    }),
+  brainImportPortable: (bundle: unknown) =>
+    jsonFetch<{ ok: boolean; imported: { memories: number; skills: number } }>('/api/brain', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'import-portable', bundle }),
+    }),
 
   memories: () => jsonFetch<{ memories: MemoryDTO[] }>('/api/memories'),
   addMemory: (content: string, type: string) =>

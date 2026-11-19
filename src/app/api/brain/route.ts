@@ -1,12 +1,23 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { getBrain, getBrainPrefs } from '@/lib/agent/brain-host'
-import { buildInventory, summarizeInventory, planDream, shouldAutoDream, buildGraphReport, describeAppControl, teachFact } from '@brain/index'
+import {
+  buildInventory,
+  summarizeInventory,
+  planDream,
+  shouldAutoDream,
+  buildGraphReport,
+  describeAppControl,
+  teachFact,
+  createPortableBundle,
+  parsePortableBundle,
+} from '@brain/index'
 import { buildAppGraph } from '@/lib/agent/graph-source'
 import { chatText, llmProviderInfo } from '@/lib/agent/zai'
 import { ensureSeeded } from '@/lib/agent/seed'
 import { brainCache, coachStats, coachReviewRun, refineStats } from '@/lib/agent/brain-runtime'
 import { graphMemoryStats, backfillGraphIndex, teachMemory } from '@/lib/agent/memory-graph-store'
+import { indexProjectIntoBrain } from '@/lib/agent/project-intel'
 
 export const runtime = 'nodejs'
 
@@ -161,6 +172,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       action?: string
       fact?: string
+      bundle?: unknown
       prefs?: { tone?: string; missionVerbosity?: string; autoDream?: boolean }
     }
     const brain = getBrain()
@@ -251,8 +263,123 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, backfill: result })
     }
 
+    // scan the current repo and index architectural facts into portable GBrain memory
+    if (body.action === 'index-project') {
+      const result = await indexProjectIntoBrain()
+      return NextResponse.json({ ok: true, projectIndex: result })
+    }
+
+    // export portable brain bundle JSON (zero app lock-in)
+    if (body.action === 'export-portable') {
+      const [status, memories, entities, edges, skills] = await Promise.all([
+        brain.status(),
+        db.memory.findMany({ orderBy: { createdAt: 'desc' }, take: 500 }),
+        db.memoryEntity.findMany({ orderBy: { createdAt: 'desc' }, take: 400 }),
+        db.memoryEdge.findMany({ orderBy: { createdAt: 'desc' }, take: 1000 }),
+        db.skill.findMany({ where: { enabled: true }, orderBy: { name: 'asc' } }),
+      ])
+      const entityNameById = new Map(entities.map((e) => [e.id, e.name]))
+      const bundle = createPortableBundle({
+        personality: status.personality,
+        appPrefs: status.appPrefs,
+        memories: memories.map((m) => ({
+          content: m.content,
+          type: m.type,
+          kind: m.kind,
+          importance: m.importance,
+          alwaysLoad: m.alwaysLoad,
+          truth: m.truth,
+          createdAt: new Date(m.createdAt).toISOString(),
+        })),
+        entities: entities.map((e) => {
+          let variants: string[] = []
+          try {
+            variants = JSON.parse(e.variants) as string[]
+          } catch {
+            variants = []
+          }
+          return { name: e.name, variants, origin: e.origin }
+        }),
+        edges: edges
+          .map((e) => ({
+            source: entityNameById.get(e.sourceId) ?? '',
+            target: entityNameById.get(e.targetId) ?? '',
+            relation: e.relation,
+            kind: e.kind,
+          }))
+          .filter((e) => e.source && e.target),
+        skills: skills.map((s) => ({
+          slug: s.slug,
+          name: s.name,
+          description: s.description,
+          category: s.category,
+          prompt: s.prompt,
+        })),
+      })
+      return NextResponse.json({ ok: true, bundle })
+    }
+
+    // import and merge a portable brain bundle
+    if (body.action === 'import-portable') {
+      const parsed = parsePortableBundle(body.bundle)
+      if (!parsed) {
+        return NextResponse.json(
+          { ok: false, error: 'Invalid portable brain bundle (expected format: nexus-portable-brain/v1)' },
+          { status: 400 }
+        )
+      }
+      await brain.setAppPrefs(parsed.appPrefs)
+
+      let importedMemories = 0
+      const existingMemContents = new Set(
+        (await db.memory.findMany({ select: { content: true } })).map((m) => m.content)
+      )
+      for (const m of parsed.memories) {
+        if (existingMemContents.has(m.content)) continue
+        existingMemContents.add(m.content)
+        const created = await db.memory.create({
+          data: {
+            content: m.content.slice(0, 400),
+            type: m.type || 'fact',
+            kind: m.kind || 'semantic',
+            importance: typeof m.importance === 'number' ? m.importance : 5,
+            alwaysLoad: m.alwaysLoad === true,
+            truth: m.truth ?? null,
+            source: 'user',
+          },
+        })
+        await teachMemory(created.content, 'user').catch(() => undefined)
+        importedMemories++
+      }
+
+      let importedSkills = 0
+      for (const s of parsed.skills) {
+        if (!s.slug || !s.name || !s.prompt) continue
+        const exists = await db.skill.findUnique({ where: { slug: s.slug } })
+        if (!exists) {
+          await db.skill.create({
+            data: {
+              slug: s.slug.slice(0, 60),
+              name: s.name.slice(0, 80),
+              description: (s.description || 'Imported skill').slice(0, 300),
+              category: s.category || 'custom',
+              icon: 'sparkles',
+              prompt: s.prompt.slice(0, 4000),
+              enabled: true,
+            },
+          })
+          importedSkills++
+        }
+      }
+
+      return NextResponse.json({
+        ok: true,
+        imported: { memories: importedMemories, skills: importedSkills },
+      })
+    }
+
     return NextResponse.json(
-      { ok: false, error: 'action must be "connect", "disconnect", "dream", "prefs", "coach", "teach" or "backfill"' },
+      { ok: false, error: 'Unsupported brain action' },
       { status: 400 }
     )
   } catch (e) {

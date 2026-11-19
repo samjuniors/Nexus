@@ -1,18 +1,35 @@
 'use client'
 
 import { useSyncExternalStore } from 'react'
+import { useTheme } from 'next-themes'
 import {
   Bot,
   Brain,
+  CalendarClock,
   ChevronDown,
+  Command,
+  Ear,
+  Focus,
   FolderOpen,
+  GitBranch,
+  Globe,
   Hexagon,
+  Laptop,
+  Mail,
+  Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
   Puzzle,
   Server,
+  Shield,
   Sparkles,
   Store,
+  Sun,
+  Users,
   Wrench,
 } from 'lucide-react'
+import { useEva } from '@/components/agent/eva-provider'
+import { useEvaControl, type SplitMode } from '@/lib/agent/eva-control-store'
 import { useApp } from '@/lib/agent/store'
 import type { Tab } from '@/lib/agent/client'
 import { cn } from '@/lib/utils'
@@ -23,11 +40,14 @@ interface NavItem {
   icon: typeof Bot
 }
 
-const MISSION_NAV: NavItem[] = [{ tab: 'agent', label: 'Agent', icon: Bot }]
-
-const BRAIN_NAV: NavItem[] = [{ tab: 'brain', label: 'Brain', icon: Brain }]
-
-const WORKSPACE_NAV: NavItem[] = [{ tab: 'artifacts', label: 'Artifacts', icon: FolderOpen }]
+const PRIMARY_NAV: NavItem[] = [
+  { tab: 'agent', label: 'Agent', icon: Bot },
+  { tab: 'org', label: 'Team & Org', icon: Users },
+  { tab: 'automations', label: 'Automations', icon: CalendarClock },
+  { tab: 'brain', label: 'Brain', icon: Brain },
+  { tab: 'artifacts', label: 'Artifacts', icon: FolderOpen },
+  { tab: 'memory', label: 'Memory', icon: Sparkles },
+]
 
 const CUSTOMIZE_NAV: NavItem[] = [
   { tab: 'marketplace', label: 'Marketplace', icon: Store },
@@ -37,16 +57,22 @@ const CUSTOMIZE_NAV: NavItem[] = [
   { tab: 'mcps', label: 'MCP Servers', icon: Server },
 ]
 
-const SYSTEM_NAV: NavItem[] = [{ tab: 'memory', label: 'Memory', icon: Brain }]
+const SPLIT_ACTIONS: { mode: SplitMode; label: string; title: string; icon: typeof Globe }[] = [
+  { mode: 'reasoning', label: 'Reasoning', title: 'Reasoning Chain', icon: GitBranch },
+  { mode: 'browser', label: 'Browser', title: 'Live Browser', icon: Globe },
+  { mode: 'identity', label: 'Inbox', title: 'Eva Email & Identity', icon: Mail },
+  { mode: 'permissions', label: 'Permissions', title: 'Permissions Vault', icon: Shield },
+  { mode: 'devices', label: 'Devices', title: 'Connected Computers', icon: Laptop },
+]
 
-/** localStorage-backed open/closed state for the Customize group. */
+/** localStorage-backed open/closed state for the Extensions group. */
 const customizeStore = {
   listeners: new Set<() => void>(),
   get(): boolean {
     try {
-      return window.localStorage.getItem('nexus-customize-open') !== '0'
+      return window.localStorage.getItem('nexus-customize-open') === '1'
     } catch {
-      return true
+      return false
     }
   },
   toggle() {
@@ -66,69 +92,95 @@ const customizeStore = {
 function NavButton({
   item,
   active,
+  collapsed,
   badge,
   indented,
-  right,
   onClick,
 }: {
   item: NavItem
   active: boolean
+  collapsed: boolean
   badge?: number
   indented?: boolean
-  right?: React.ReactNode
   onClick: () => void
 }) {
   const Icon = item.icon
   return (
     <button
+      type="button"
       onClick={onClick}
+      data-eva-target={`nav-${item.tab}`}
       aria-current={active ? 'page' : undefined}
+      title={collapsed ? item.label : undefined}
+      aria-label={item.label}
       className={cn(
-        'group flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors',
-        indented ? 'pl-3 ml-3 w-[calc(100%-0.75rem)]' : '',
+        'group flex w-full items-center rounded-lg border text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        collapsed ? 'justify-center px-0 py-2' : 'gap-2.5 px-2.5 py-2',
+        !collapsed && indented && 'ml-2.5 w-[calc(100%-0.625rem)] py-1.5 text-[12.5px]',
         active
-          ? 'border-primary/25 bg-primary/12 text-primary'
-          : 'border-transparent text-muted-foreground hover:bg-white/5 hover:text-foreground'
+          ? 'border-primary/25 bg-primary/10 font-medium text-foreground'
+          : 'border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground'
       )}
     >
       <Icon className={cn('h-4 w-4 shrink-0', active && 'text-primary')} />
-      <span className="flex-1 truncate text-left">{item.label}</span>
-      {badge !== undefined && badge > 0 && (
-        <span
-          className={cn(
-            'terminal-label min-w-6 rounded px-1.5 py-0.5 text-center text-[9px]',
-            active ? 'bg-primary/20 text-primary' : 'bg-white/6 text-muted-foreground'
-          )}
-        >
+      {!collapsed && <span className="flex-1 truncate text-left">{item.label}</span>}
+      {!collapsed && badge !== undefined && badge > 0 && (
+        <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
           {badge}
         </span>
       )}
-      {right}
     </button>
   )
 }
 
-function SectionLabel({ children }: { children: string }) {
+function SectionHeading({ label, collapsed }: { label: string; collapsed: boolean }) {
+  if (collapsed) {
+    return <div className="mx-2 my-2 border-t border-border/60" />
+  }
   return (
-    <div className="px-3 pt-4 pb-1.5">
-      <span className="terminal-label text-[9px] tracking-[0.18em] text-muted-foreground/70">{children}</span>
+    <div className="px-2.5 pt-3.5 pb-1">
+      <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+        {label}
+      </span>
     </div>
   )
 }
 
-export function Sidebar() {
-  const { activeTab, setTab, plugins, skills, tools, mcps, memories, artifacts, brain } = useApp()
+export function Sidebar({ onOpenCommandPalette }: { onOpenCommandPalette?: () => void }) {
+  const { activeTab, setTab, plugins, skills, tools, mcps, memories, artifacts, employees, automations, brain } =
+    useApp()
+  const { voice, wake, onToggleSleepMode, onArmEar } = useEva()
+  const layoutMode = useEvaControl((s) => s.layoutMode)
+  const setLayoutMode = useEvaControl((s) => s.setLayoutMode)
+  const collapsed = useEvaControl((s) => s.sidebarCollapsed)
+  const toggleCollapsed = useEvaControl((s) => s.toggleSidebarCollapsed)
+  const splitOpen = useEvaControl((s) => s.splitOpen)
+  const splitMode = useEvaControl((s) => s.splitMode)
+  const openSplit = useEvaControl((s) => s.openSplit)
+  const closeSplit = useEvaControl((s) => s.closeSplit)
+  const pendingPermissions = useEvaControl((s) => s.pendingPermissions.length)
+  const onlineDevices = useEvaControl((s) => s.onlineDeviceIds.length)
+  const reasoningCount = useEvaControl((s) => s.reasoningChains.length)
+
+  const { resolvedTheme, setTheme } = useTheme()
+  const mounted = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false
+  )
+  const isLight = mounted && resolvedTheme === 'light'
+
   const customizeOpen = useSyncExternalStore(
     (listener) => customizeStore.subscribe(listener),
     () => customizeStore.get(),
-    () => true
+    () => false
   )
-
-  const toggleCustomize = () => customizeStore.toggle()
 
   const brainConnected = brain?.connected ?? true
 
   const badges: Partial<Record<Tab, number>> = {
+    org: employees.filter((e) => e.status === 'active').length,
+    automations: automations.filter((a) => a.enabled).length,
     artifacts: artifacts.length,
     plugins: plugins.filter((p) => p.installed).length,
     skills: skills.filter((s) => s.enabled).length,
@@ -137,157 +189,277 @@ export function Sidebar() {
     memory: memories.length,
   }
 
-  const totalTools =
-    tools.filter((t) => t.enabled).length +
-    mcps
-      .filter((m) => m.status === 'connected' && m.enabled)
-      .reduce((acc, m) => {
-        try {
-          return acc + (JSON.parse(m.toolsJson) as unknown[]).length
-        } catch {
-          return acc
-        }
-      }, 0)
-
   const customizeActive = ['marketplace', 'plugins', 'skills', 'tools', 'mcps'].includes(activeTab)
 
+  const handleSelectTab = (tab: Tab) => {
+    if (layoutMode === 'focus') setLayoutMode('standard')
+    setTab(tab)
+  }
+
   return (
-    <aside className="hidden md:flex w-60 shrink-0 flex-col border-r border-border bg-sidebar">
-      {/* Logo */}
-      <div className="flex items-center gap-3 px-5 pt-6 pb-4">
-        <div className="relative flex h-10 w-10 items-center justify-center rounded-lg border border-white/12 bg-white/[0.05] shimmer-ring">
-          <Hexagon className="h-5 w-5 shimmer-text" />
-        </div>
-        <div>
-          <div className="text-[15px] font-semibold leading-tight tracking-wide">
-            <span className="shimmer-text">NEXUS</span>
-            <span className="text-foreground/70"> AGENT</span>
+    <aside
+      data-sidebar-rail={collapsed ? 'collapsed' : 'expanded'}
+      className={cn(
+        'hidden shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200 md:flex',
+        collapsed ? 'w-[60px]' : 'w-[224px]'
+      )}
+    >
+      {/* Brand + Collapse Toggle */}
+      <div
+        className={cn(
+          'flex items-center border-b border-border/60 py-3.5',
+          collapsed ? 'flex-col gap-2 px-2' : 'justify-between gap-2 px-3.5'
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => handleSelectTab('agent')}
+          className="flex min-w-0 items-center gap-2.5 text-left"
+          title="Nexus Agent OS"
+        >
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border bg-background/80">
+            <Hexagon className="h-4 w-4 text-foreground" />
           </div>
-          <div className="terminal-label text-[9px] text-muted-foreground">autonomous agent os</div>
-        </div>
+          {!collapsed && (
+            <div className="min-w-0">
+              <div className="truncate text-[13.5px] font-semibold tracking-tight text-foreground">
+                Nexus
+              </div>
+              <div className="truncate font-mono text-[9.5px] text-muted-foreground">
+                {brainConnected ? 'overlay active' : 'spine mode'}
+              </div>
+            </div>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          data-eva-target="toggle-sidebar"
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={collapsed ? 'Expand navigation rail' : 'Collapse to slim rail'}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+        </button>
       </div>
 
-      {/* Nav */}
-      <nav className="nice-scroll flex-1 space-y-0.5 overflow-y-auto px-3 pb-3" aria-label="Main navigation">
-        <SectionLabel>{'// mission'}</SectionLabel>
-        {MISSION_NAV.map((item) => (
-          <NavButton
-            key={item.tab}
-            item={item}
-            active={activeTab === item.tab}
-            onClick={() => setTab(item.tab)}
-          />
-        ))}
-
-        {/* Brain — with live connection indicator */}
-        <SectionLabel>{'// intelligence'}</SectionLabel>
-        {BRAIN_NAV.map((item) => (
-          <NavButton
-            key={item.tab}
-            item={item}
-            active={activeTab === item.tab}
-            onClick={() => setTab(item.tab)}
-            right={
-              <span
-                title={brainConnected ? 'NEXUS overlay connected' : 'Overlay paused — spine brain running (normal LLM app mode)'}
-                className={cn(
-                  'h-1.5 w-1.5 shrink-0 rounded-full',
-                  brainConnected ? 'bg-emerald-400/90 pulse-dot' : 'bg-amber-400/80'
-                )}
-              />
-            }
-          />
-        ))}
-
-        <SectionLabel>{'// workspace'}</SectionLabel>
-        {WORKSPACE_NAV.map((item) => (
-          <NavButton
-            key={item.tab}
-            item={item}
-            active={activeTab === item.tab}
-            badge={badges[item.tab]}
-            onClick={() => setTab(item.tab)}
-          />
-        ))}
-
-        {/* Customize group */}
-        <SectionLabel>{'// customize'}</SectionLabel>
+      {/* Instant Voice Focus + Dynamic Command Bar */}
+      <div className={cn('space-y-1.5 px-2 pt-2.5 pb-1', !collapsed && 'px-2.5')}>
+        {onOpenCommandPalette && (
+          <button
+            type="button"
+            data-eva-target="open-command-palette"
+            onClick={onOpenCommandPalette}
+            title="Command Bar (⌘K)"
+            className={cn(
+              'flex w-full items-center rounded-lg border border-border/70 bg-background/40 text-[12px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
+              collapsed ? 'justify-center py-2' : 'gap-2.5 px-2.5 py-1.5'
+            )}
+          >
+            <Command className="h-3.5 w-3.5 shrink-0" />
+            {!collapsed && (
+              <>
+                <span className="flex-1 truncate text-left">Quick command</span>
+                <kbd className="font-mono text-[9.5px] text-muted-foreground/80">⌘K</kbd>
+              </>
+            )}
+          </button>
+        )}
         <button
-          onClick={toggleCustomize}
-          aria-expanded={customizeOpen}
-          aria-label={customizeOpen ? 'Collapse customize section' : 'Expand customize section'}
+          type="button"
+          data-eva-target="toggle-voice-focus"
+          onClick={() => setLayoutMode(layoutMode === 'focus' ? 'standard' : 'focus')}
+          aria-pressed={layoutMode === 'focus'}
+          title="Instant Voice Focus mode"
           className={cn(
-            'flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-[11px] transition-colors',
-            customizeActive ? 'text-primary/90' : 'text-muted-foreground hover:text-foreground'
+            'flex w-full items-center rounded-lg border text-[12.5px] font-medium transition-colors',
+            collapsed ? 'justify-center py-2' : 'gap-2.5 px-2.5 py-2',
+            layoutMode === 'focus'
+              ? 'border-sky-500/40 bg-sky-500/12 text-sky-600 dark:text-sky-400'
+              : 'border-border/70 bg-background/50 text-foreground hover:bg-muted'
           )}
         >
-          <ChevronDown
-            className={cn('h-3.5 w-3.5 transition-transform', !customizeOpen && '-rotate-90')}
-          />
-          <span className="terminal-label tracking-wider">extend the agent</span>
-          <span className="ml-auto flex-1 border-t border-dashed border-white/8" />
+          <Focus className="h-4 w-4 shrink-0" />
+          {!collapsed && (
+            <>
+              <span className="flex-1 truncate text-left">Voice Focus</span>
+              <span className="font-mono text-[9.5px] text-muted-foreground">
+                {layoutMode === 'focus' ? 'On' : 'Zen'}
+              </span>
+            </>
+          )}
         </button>
-        {(customizeOpen || customizeActive) &&
-          CUSTOMIZE_NAV.map((item) => (
+      </div>
+
+      {/* Navigation */}
+      <nav className={cn('nice-scroll flex-1 space-y-0.5 overflow-y-auto pb-2', collapsed ? 'px-2' : 'px-2.5')} aria-label="Main navigation">
+        <SectionHeading label="Workspace" collapsed={collapsed} />
+        {PRIMARY_NAV.map((item) => (
+          <NavButton
+            key={item.tab}
+            item={item}
+            active={layoutMode === 'standard' && activeTab === item.tab}
+            collapsed={collapsed}
+            badge={badges[item.tab]}
+            onClick={() => handleSelectTab(item.tab)}
+          />
+        ))}
+
+        {/* Extensions collapsible group */}
+        <SectionHeading label="Extensions" collapsed={collapsed} />
+        {!collapsed && (
+          <button
+            type="button"
+            onClick={() => customizeStore.toggle()}
+            aria-expanded={customizeOpen || customizeActive}
+            className={cn(
+              'flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] transition-colors',
+              customizeActive ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <ChevronDown
+              className={cn('h-3.5 w-3.5 transition-transform', !(customizeOpen || customizeActive) && '-rotate-90')}
+            />
+            <span className="flex-1 text-left">Capabilities</span>
+            <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+              {(badges.tools ?? 0) + (badges.plugins ?? 0)}
+            </span>
+          </button>
+        )}
+        {(collapsed || customizeOpen || customizeActive) &&
+          CUSTOMIZE_NAV.slice(0, collapsed ? 3 : CUSTOMIZE_NAV.length).map((item) => (
             <NavButton
               key={item.tab}
               item={item}
-              active={activeTab === item.tab}
+              active={layoutMode === 'standard' && activeTab === item.tab}
+              collapsed={collapsed}
               badge={badges[item.tab]}
-              indented
-              onClick={() => setTab(item.tab)}
+              indented={!collapsed}
+              onClick={() => handleSelectTab(item.tab)}
             />
           ))}
 
-        <SectionLabel>{'// system'}</SectionLabel>
-        {SYSTEM_NAV.map((item) => (
-          <NavButton
-            key={item.tab}
-            item={item}
-            active={activeTab === item.tab}
-            badge={badges[item.tab]}
-            onClick={() => setTab(item.tab)}
-          />
-        ))}
+        {/* Split Panels */}
+        <SectionHeading label="Panels" collapsed={collapsed} />
+        {SPLIT_ACTIONS.map(({ mode, label, title, icon: Icon }) => {
+          const active = splitOpen && splitMode === mode
+          const count =
+            mode === 'permissions'
+              ? pendingPermissions
+              : mode === 'devices'
+                ? onlineDevices
+                : mode === 'reasoning'
+                  ? reasoningCount
+                  : 0
+          return (
+            <button
+              key={mode}
+              type="button"
+              data-eva-target={`split-${mode}`}
+              onClick={() => (active ? closeSplit() : openSplit(mode, title))}
+              aria-pressed={active}
+              title={collapsed ? title : undefined}
+              aria-label={title}
+              className={cn(
+                'relative flex w-full items-center rounded-lg border text-[12.5px] transition-colors',
+                collapsed ? 'justify-center py-2' : 'gap-2.5 px-2.5 py-2',
+                active
+                  ? 'border-sky-500/35 bg-sky-500/10 font-medium text-sky-600 dark:text-sky-400'
+                  : 'border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+              )}
+            >
+              <Icon className="h-4 w-4 shrink-0" />
+              {!collapsed && <span className="flex-1 truncate text-left">{label}</span>}
+              {!collapsed && count > 0 && (
+                <span
+                  className={cn(
+                    'font-mono text-[10px] tabular-nums',
+                    mode === 'permissions' ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'
+                  )}
+                >
+                  {count}
+                </span>
+              )}
+              {collapsed && mode === 'permissions' && pendingPermissions > 0 && (
+                <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-amber-500" />
+              )}
+            </button>
+          )
+        })}
       </nav>
 
-      {/* System status */}
-      <div className="m-3 rounded-lg border border-white/[0.07] bg-black/25 p-3.5">
-        <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              'h-2 w-2 rounded-full',
-              brainConnected ? 'bg-emerald-400/80 pulse-dot' : 'bg-amber-400/80'
+      {/* Compact minimal footer: Eva Ear + Theme */}
+      <div className={cn('space-y-1.5 border-t border-border/60 p-2', !collapsed && 'p-2.5')}>
+        <button
+          type="button"
+          data-eva-ear-control="1"
+          onClick={
+            !wake.sleepMode && (wake.status === 'awaiting-mic' || wake.status === 'error')
+              ? onArmEar
+              : onToggleSleepMode
+          }
+          aria-pressed={!wake.sleepMode && (wake.status === 'armed' || voice.isActive)}
+          aria-label={
+            wake.sleepMode
+              ? 'Wake Eva always-on ear'
+              : wake.status === 'awaiting-mic' || wake.status === 'error'
+                ? 'Arm Eva microphone ear'
+                : 'Put Eva in Sleep Mode'
+          }
+          title={
+            wake.sleepMode
+              ? 'Eva is sleeping — click to wake'
+              : wake.status === 'awaiting-mic' || wake.status === 'error'
+                ? 'Unlock microphone for Hey Eva'
+                : `Eva Ear On — say "${wake.wakePhrase}"`
+          }
+          className={cn(
+            'flex w-full items-center rounded-lg border text-xs transition-colors',
+            collapsed ? 'justify-center py-2' : 'justify-between gap-2 px-2.5 py-2',
+            wake.sleepMode
+              ? 'border-border bg-muted/40 text-muted-foreground hover:text-foreground'
+              : wake.status === 'awaiting-mic' || wake.status === 'error'
+                ? 'border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                : 'border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300'
+          )}
+        >
+          <span className="flex items-center gap-2">
+            {wake.sleepMode ? <Moon className="h-3.5 w-3.5" /> : <Ear className="h-3.5 w-3.5" />}
+            {!collapsed && (
+              <span className="font-medium">
+                {wake.sleepMode
+                  ? 'Eva · Sleep'
+                  : voice.isActive
+                    ? 'Eva · Live'
+                    : wake.status === 'awaiting-mic' || wake.status === 'error'
+                      ? 'Arm Ear'
+                      : 'Ear · On'}
+              </span>
             )}
-          />
-          <span className="terminal-label text-[9px] text-zinc-400">
-            {brainConnected ? 'online' : 'spine mode'}
           </span>
-        </div>
-        <div className="mt-3 space-y-1.5 text-[11px] text-muted-foreground">
-          <div className="flex justify-between">
-            <span>Brain</span>
-            <span
-              className={cn('font-mono', brainConnected ? 'text-foreground/80' : 'text-amber-200/90')}
-            >
-              {brainConnected
-                ? `connected · ${brain?.llm ? (brain.llm.configured ? brain.llm.provider.replace('-compatible', '') : 'no key') : 'Gemini'}`
-                : `spine · ${brain?.llm ? (brain.llm.configured ? brain.llm.provider.replace('-compatible', '') : 'no key') : 'Gemini'}`}
+          {!collapsed && (
+            <span className="font-mono text-[10px] opacity-80">
+              {wake.sleepMode ? 'Wake' : wake.status === 'awaiting-mic' || wake.status === 'error' ? 'Unlock' : 'Sleep'}
             </span>
-          </div>
-          <div className="flex justify-between">
-            <span>Arsenal</span>
-            <span className="font-mono text-foreground/80">{totalTools} tools armed</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Plugins</span>
-            <span className="font-mono text-foreground/80">{badges.plugins ?? 0} installed</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Memory</span>
-            <span className="font-mono text-foreground/80">{badges.memory ?? 0} records</span>
-          </div>
-        </div>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setTheme(isLight ? 'dark' : 'light')}
+          aria-label={isLight ? 'Switch to dark theme' : 'Switch to light theme'}
+          title={isLight ? 'Switch to dark theme' : 'Switch to light theme'}
+          className={cn(
+            'flex w-full items-center rounded-lg border border-border/70 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
+            collapsed ? 'justify-center py-2' : 'justify-between gap-2 px-2.5 py-1.5'
+          )}
+        >
+          <span className="flex items-center gap-2">
+            {isLight ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
+            {!collapsed && <span>{isLight ? 'Dark theme' : 'Light theme'}</span>}
+          </span>
+        </button>
       </div>
     </aside>
   )

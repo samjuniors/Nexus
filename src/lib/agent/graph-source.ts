@@ -15,7 +15,7 @@ interface ToolResultDisplayLike {
 }
 
 export async function buildGraphSource(): Promise<GraphSource> {
-  const [tools, skills, plugins, mcps, memories, conversations, runs] = await Promise.all([
+  const [tools, skills, plugins, mcps, memories, conversations, runs, employees, automations] = await Promise.all([
     db.tool.findMany(),
     db.skill.findMany(),
     db.plugin.findMany(),
@@ -23,7 +23,18 @@ export async function buildGraphSource(): Promise<GraphSource> {
     db.memory.findMany({ orderBy: { createdAt: 'desc' }, take: 120 }),
     db.conversation.findMany({ orderBy: { updatedAt: 'desc' }, take: 20 }),
     db.run.findMany({ orderBy: { createdAt: 'desc' }, take: 30, include: { events: { orderBy: { seq: 'asc' } } } }),
+    db.aiEmployee.findMany({ orderBy: { name: 'asc' } }),
+    db.automation.findMany({ orderBy: { createdAt: 'desc' }, take: 25 }),
   ])
+
+  let projectEntities: { slug: string; name: string; kind: string }[] = []
+  try {
+    const { scanProjectStructure } = await import('@/lib/agent/project-intel')
+    const scan = await scanProjectStructure()
+    projectEntities = scan.entities.slice(0, 12)
+  } catch {
+    projectEntities = []
+  }
 
   const runData = runs.map((r) => {
     const usedTools = new Set<string>()
@@ -52,6 +63,15 @@ export async function buildGraphSource(): Promise<GraphSource> {
     }
   })
 
+  const parseJsonArray = (raw: string): string[] => {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
+    } catch {
+      return []
+    }
+  }
+
   return {
     tools: tools.map((t) => ({ slug: t.slug, name: t.name, source: t.source })),
     skills: skills.map((s) => ({ slug: s.slug, name: s.name })),
@@ -73,6 +93,25 @@ export async function buildGraphSource(): Promise<GraphSource> {
     memories: memories.map((m) => ({ id: m.id, content: m.content, type: m.type, runId: m.runId })),
     conversations: conversations.map((c) => ({ id: c.id, title: c.title })),
     runs: runData,
+    employees: employees.map((e) => ({
+      id: e.id,
+      slug: e.slug,
+      name: e.name,
+      title: e.title,
+      department: e.department,
+      kind: e.kind,
+      reportsToId: e.reportsToId,
+      skills: parseJsonArray(e.skillsJson),
+      tools: parseJsonArray(e.toolsJson),
+    })),
+    automations: automations.map((a) => ({
+      id: a.id,
+      name: a.name,
+      triggerType: a.triggerType,
+      enabled: a.enabled,
+      assigneeId: a.assigneeId,
+    })),
+    projectEntities,
   }
 }
 

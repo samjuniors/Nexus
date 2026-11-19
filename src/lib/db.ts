@@ -18,6 +18,12 @@ interface MemoryStore {
   brainState: Row[]
   suggestion: Row[]
   dreamCycle: Row[]
+  aiEmployee: Row[]
+  automation: Row[]
+  automationRun: Row[]
+  permissionGrant: Row[]
+  permissionAuditLog: Row[]
+  connectedDevice: Row[]
 }
 
 const DEFAULTS: Record<keyof MemoryStore, () => Row> = {
@@ -93,6 +99,61 @@ const DEFAULTS: Record<keyof MemoryStore, () => Row> = {
   }),
   suggestion: () => ({ runId: null, kind: 'next', createdAt: new Date() }),
   dreamCycle: () => ({ mergedCount: 0, relationsFound: 0, totalMemories: 0, createdAt: new Date() }),
+  aiEmployee: () => ({
+    department: 'Engineering',
+    kind: 'employee',
+    reportsToId: null,
+    systemPrompt: '',
+    skillsJson: '[]',
+    toolsJson: '[]',
+    autonomy: 'autonomous',
+    status: 'active',
+    icon: 'bot',
+    tasksCompleted: 0,
+    lastActiveAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }),
+  automation: () => ({
+    description: '',
+    triggerType: 'interval',
+    schedule: '60',
+    assigneeId: null,
+    enabled: true,
+    lastRunAt: null,
+    nextRunAt: null,
+    lastStatus: 'idle',
+    lastResult: '',
+    runCount: 0,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }),
+  automationRun: () => ({
+    status: 'running',
+    runId: null,
+    summary: '',
+    error: '',
+    startedAt: new Date(),
+    finishedAt: null,
+  }),
+  permissionGrant: () => ({
+    policy: 'ask',
+    lastUsedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }),
+  permissionAuditLog: () => ({
+    actor: 'Eva',
+    createdAt: new Date(),
+  }),
+  connectedDevice: () => ({
+    platform: 'unknown',
+    status: 'offline',
+    capabilitiesJson: '[]',
+    lastSeenAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }),
 }
 
 let seqCounter = 1
@@ -125,6 +186,18 @@ function matchesWhere(row: Row, where?: Row): boolean {
       }
       if ('equals' in c) {
         if (row[key] !== c.equals) return false
+        continue
+      }
+      if ('not' in c) {
+        if (row[key] === c.not) return false
+        continue
+      }
+      if ('lte' in c) {
+        if (row[key] == null || compareValues(row[key], c.lte) > 0) return false
+        continue
+      }
+      if ('gte' in c) {
+        if (row[key] == null || compareValues(row[key], c.gte) < 0) return false
         continue
       }
     }
@@ -199,6 +272,12 @@ function createInMemoryPrisma(): PrismaClient {
       brainState: [],
       suggestion: [],
       dreamCycle: [],
+      aiEmployee: [],
+      automation: [],
+      automationRun: [],
+      permissionGrant: [],
+      permissionAuditLog: [],
+      connectedDevice: [],
     }
   }
   const store = globalStore.__nexusMemDb
@@ -229,6 +308,21 @@ function createInMemoryPrisma(): PrismaClient {
       const inc = include.events as { orderBy?: Row }
       const evs = store.runEvent.filter((e) => e.runId === row.id)
       out.events = sortRows(evs, inc?.orderBy).map((e) => ({ ...e }))
+    } else if (model === 'automation') {
+      if (include.runs) {
+        const inc = include.runs as { orderBy?: Row; take?: number }
+        let runs = sortRows(
+          store.automationRun.filter((r) => r.automationId === row.id),
+          inc?.orderBy
+        )
+        if (typeof inc?.take === 'number') runs = runs.slice(0, inc.take)
+        out.runs = runs.map((r) => ({ ...r }))
+      }
+      if (include.assignee) {
+        out.assignee = row.assigneeId
+          ? (store.aiEmployee.find((e) => e.id === row.assigneeId) ?? null)
+          : null
+      }
     }
     return out
   }
@@ -248,6 +342,11 @@ function createInMemoryPrisma(): PrismaClient {
     } else if (model === 'memoryEntity') {
       store.memoryEntityLink = store.memoryEntityLink.filter((l) => !ids.has(l.entityId))
       store.memoryEdge = store.memoryEdge.filter((e) => !ids.has(e.sourceId) && !ids.has(e.targetId))
+    } else if (model === 'automation') {
+      store.automationRun = store.automationRun.filter((r) => !ids.has(r.automationId))
+    } else if (model === 'aiEmployee') {
+      store.aiEmployee = store.aiEmployee.map((e) => (ids.has(e.reportsToId) ? { ...e, reportsToId: null } : e))
+      store.automation = store.automation.map((a) => (ids.has(a.assigneeId) ? { ...a, assigneeId: null } : a))
     }
   }
 

@@ -1,9 +1,21 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
-  allowedDevOrigins: ["*.run.app", "localhost", "127.0.0.1"],
-  /* config options here */
+  allowedDevOrigins: [
+    "**.run.app",
+    "**.scf.usercontent.goog",
+    "**.usercontent.goog",
+    "**.proxy.googlers.com",
+    "**.googleusercontent.com",
+    "**.google.com",
+    "**.web.app",
+    "localhost",
+    "127.0.0.1",
+  ],
+  experimental: {
+    reactDebugChannel: false,
+    optimizePackageImports: ["lucide-react"],
+  },
   typescript: {
     ignoreBuildErrors: true,
   },

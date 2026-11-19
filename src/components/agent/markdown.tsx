@@ -39,12 +39,12 @@ export function Markdown({ children }: { children: string }) {
           const url = /^https?:\/\//.test(s) || s.startsWith('/') ? s : `/api/files?name=${encodeURIComponent(s)}`
           return (
             <a href={url} target="_blank" rel="noreferrer" className="block w-fit">
-              { }
               <img
                 src={url}
                 alt={String(alt ?? 'image')}
                 loading="lazy"
-                className="my-2 max-h-96 w-auto max-w-full rounded-xl border border-white/[0.08] bg-black/30 object-contain"
+                referrerPolicy="no-referrer"
+                className="my-2 max-h-96 w-auto max-w-full rounded-xl border border-border bg-muted/40 object-contain dark:border-white/[0.08] dark:bg-black/30"
               />
             </a>
           )

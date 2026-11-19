@@ -226,3 +226,100 @@ model DreamCycle {
   totalMemories  Int      @default(0)
   createdAt      DateTime @default(now())
 }
+
+// Persistent AI Employees, custom Bots, and Subagent roles reporting in the Org Chart.
+model AiEmployee {
+  id             String       @id @default(cuid())
+  slug           String       @unique
+  name           String
+  title          String
+  department     String       @default("Engineering")
+  kind           String       @default("employee") // employee | bot | subagent
+  role           String
+  reportsToId    String?
+  reportsTo      AiEmployee?  @relation("OrgHierarchy", fields: [reportsToId], references: [id], onDelete: SetNull)
+  directReports  AiEmployee[] @relation("OrgHierarchy")
+  systemPrompt   String       @default("")
+  skillsJson     String       @default("[]")
+  toolsJson      String       @default("[]")
+  autonomy       String       @default("autonomous") // supervised | autonomous
+  status         String       @default("active") // active | paused
+  icon           String       @default("bot")
+  tasksCompleted Int          @default(0)
+  lastActiveAt   DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  automations    Automation[]
+}
+
+// Scheduled & automated recurring or one-shot agent tasks.
+model Automation {
+  id           String          @id @default(cuid())
+  name         String
+  description  String          @default("")
+  prompt       String
+  triggerType  String          @default("interval") // interval | cron | once
+  schedule     String          @default("60") // minutes for interval, 5-field cron, or ISO timestamp
+  assigneeId   String?
+  assignee     AiEmployee?     @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
+  enabled      Boolean         @default(true)
+  lastRunAt    DateTime?
+  nextRunAt    DateTime?
+  lastStatus   String          @default("idle") // idle | running | success | error
+  lastResult   String          @default("")
+  runCount     Int             @default(0)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  runs         AutomationRun[]
+}
+
+model AutomationRun {
+  id           String     @id @default(cuid())
+  automationId String
+  automation   Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  status       String     @default("running") // running | success | error
+  runId        String?
+  summary      String     @default("")
+  error        String     @default("")
+  startedAt    DateTime   @default(now())
+  finishedAt   DateTime?
+
+  @@index([automationId, startedAt])
+}
+
+// Persistent per-capability one-time permission grants ("Allow Always" / "Ask" / "Deny")
+model PermissionGrant {
+  id         String    @id @default(cuid())
+  capability String    @unique // app_ui | self_install | browser_control | workspace_shell | desktop_bridge
+  policy     String    @default("ask") // always | ask | deny
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+// Audit trail of every permission decision for transparency
+model PermissionAuditLog {
+  id            String   @id @default(cuid())
+  capability    String
+  actionSummary String
+  decision      String // always | once | deny | timeout
+  actor         String   @default("Eva")
+  createdAt     DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// Optional paired local desktop computers via Local OS Companion Bridge
+model ConnectedDevice {
+  id               String    @id @default(cuid())
+  name             String
+  platform         String    @default("unknown") // macos | windows | linux | unknown
+  tokenHash        String    @unique
+  status           String    @default("offline") // online | offline
+  capabilitiesJson String    @default("[]")
+  lastSeenAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+
+

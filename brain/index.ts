@@ -24,6 +24,8 @@ export { buildGraphReport } from './core/graph'
 export type { GraphCommunity, GraphQuestion, SurprisingConnection, EdgeKind } from './core/graph'
 export { parseAppPrefs, DEFAULT_APP_PREFS } from './types'
 export type { BrainAppPrefs } from './types'
+export { createPortableBundle, parsePortableBundle } from './core/portable'
+export type { PortableBrainBundle, PortableMemoryRecord, PortableSkillRecord, PortableEntityEdge } from './core/portable'
 
 // ---- graph memory (HippoRAG + spreading activation + rabbit holes) ----
 export {
