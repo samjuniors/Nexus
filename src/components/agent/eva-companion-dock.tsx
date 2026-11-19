@@ -1,55 +1,47 @@
 'use client'
 
-import { useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'motion/react'
-import {
-  Command,
-  Focus,
-  GitBranch,
-  Globe,
-  Moon,
-  Network,
-  Shirt,
-  Sun,
-} from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Settings } from 'lucide-react'
 import { CoucouBot } from '@/components/coucou/coucou-bot'
 import { useEva } from '@/components/agent/eva-provider'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
 import { useApp } from '@/lib/agent/store'
 import { EYE_EXPRESSION_LABELS } from '@/lib/agent/mochi-eyes'
-import { OUTFIT_SELECTIONS, type OutfitSelection } from '@/lib/coucou/wardrobe'
+import { resolveCompanionAnchor, type CompanionAnchorSlot } from '@/lib/agent/companion-anchor'
 import { cn } from '@/lib/utils'
 
-const OUTFIT_CYCLE: readonly OutfitSelection[] = OUTFIT_SELECTIONS
+export { resolveCompanionAnchor, type CompanionAnchorSlot }
 
 /**
- * Borderless, Transparent Floating Dynamic Companion for Eva.
- * Zero circle line, zero frame, zero box — only Eva's living 3D Coucou character
- * floating organically over any light or dark workspace background.
- * Tap directly to talk or wake, drag smoothly anywhere, hover for quick actions.
+ * Borderless, Glitch-Free, Context-Aware Floating Companion for Eva.
+ * - Fixed 92x92 bounding box so hover, click, or captions NEVER shift the character.
+ * - Automatically glides to task-aware screen anchors (browser split, reasoning, vision, mission)
+ *   using compositor-only transform transitions unless manually dragged.
+ * - Single subtle Settings icon overlay (opacity-only transition, out of flow).
+ * - Renders live animated speech mouth, expressive eyes, and persistent animated hands.
  */
-export function EvaCompanionDock({ onOpenCommandPalette }: { onOpenCommandPalette?: () => void }) {
-  const { voice, wake, evaExpression, onToggleSleepMode, onArmEar } = useEva()
+export function EvaCompanionDock() {
+  const { voice, wake, vision, evaExpression, emotion, senses, handTracking, onToggleSleepMode, onArmEar } = useEva()
   const activeConvId = useApp((s) => s.activeConvId)
+  const activeTab = useApp((s) => s.activeTab)
+  const runningRunId = useApp((s) => s.runningRunId)
 
   const layoutMode = useEvaControl((s) => s.layoutMode)
-  const setLayoutMode = useEvaControl((s) => s.setLayoutMode)
   const splitOpen = useEvaControl((s) => s.splitOpen)
   const splitMode = useEvaControl((s) => s.splitMode)
   const openSplit = useEvaControl((s) => s.openSplit)
-  const closeSplit = useEvaControl((s) => s.closeSplit)
-  const setGbrainGraphOpen = useEvaControl((s) => s.setGbrainGraphOpen)
+  const setSettingsOpen = useEvaControl((s) => s.setSettingsOpen)
+  const companionResetSeq = useEvaControl((s) => s.companionResetSeq)
   const pendingCount = useEvaControl((s) => s.pendingPermissions.length)
   const transientNote = useEvaControl((s) => s.transientMoodNote)
   const coucouOutfit = useEvaControl((s) => s.coucouOutfit)
-  const setCoucouOutfit = useEvaControl((s) => s.setCoucouOutfit)
   const coucouDancing = useEvaControl((s) => s.coucouDancing)
   const mediaPlaying = useEvaControl((s) => Boolean(s.browserFrame?.mediaEmbedUrl))
   const latestChain = useEvaControl((s) => s.reasoningChains[0] ?? null)
 
-  const [hovered, setHovered] = useState(false)
   const [greetSeq, setGreetSeq] = useState(0)
-  const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  const [manualOffset, setManualOffset] = useState<{ x: number; y: number } | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
 
   const dragRef = useRef<{
     startX: number
@@ -59,9 +51,38 @@ export function EvaCompanionDock({ onOpenCommandPalette }: { onOpenCommandPalett
     moved: boolean
   } | null>(null)
 
+  useEffect(() => {
+    if (companionResetSeq > 0) {
+      setManualOffset(null)
+    }
+  }, [companionResetSeq])
+
+  const anchor = useMemo(
+    () =>
+      resolveCompanionAnchor({
+        splitOpen,
+        splitMode,
+        activeTab,
+        isWorking: Boolean(runningRunId) || Boolean(voice.activeTool),
+        visionActive: vision.anyActive,
+      }),
+    [splitOpen, splitMode, activeTab, runningRunId, voice.activeTool, vision.anyActive]
+  )
+
   // Avoid duplicate character when Voice Focus stage is already front and center
   if (layoutMode === 'focus') return null
 
+  const clampOffset = (x: number, y: number) => {
+    if (typeof window === 'undefined') return { x, y }
+    const maxLeft = -(window.innerWidth - 130)
+    const maxTop = -(window.innerHeight - 150)
+    return {
+      x: Math.max(maxLeft, Math.min(16, x)),
+      y: Math.max(maxTop, Math.min(20, y)),
+    }
+  }
+
+  const effectiveOffset = manualOffset ?? clampOffset(anchor.offsetX, anchor.offsetY)
   const isDancing = coucouDancing || mediaPlaying
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -70,8 +91,8 @@ export function EvaCompanionDock({ onOpenCommandPalette }: { onOpenCommandPalett
     dragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
-      origX: dragOffset.x,
-      origY: dragOffset.y,
+      origX: effectiveOffset.x,
+      origY: effectiveOffset.y,
       moved: false,
     }
   }
@@ -81,17 +102,12 @@ export function EvaCompanionDock({ onOpenCommandPalette }: { onOpenCommandPalett
     if (!drag) return
     const dx = e.clientX - drag.startX
     const dy = e.clientY - drag.startY
-    if (Math.hypot(dx, dy) > 6) {
+    if (Math.hypot(dx, dy) > 14) {
       drag.moved = true
+      setIsDragging(true)
     }
     if (!drag.moved) return
-
-    const maxLeft = -(window.innerWidth - 130)
-    const maxTop = -(window.innerHeight - 150)
-    setDragOffset({
-      x: Math.max(maxLeft, Math.min(20, drag.origX + dx)),
-      y: Math.max(maxTop, Math.min(80, drag.origY + dy)),
-    })
+    setManualOffset(clampOffset(drag.origX + dx, drag.origY + dy))
   }
 
   const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -103,6 +119,7 @@ export function EvaCompanionDock({ onOpenCommandPalette }: { onOpenCommandPalett
       /* ignore */
     }
     dragRef.current = null
+    setIsDragging(false)
     if (!wasDrag) {
       handleTapToTalk()
     }
@@ -125,25 +142,18 @@ export function EvaCompanionDock({ onOpenCommandPalette }: { onOpenCommandPalett
     void voice.startVoice(activeConvId)
   }
 
-  const toggleSplit = (mode: 'reasoning' | 'browser') => {
-    if (splitOpen && splitMode === mode) closeSplit()
-    else openSplit(mode)
-  }
-
-  const cycleOutfit = () => {
-    const idx = OUTFIT_CYCLE.indexOf(coucouOutfit)
-    setCoucouOutfit(OUTFIT_CYCLE[(idx + 1) % OUTFIT_CYCLE.length])
-  }
-
   const activeCaption =
     voice.liveOutputTranscript ||
     voice.liveInputTranscript ||
+    (handTracking.active
+      ? `${handTracking.label}${handTracking.targetLabel ? ` · ${handTracking.targetLabel}` : ''}`
+      : null) ||
     transientNote ||
     (latestChain?.status === 'active'
       ? latestChain.nodes[latestChain.nodes.length - 1]?.title
       : null)
 
-  // Soft, edge-free drop-shadow directly on the character silhouette — zero circle outline
+  // Soft silhouette drop-shadow directly on the character — zero circle line or box
   const silhouetteDropShadow = wake.sleepMode
     ? 'drop-shadow(0 6px 14px rgba(15, 23, 42, 0.25))'
     : voice.isActive
@@ -156,126 +166,18 @@ export function EvaCompanionDock({ onOpenCommandPalette }: { onOpenCommandPalett
     <aside
       aria-label="Eva floating voice companion"
       data-eva-companion-dock="minimal"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onFocus={() => setHovered(true)}
-      onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-          setHovered(false)
-        }
-      }}
+      data-companion-anchor={manualOffset ? 'manual' : anchor.slot}
       className={cn(
-        'fixed right-5 z-40 flex flex-col items-center bg-transparent select-none',
-        splitOpen ? 'bottom-16' : 'bottom-24 md:bottom-20'
+        'group/companion fixed right-5 bottom-20 z-40 h-[92px] w-[92px] select-none bg-transparent md:bottom-6',
+        !isDragging && 'transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]'
       )}
-      style={{ transform: `translate3d(${dragOffset.x}px, ${dragOffset.y}px, 0)` }}
+      style={{ transform: `translate3d(${effectiveOffset.x}px, ${effectiveOffset.y}px, 0)` }}
     >
-      {/* Hover-revealed compact quick actions */}
-      <AnimatePresence>
-        {hovered && (
-          <motion.div
-            initial={{ opacity: 0, y: 6, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 4, scale: 0.96 }}
-            transition={{ duration: 0.14 }}
-            data-dock-hover-menu="1"
-            className="mb-1 flex items-center gap-0.5 rounded-full border border-border/70 bg-background/88 px-1.5 py-1 shadow-md backdrop-blur-md"
-          >
-            {onOpenCommandPalette && (
-              <button
-                type="button"
-                data-dock-action="1"
-                onClick={onOpenCommandPalette}
-                aria-label="Open Command Bar (Ctrl+K)"
-                title="Command Bar (⌘K)"
-                className="flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <Command className="h-3.5 w-3.5" />
-              </button>
-            )}
-            <button
-              type="button"
-              data-dock-action="1"
-              onClick={() => setLayoutMode('focus')}
-              aria-label="Enter Voice Focus mode"
-              title="Voice Focus mode"
-              className="flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              <Focus className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              data-dock-action="1"
-              data-eva-target="dock-reasoning"
-              onClick={() => toggleSplit('reasoning')}
-              aria-label="Toggle Reasoning Chain panel"
-              title="Reasoning Chain"
-              className={cn(
-                'flex h-6 w-6 items-center justify-center rounded-full transition-colors',
-                splitOpen && splitMode === 'reasoning'
-                  ? 'bg-sky-500/15 text-sky-600 dark:text-sky-400'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              <GitBranch className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              data-dock-action="1"
-              data-eva-target="dock-browser"
-              onClick={() => toggleSplit('browser')}
-              aria-label="Toggle Live Split Browser"
-              title="Live Browser"
-              className={cn(
-                'flex h-6 w-6 items-center justify-center rounded-full transition-colors',
-                splitOpen && splitMode === 'browser'
-                  ? 'bg-sky-500/15 text-sky-600 dark:text-sky-400'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              <Globe className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              data-dock-action="1"
-              onClick={() => setGbrainGraphOpen(true)}
-              aria-label="Open GBrain Knowledge Graph"
-              title="GBrain Graph"
-              className="flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              <Network className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              data-dock-action="1"
-              onClick={onToggleSleepMode}
-              aria-label={wake.sleepMode ? 'Wake Eva' : 'Put Eva in Sleep Mode'}
-              title={wake.sleepMode ? 'Wake Eva' : 'Sleep Mode'}
-              className="flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              {wake.sleepMode ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-            </button>
-            <button
-              type="button"
-              data-dock-action="1"
-              onClick={cycleOutfit}
-              aria-label="Cycle Eva outfit"
-              title={`Outfit: ${coucouOutfit}`}
-              className="flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              <Shirt className="h-3.5 w-3.5" />
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Pure transparent, borderless floating Coucou character — zero circle line */}
-      <motion.div
+      {/* Pure transparent, positionally locked Coucou character — zero hover/click shift */}
+      <div
         role="button"
         tabIndex={0}
-        whileHover={{ scale: 1.06 }}
-        whileTap={{ scale: 0.94 }}
-        transition={{ type: 'spring', stiffness: 420, damping: 28 }}
+        data-companion-character="1"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -298,11 +200,11 @@ export function EvaCompanionDock({ onOpenCommandPalette }: { onOpenCommandPalett
             ? 'Eva · Sleep Mode (tap to wake)'
             : voice.isActive
               ? 'Eva · Live Voice (tap to stop)'
-              : `Eva · Tap to talk or say "${wake.wakePhrase}" (drag to move)`
+              : `Eva · Tap for hands-free Voice Focus or say "${wake.wakePhrase}"`
         }
         style={{ filter: silhouetteDropShadow }}
         className={cn(
-          'relative flex h-[92px] w-[92px] cursor-pointer items-center justify-center bg-transparent border-0 ring-0 outline-none focus-visible:ring-2 focus-visible:ring-sky-500/60 focus-visible:rounded-2xl',
+          'relative flex h-[92px] w-[92px] cursor-pointer items-center justify-center border-0 bg-transparent outline-none focus-visible:rounded-2xl focus-visible:ring-2 focus-visible:ring-sky-500/60',
           wake.sleepMode && 'opacity-80'
         )}
       >
@@ -312,43 +214,62 @@ export function EvaCompanionDock({ onOpenCommandPalette }: { onOpenCommandPalett
           outfit={coucouOutfit}
           greetSeq={greetSeq}
           dancing={isDancing}
+          isSpeaking={voice.isSpeaking}
+          speakingLevel={voice.isSpeaking ? Math.max(0.45, voice.micLevel) : 0}
+          visionActive={vision.anyActive}
+          earListening={senses.ears.status === 'active'}
+          handsActive={senses.hands.status === 'active'}
+          handTracking={handTracking}
+          emotion={emotion.id}
           size={90}
           interactive={false}
           trackGaze
-          label={`Eva (${EYE_EXPRESSION_LABELS[evaExpression]})`}
+          label={`Eva (${EYE_EXPRESSION_LABELS[evaExpression]} · ${emotion.shortLabel})`}
         />
+      </div>
 
-        {pendingCount > 0 && (
-          <button
-            type="button"
-            data-dock-action="1"
-            onClick={(e) => {
-              e.stopPropagation()
-              openSplit('permissions', 'Permissions Vault')
-            }}
-            aria-label={`${pendingCount} pending permission requests`}
-            title="Review pending permission request"
-            className="absolute top-0 right-0 flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1 font-mono text-[10px] font-semibold text-zinc-950 shadow"
-          >
-            {pendingCount}
-          </button>
-        )}
-      </motion.div>
+      {/* Single Settings icon ONLY — absolute overlay, opacity-only transition, zero layout shift */}
+      <button
+        type="button"
+        data-dock-action="1"
+        data-companion-settings="1"
+        onClick={(e) => {
+          e.stopPropagation()
+          setSettingsOpen(true)
+        }}
+        aria-label="Open Eva and workspace settings"
+        title="Settings"
+        className="absolute -top-1 -right-1 z-20 flex h-6 w-6 items-center justify-center rounded-full border border-border/80 bg-background/90 text-muted-foreground opacity-0 shadow-sm backdrop-blur-sm transition-opacity duration-150 group-hover/companion:opacity-100 group-focus-within/companion:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <Settings className="h-3.5 w-3.5" />
+      </button>
 
-      {/* Transient voice / reasoning caption beneath character — invisible when idle */}
-      <AnimatePresence>
-        {activeCaption && (
-          <motion.div
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 2 }}
-            transition={{ duration: 0.16 }}
-            className="mt-1 max-w-[210px] truncate rounded-md bg-background/85 px-2.5 py-0.5 text-center text-[10.5px] text-foreground/90 shadow-sm backdrop-blur-sm"
-          >
-            {activeCaption}
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Pending permission badge (out of flow, top-left) */}
+      {pendingCount > 0 && (
+        <button
+          type="button"
+          data-dock-action="1"
+          onClick={(e) => {
+            e.stopPropagation()
+            openSplit('permissions', 'Permissions Vault')
+          }}
+          aria-label={`${pendingCount} pending permission requests`}
+          title="Review pending permission request"
+          className="absolute -top-1 -left-1 z-20 flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1 font-mono text-[10px] font-semibold text-zinc-950 shadow"
+        >
+          {pendingCount}
+        </button>
+      )}
+
+      {/* Transient live caption positioned to the left, completely out of layout flow */}
+      {activeCaption && (
+        <div
+          aria-live="polite"
+          className="pointer-events-none absolute top-1/2 right-[102px] z-20 max-w-[220px] -translate-y-1/2 truncate rounded-md border border-border/70 bg-background/90 px-2.5 py-1 text-[11px] text-foreground shadow-sm backdrop-blur-sm"
+        >
+          {activeCaption}
+        </div>
+      )}
     </aside>
   )
 }

@@ -17,6 +17,9 @@ import { PermissionPopup } from '@/components/agent/permission-popup'
 import { EvaDynamicPopup } from '@/components/agent/eva-dynamic-popup'
 import { GBrainGraph } from '@/components/agent/gbrain-graph'
 import { CommandPalette } from '@/components/agent/command-palette'
+import { RuntimeHealBanner } from '@/components/agent/runtime-heal-banner'
+import { SettingsModal } from '@/components/agent/settings-modal'
+import { OsTopBar } from '@/components/agent/os-top-bar'
 import { useApp } from '@/lib/agent/store'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
 import type { Tab } from '@/lib/agent/client'
@@ -149,7 +152,7 @@ function EvaLiveDockedBar() {
 }
 
 function ShellContent() {
-  const { activeTab, setTab, bootstrap } = useApp()
+  const { activeTab, setTab, bootstrap, brain } = useApp()
   const splitOpen = useEvaControl((s) => s.splitOpen)
   const layoutMode = useEvaControl((s) => s.layoutMode)
   const gbrainGraphOpen = useEvaControl((s) => s.gbrainGraphOpen)
@@ -158,9 +161,23 @@ function ShellContent() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [splitExpanded, setSplitExpanded] = useState(false)
 
+  const brainConnected = brain?.connected ?? true
+
   useEffect(() => {
     void bootstrap()
   }, [bootstrap])
+
+  // Portable Brain auto-detach: automatically leave Brain/Memory views and close GBrain overlay
+  useEffect(() => {
+    if (!brainConnected) {
+      if (activeTab === 'brain' || activeTab === 'memory') {
+        setTab('agent')
+      }
+      if (gbrainGraphOpen) {
+        setGbrainGraphOpen(false)
+      }
+    }
+  }, [brainConnected, activeTab, setTab, gbrainGraphOpen, setGbrainGraphOpen])
 
   const openCustomize = () => {
     const sub: Tab[] = ['plugins', 'skills', 'tools', 'mcps']
@@ -183,14 +200,14 @@ function ShellContent() {
           {activeTab === 'agent' && <ChatView />}
           {activeTab === 'org' && <OrgView />}
           {activeTab === 'automations' && <AutomationsView />}
-          {activeTab === 'brain' && <BrainView />}
+          {brainConnected && activeTab === 'brain' && <BrainView />}
           {activeTab === 'artifacts' && <ArtifactsView />}
           {activeTab === 'marketplace' && <MarketplaceView />}
           {activeTab === 'plugins' && <PluginsView />}
           {activeTab === 'skills' && <SkillsView />}
           {activeTab === 'tools' && <ToolsView />}
           {activeTab === 'mcps' && <McpsView />}
-          {activeTab === 'memory' && <MemoryView />}
+          {brainConnected && activeTab === 'memory' && <MemoryView />}
         </ViewErrorBoundary>
       </div>
     )
@@ -200,6 +217,7 @@ function ShellContent() {
       <Sidebar onOpenCommandPalette={() => setPaletteOpen(true)} />
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col pb-14 md:pb-0">
+        <OsTopBar onOpenCommandPalette={() => setPaletteOpen(true)} />
         {splitOpen ? (
           <PanelGroup
             key={splitExpanded ? 'wide' : 'balanced'}
@@ -233,20 +251,22 @@ function ShellContent() {
         )}
       </main>
 
-      {/* Borderless Floating Companion, Dynamic Popups, Command Palette (⌘K), Permission Prompt, Live AI Cursor, and Global GBrain Graph */}
-      <EvaCompanionDock onOpenCommandPalette={() => setPaletteOpen(true)} />
+      {/* Borderless Floating Companion, Settings Modal, Dynamic Popups, Command Palette (⌘K), Permission Prompt, Live AI Cursor, and Portable GBrain Graph */}
+      <EvaCompanionDock />
+      <SettingsModal />
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
       <EvaDynamicPopup />
       <PermissionPopup />
       <EvaLiveCursor />
-      <GBrainGraph open={gbrainGraphOpen} onOpenChange={setGbrainGraphOpen} />
+      <RuntimeHealBanner />
+      {brainConnected && <GBrainGraph open={gbrainGraphOpen} onOpenChange={setGbrainGraphOpen} />}
 
       {/* mobile bottom nav */}
       <nav
         aria-label="Mobile navigation"
         className="fixed inset-x-0 bottom-0 z-40 flex border-t border-white/[0.08] bg-sidebar md:hidden"
       >
-        {MOBILE_NAV.map(({ tab, label, icon: Icon, match }) => {
+        {MOBILE_NAV.filter((item) => brainConnected || item.tab !== 'brain').map(({ tab, label, icon: Icon, match }) => {
           const active = match(activeTab)
           return (
             <button

@@ -4,15 +4,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
   BrainCog,
-  Focus,
-  GitBranch,
-  Globe,
   Hexagon,
   History,
   Loader2,
   MessageSquarePlus,
   Mic,
-  Shield,
+  Settings,
   Sparkles as SparklesIcon,
   Trash2,
   Wrench,
@@ -32,6 +29,7 @@ import { MochiEyes } from '@/components/agent/mochi-eyes'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
 import { useApp } from '@/lib/agent/store'
 import { MissionBlock } from '@/components/agent/mission-block'
+import { MissionProgressBar } from '@/components/agent/mission-progress-bar'
 import { Typewriter } from '@/components/agent/typewriter'
 import { VoiceComposer } from '@/components/agent/voice-composer'
 import { cn } from '@/lib/utils'
@@ -66,23 +64,18 @@ export function ChatView() {
     runningRunId,
     isRouting,
     brain,
-    setTab,
     sendTask,
     stopTask,
     newConversation,
     deleteConversation,
     setActiveConv,
+    refreshConversations,
     loading,
   } = useApp()
   const { toast } = useToast()
   const streamingAssistantId = useApp((s) => s.streamingAssistantId)
-  const { voice, wake, evaExpression, onToggleSleepMode } = useEva()
-  const splitOpen = useEvaControl((s) => s.splitOpen)
-  const splitMode = useEvaControl((s) => s.splitMode)
-  const openSplit = useEvaControl((s) => s.openSplit)
-  const closeSplit = useEvaControl((s) => s.closeSplit)
-  const setLayoutMode = useEvaControl((s) => s.setLayoutMode)
-  const pendingPermissions = useEvaControl((s) => s.pendingPermissions.length)
+  const { voice, wake, vision, evaExpression, emotion, handTracking, onToggleSleepMode } = useEva()
+  const setSettingsOpen = useEvaControl((s) => s.setSettingsOpen)
   const [input, setInput] = useState('')
   const [historyOpen, setHistoryOpen] = useState(false)
   const [isSending, setIsSending] = useState(false)
@@ -96,6 +89,14 @@ export function ChatView() {
   const isThinking = isRouting && !isRunning
   const brainConnected = brain?.connected ?? true
   const recalledByMessage = useApp((s) => s.recalledByMessage)
+  const activeOrLatestRun = useMemo(() => {
+    if (!conversation || conversation.runs.length === 0) return null
+    if (runningRunId) {
+      const running = conversation.runs.find((r) => r.id === runningRunId)
+      if (running) return running
+    }
+    return conversation.runs[conversation.runs.length - 1] ?? null
+  }, [conversation, runningRunId])
   const lastRunEventCount = conversation?.runs.length
     ? conversation.runs[conversation.runs.length - 1].events.length
     : 0
@@ -158,8 +159,49 @@ export function ChatView() {
 
   const submit = async () => {
     const text = input.trim()
-    if (!text || isRunning || isSending) return
+    if ((!text && !vision.anyActive) || isRunning || isSending) return
     setInput('')
+
+    // If Camera or Screen eyes are active, capture a live visual frame for server-side Gemini Vision
+    if (vision.anyActive) {
+      setIsSending(true)
+      try {
+        const frame = await vision.captureFrame()
+        if (frame) {
+          const res = await fetch('/api/vision/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              conversationId: activeConvId,
+              prompt: text || 'What do you see right now, and how can you help?',
+              imageBase64: frame.base64,
+              mimeType: frame.mimeType,
+              source: frame.source,
+            }),
+          })
+          const data = (await res.json()) as { ok?: boolean; conversationId?: string; error?: string }
+          if (!res.ok || !data.ok) {
+            throw new Error(data.error || 'Vision analysis failed')
+          }
+          await refreshConversations()
+          if (data.conversationId) {
+            setActiveConv(data.conversationId)
+          }
+          return
+        }
+      } catch (e) {
+        toast({
+          title: 'Vision analysis failed',
+          description: e instanceof Error ? e.message : String(e),
+          variant: 'destructive',
+        })
+        return
+      } finally {
+        setIsSending(false)
+      }
+    }
+
+    if (!text) return
     if (voice.status === 'connected' && voice.sendLiveText(text)) {
       return
     }
@@ -192,8 +234,8 @@ export function ChatView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* header */}
-      <header className="flex items-center gap-3 border-b border-white/[0.06] bg-sidebar px-4 py-3 md:px-6">
+      {/* minimal header */}
+      <header className="flex items-center gap-3 border-b border-border/70 bg-sidebar px-4 py-2.5 md:px-6">
         <MochiEyes
           expression={evaExpression}
           archetype="eva"
@@ -203,89 +245,23 @@ export function ChatView() {
           label={`Eva header eyes (${evaExpression})`}
         />
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-sm font-semibold">{conversation?.title ?? 'New chat'}</h1>
-          <p className="truncate text-[10.5px] text-muted-foreground">
-            {brainConnected
-              ? 'NEXUS brain connected — recall, graph & dream intelligence active'
-              : 'app brain active · connect the NEXUS brain for recall, dream & graph intelligence'}
-          </p>
+          <h1 className="truncate text-sm font-semibold tracking-tight text-foreground">
+            {conversation?.title ?? 'New chat'}
+          </h1>
         </div>
         <button
           type="button"
-          data-eva-target="header-voice-focus"
-          onClick={() => setLayoutMode('focus')}
-          title="Enter Voice Focus Mode"
-          className="hidden sm:flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-transparent px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          data-eva-target="header-settings"
+          onClick={() => setSettingsOpen(true)}
+          aria-label="Open settings"
+          title="Settings"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/80 bg-transparent text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
-          <Focus className="h-3.5 w-3.5" />
-          <span className="hidden lg:inline">Focus</span>
-        </button>
-        <button
-          type="button"
-          data-eva-target="header-reasoning"
-          onClick={() => (splitOpen && splitMode === 'reasoning' ? closeSplit() : openSplit('reasoning', 'Reasoning Chain'))}
-          title="Toggle Reasoning Chain Panel"
-          className={cn(
-            'hidden sm:flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap transition-colors',
-            splitOpen && splitMode === 'reasoning'
-              ? 'border-sky-500/40 bg-sky-500/12 text-sky-600 dark:text-sky-400'
-              : 'border-border bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground'
-          )}
-        >
-          <GitBranch className="h-3.5 w-3.5" />
-          <span className="hidden lg:inline">Reasoning</span>
-        </button>
-        <button
-          type="button"
-          data-eva-target="header-browser"
-          onClick={() => (splitOpen && splitMode === 'browser' ? closeSplit() : openSplit('browser', 'Live Browser'))}
-          title="Open Live Split Browser"
-          className={cn(
-            'hidden sm:flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap transition-colors',
-            splitOpen && splitMode === 'browser'
-              ? 'border-sky-500/40 bg-sky-500/12 text-sky-600 dark:text-sky-400'
-              : 'border-border bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground'
-          )}
-        >
-          <Globe className="h-3.5 w-3.5" />
-          <span className="hidden lg:inline">Browser</span>
-        </button>
-        <button
-          type="button"
-          data-eva-target="header-permissions"
-          onClick={() =>
-            splitOpen && splitMode === 'permissions' ? closeSplit() : openSplit('permissions', 'Permissions Vault')
-          }
-          title="Permissions Vault"
-          className={cn(
-            'relative hidden sm:flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition-colors',
-            splitOpen && splitMode === 'permissions'
-              ? 'border-amber-500/40 bg-amber-500/12 text-amber-600 dark:text-amber-400'
-              : 'border-border bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground'
-          )}
-        >
-          <Shield className="h-3.5 w-3.5" />
-          {pendingPermissions > 0 && (
-            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('brain')}
-          title={brainConnected ? 'NEXUS overlay connected — manage in the Brain tab' : 'Spine mode — click to reconnect the smart overlay'}
-          className={cn(
-            'flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap transition-colors',
-            brainConnected
-              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:border-emerald-500/50 dark:text-emerald-300'
-              : 'border-amber-500/30 bg-amber-500/10 text-amber-700 hover:border-amber-500/50 dark:text-amber-300'
-          )}
-        >
-          <BrainCog className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">{brainConnected ? 'Brain' : 'Spine'}</span>
+          <Settings className="h-3.5 w-3.5" />
         </button>
         <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
           <SheetTrigger asChild>
-            <Button variant="outline" size="sm" className="gap-1.5 border-white/10 bg-transparent text-xs">
+            <Button variant="outline" size="sm" className="h-8 gap-1.5 border-border/80 bg-transparent text-xs">
               <History className="h-3.5 w-3.5" /> History
             </Button>
           </SheetTrigger>
@@ -353,9 +329,25 @@ export function ChatView() {
         </Sheet>
       </header>
 
-      {/* stream */}
-      <div className="grid-bg flex-1 overflow-y-auto nice-scroll">
-        <div className="mx-auto w-full max-w-3xl px-4 py-6 md:px-6">
+      {/* persistent D3.js mission sub-task progress bar */}
+      <MissionProgressBar run={activeOrLatestRun} live={isRunning && activeOrLatestRun?.id === runningRunId} />
+
+      {/* atmospheric chat stream with vertical top/bottom text gradient fade */}
+      <div
+        data-chat-fade-stream="1"
+        className="grid-bg relative flex-1 overflow-y-auto nice-scroll"
+        style={
+          !empty
+            ? {
+                WebkitMaskImage:
+                  'linear-gradient(to bottom, transparent 0px, black 44px, black calc(100% - 36px), transparent 100%)',
+                maskImage:
+                  'linear-gradient(to bottom, transparent 0px, black 44px, black calc(100% - 36px), transparent 100%)',
+              }
+            : undefined
+        }
+      >
+        <div className="mx-auto w-full max-w-3xl px-4 py-8 md:px-6">
           {loading ? (
             <div className="flex h-64 items-center justify-center">
               <Loader2 className="h-6 w-6 animate-spin text-zinc-400" />
@@ -365,17 +357,20 @@ export function ChatView() {
               <MochiEyes
                 expression={evaExpression}
                 archetype="eva"
+                emotion={emotion.id}
+                handTracking={handTracking}
                 size="lg"
                 amplitude={voice.isActive ? (voice.isSpeaking ? 0.72 : 0.35) : 0}
                 trackGaze
                 label={`Eva hero eyes (${evaExpression})`}
               />
               <h2 className="mt-5 text-xl font-semibold tracking-tight">
-                <span className="shimmer-text">Eva</span> <span className="text-foreground/80">· Lead Agent</span>
+                <span className="shimmer-text">Eva</span>{' '}
+                <span className="text-foreground/80">· Lead Agent</span>
               </h2>
               <p className="mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
-                Eva&apos;s ear stays active across every view — say &quot;Hey Eva&quot; anytime to talk live until
-                you switch her to Sleep Mode. Eva coordinates subagents, hires AI employees, and creates bots &amp; skills.
+                {emotion.feelingLine} Say &quot;Hey Eva&quot; anytime to talk live — Eva uses her Eyes,
+                Ears, Mouth, and Hands to run tasks, subagents, and your OS workspace.
               </p>
               <div className="mt-7 grid w-full gap-2 sm:grid-cols-2">
                 {SUGGESTIONS.map((s) => (
@@ -385,7 +380,7 @@ export function ChatView() {
                       setInput(s.text)
                       textareaRef.current?.focus()
                     }}
-                    className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-3.5 py-3 text-left text-[12.5px] text-zinc-300 transition-colors hover:border-white/20 hover:bg-white/[0.04] hover:text-foreground"
+                    className="rounded-lg border border-border/70 bg-card/50 px-3.5 py-3 text-left text-[12.5px] text-foreground/85 transition-colors hover:border-foreground/25 hover:bg-muted/60 hover:text-foreground"
                   >
                     <span className="mr-2 font-mono text-[9px] uppercase tracking-wider text-muted-foreground/70">
                       {s.kind === 'instant' ? 'chat' : 'mission'}
@@ -434,7 +429,7 @@ export function ChatView() {
                           />
                         )}
                       </div>
-                      {recalled.length > 0 && (
+                      {brainConnected && recalled.length > 0 && (
                         <div className="mt-2 flex flex-wrap items-center gap-1.5">
                           <span className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/60">
                             <BrainCog className="h-3 w-3" /> recalled
@@ -576,10 +571,11 @@ export function ChatView() {
         </div>
       </div>
 
-      {/* voice & text composer with state-reactive rainbow aura */}
+      {/* two-line minimalistic text, vision & voice composer */}
       <VoiceComposer
         voice={voice}
         wake={wake}
+        vision={vision}
         onToggleWake={onToggleSleepMode}
         input={input}
         setInput={setInput}

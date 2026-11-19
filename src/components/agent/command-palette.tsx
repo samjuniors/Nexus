@@ -12,15 +12,20 @@ import {
   GitBranch,
   Globe,
   Laptop,
+  Layers,
   Mail,
   Moon,
   Network,
   PanelLeft,
   Search,
   Send,
+  Settings,
   Shield,
+  ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Sun,
+  Terminal,
   Users,
 } from 'lucide-react'
 import { useApp } from '@/lib/agent/store'
@@ -49,7 +54,8 @@ export function CommandPalette({
   open: boolean
   onOpenChange: (v: boolean) => void
 }) {
-  const { setTab, sendTask, activeConvId } = useApp()
+  const { setTab, sendTask, activeConvId, brain } = useApp()
+  const brainConnected = brain?.connected ?? true
   const { resolvedTheme, setTheme } = useTheme()
   const { voice, wake, onToggleSleepMode } = useEva()
   const layoutMode = useEvaControl((s) => s.layoutMode)
@@ -57,6 +63,8 @@ export function CommandPalette({
   const toggleSidebarCollapsed = useEvaControl((s) => s.toggleSidebarCollapsed)
   const openSplit = useEvaControl((s) => s.openSplit)
   const setGbrainGraphOpen = useEvaControl((s) => s.setGbrainGraphOpen)
+  const setSettingsOpen = useEvaControl((s) => s.setSettingsOpen)
+  const runBuildVerify = useEvaControl((s) => s.runBuildVerify)
 
   const [query, setQuery] = useState('')
   const [activeIdx, setActiveIdx] = useState(0)
@@ -68,6 +76,17 @@ export function CommandPalette({
 
   const items = useMemo<PaletteItem[]>(
     () => [
+      {
+        id: 'open-settings',
+        group: 'Workspace',
+        label: 'Open Settings',
+        hint: 'Theme, Voice, Ear, Companion & Brain',
+        icon: Settings,
+        run: () => {
+          setSettingsOpen(true)
+          close()
+        },
+      },
       {
         id: 'focus',
         group: 'Eva & Voice',
@@ -110,6 +129,51 @@ export function CommandPalette({
         icon: Network,
         run: () => {
           setGbrainGraphOpen(true)
+          close()
+        },
+      },
+      {
+        id: 'gbrain-audit',
+        group: 'Panels',
+        label: 'Open GBrain Truth Audit',
+        hint: 'Detect contradictions & staleness',
+        icon: ShieldAlert,
+        run: () => {
+          setGbrainGraphOpen(true, 'audit')
+          close()
+        },
+      },
+      {
+        id: 'gbrain-packs',
+        group: 'Panels',
+        label: 'Open GBrain Context Packs',
+        hint: 'Scope Eva recall to domains',
+        icon: Layers,
+        run: () => {
+          setGbrainGraphOpen(true, 'packs')
+          close()
+        },
+      },
+      {
+        id: 'split-self-heal',
+        group: 'Panels',
+        label: 'Open Self-Heal Studio',
+        hint: 'Own-code patches, diffs & rollback',
+        icon: ShieldCheck,
+        run: () => {
+          openSplit('self_heal', 'Self-Heal Studio')
+          close()
+        },
+      },
+      {
+        id: 'self-heal-verify',
+        group: 'Panels',
+        label: 'Run TypeScript Build Verification',
+        hint: 'Verify app compiles cleanly',
+        icon: Terminal,
+        run: () => {
+          openSplit('self_heal', 'Self-Heal Studio')
+          void runBuildVerify()
           close()
         },
       },
@@ -252,19 +316,25 @@ export function CommandPalette({
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [layoutMode, voice.isActive, wake.sleepMode, activeConvId, resolvedTheme]
+    [layoutMode, voice.isActive, wake.sleepMode, activeConvId, resolvedTheme, brainConnected]
   )
+
+  const visibleItems = useMemo(() => {
+    if (brainConnected) return items
+    const brainIds = new Set(['gbrain', 'gbrain-audit', 'gbrain-packs', 'nav-brain'])
+    return items.filter((item) => !brainIds.has(item.id))
+  }, [items, brainConnected])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return items
-    return items.filter(
+    if (!q) return visibleItems
+    return visibleItems.filter(
       (item) =>
         item.label.toLowerCase().includes(q) ||
         item.hint.toLowerCase().includes(q) ||
         item.group.toLowerCase().includes(q)
     )
-  }, [items, query])
+  }, [visibleItems, query])
 
   useEffect(() => {
     setActiveIdx(0)

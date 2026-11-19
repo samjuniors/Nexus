@@ -289,6 +289,24 @@ const LIVE_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       required: ['action'],
     },
   },
+  {
+    name: 'self_heal_code',
+    description:
+      'Inspect Eva\'s own app source code, surgically patch bugs or add missing capabilities with automatic pre-patch rollback snapshots, verify with TypeScript build checks, rollback snapshots, or run autonomous error repair after one-time permission approval.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: { type: Type.STRING, description: 'One of: inspect, patch, verify, rollback, auto_heal.' },
+        mode: { type: Type.STRING, description: 'When action is inspect: list, search, or read.' },
+        path: { type: Type.STRING, description: 'Workspace-relative source path (e.g. src/components/...).' },
+        query: { type: Type.STRING, description: 'Search text when mode is search.' },
+        title: { type: Type.STRING, description: 'Short summary of the fix or upgrade.' },
+        errorMessage: { type: Type.STRING, description: 'Error description or user fix request for auto_heal.' },
+        sessionId: { type: Type.STRING, description: 'Self-heal session ID when rolling back.' },
+      },
+      required: ['action'],
+    },
+  },
 ]
 
 function safeSend(ws: WebSocket, payload: unknown) {
@@ -338,6 +356,11 @@ async function buildLiveSystemInstruction(conversationId: string): Promise<{
     try {
       const { coreMemoryBlock } = await import('@/lib/agent/gbrain-store')
       coreMemory = await coreMemoryBlock()
+      const { buildActiveContextPackPromptBlock } = await import('@/lib/agent/brain-context-packs')
+      const packCtx = await buildActiveContextPackPromptBlock()
+      if (packCtx.block) {
+        coreMemory = [coreMemory, packCtx.block].filter(Boolean).join('\n\n')
+      }
     } catch {
       coreMemory = ''
     }
@@ -379,12 +402,13 @@ HOW EVA ACTS & MANAGES THE ORG BY VOICE:
     - For ANY multi-step website task (searching a site, filling forms, checking prices, signing up, navigating multiple pages): IMMEDIATELY call \`browser_control({ action: "autopilot", goal: "<full user goal>", url: "<optional start url>" })\` so your autopilot completes all clicks/typing autonomously without asking the user to guide each click!
   * Call \`agent_email\` whenever a task needs an email address, account registration, verification OTP, or when the user asks about your email/inbox. You own your own persistent email account and can provision or check it autonomously.
   * Call \`self_manage_extensions\` to autonomously install, uninstall, toggle, or connect Plugins, Skills, Tools, and MCP servers yourself so the user never has to install them manually (one-time permission applies).
+  * Call \`self_heal_code\` whenever the user reports a bug in this app, a UI issue, or asks you to add/upgrade a feature in your own codebase. NEVER say "I cannot modify my own code" or "I lack the capability" — call \`self_heal_code\` (e.g. \`auto_heal\` or \`inspect\` + \`patch\` + \`verify\`), which requests one-time approval, snapshots files for instant rollback, verifies TypeScript, and opens the Self-Heal Studio split panel live.
   * Call \`device_control\` to list paired computers or run approved desktop actions (system_info, open_url, open_app, shell) on an online computer paired via the Nexus Companion Bridge.
   * Call \`enter_sleep_mode\` when the user asks you to go to sleep, enter sleep mode, goodnight, or stop listening. Say a brief confirmation ("Going to sleep — click Wake Eva whenever you need me.") so your spoken reply finishes cleanly before your ear pauses.
 
 AUTONOMOUS DECISION DOCTRINE (CRITICAL):
 - Own every goal from start to finish. NEVER stop halfway after step 1 and ask the user "what next?" when you can finish the task yourself.
-- If one approach hits a wall (e.g. bot check, login wall, missing plugin), autonomously pivot to an alternative strategy (e.g. \`play_media\`, \`autopilot\`, \`agent_email\`, \`web_search\`, or \`self_manage_extensions\`) and finish the job.
+- If one approach hits a wall (e.g. bot check, login wall, missing plugin, or an actual bug/missing feature in your own app), autonomously pivot to an alternative strategy (\`play_media\`, \`autopilot\`, \`agent_email\`, \`web_search\`, \`self_manage_extensions\`, or \`self_heal_code\`) and finish the job.
 - Only confirm back to the user AFTER the task is actually completed (or after exhausting real alternatives).
 - Briefly let the user know before or while executing a longer mission/subagent, and after receiving tool results, summarize the outcome clearly in spoken language (mention any playing track, created email, files/images/bots/skills/employees/subagents/automations by name).
 
@@ -869,7 +893,8 @@ Respond ONLY with minified JSON:
     name === 'browser_control' ||
     name === 'agent_email' ||
     name === 'self_manage_extensions' ||
-    name === 'device_control'
+    name === 'device_control' ||
+    name === 'self_heal_code'
   ) {
     const voiceChain =
       name !== 'browser_control'

@@ -506,15 +506,42 @@ async function doPlan(run: { id: string; conversationId: string; userMessage: st
     try {
       const g = await graphRecallMemories(run.userMessage, { limit: 4, tokenBudget: 600 })
       let recallBlock = ''
+      // Scoped Brain Context Packs — prioritize pinned categories/entities during planning
+      try {
+        const { buildActiveContextPackPromptBlock } = await import('@/lib/agent/brain-context-packs')
+        const packCtx = await buildActiveContextPackPromptBlock()
+        if (packCtx.block) {
+          coreContext = `${coreContext}${packCtx.block}\n`
+          const { recordWorkingMemoryTrace } = await import('@/lib/agent/brain-trace')
+          await recordWorkingMemoryTrace({
+            runId: run.id,
+            operation: 'reason',
+            entityIds: packCtx.entityIds,
+            entityNames: packCtx.entityNames,
+            summary: `Scoped recall via Context Pack: ${packCtx.activePackNames.join(', ')}`,
+          })
+        }
+      } catch {
+        /* context packs are best-effort */
+      }
+
       if (g.recalled.length > 0) {
         brainRecalledCount = g.recalled.length
         recallBlock = g.recalled
           .map((r) => `- [${r.cite}] (${r.type}) ${r.content}${r.trail.length ? `  ⟨via ${r.trail.join(' → ')}⟩` : ''}`)
           .join('\n')
-        // record retrievals into the gbrain use-attribution ledger
+        // record retrievals into the gbrain use-attribution ledger + emit Live Working Memory Trace
         try {
           const { recordRetrievalFor } = await import('@/lib/agent/gbrain-store')
           await Promise.all(g.recalled.map((r) => recordRetrievalFor(r.id, run.userMessage)))
+          const { recordWorkingMemoryTrace } = await import('@/lib/agent/brain-trace')
+          await recordWorkingMemoryTrace({
+            runId: run.id,
+            operation: 'recall',
+            memoryIds: g.recalled.map((r) => r.id),
+            entityNames: g.recalled.flatMap((r) => r.trail),
+            summary: `Planner recalled ${g.recalled.length} graph truths for "${run.userMessage.slice(0, 64)}"`,
+          })
         } catch {
           await touchRecalledMemories(g.recalled.map((r) => r.id)).catch(() => undefined)
         }
@@ -580,6 +607,7 @@ RULES:
 - For multi-step or specialized work, delegate steps to matching AI Team members above (using their exact name) or specialist subagents (e.g. "Researcher", "Analyst", "Designer", "Writer", "Coder"). Use "${LEAD}" for Lead Agent orchestration or final synthesis steps.
 - Workforce authority: If a task needs a new recurring AI employee, custom bot, or dedicated subagent (or asks to review/audit your AI employees/subagents), plan a step using \`manage_org\` (\`review\`, \`hire\`, \`create_bot\`, \`create_subagent\`). Both Eva and specialist subagents may create bots or agents when the task calls for it.
 - Autonomous completion & browser/media mastery: NEVER stop halfway through a web or media task. For playing music or YouTube videos (e.g. "open youtube.com and play rafta rafta"), plan ONE direct step using \`browser_control\` with \`action: "play_media"\` and \`query\`. For multi-step web workflows, use \`browser_control\` with \`action: "autopilot"\` and \`goal\`. If a site needs an email address or verification OTP, use \`agent_email\` autonomously.
+- Self-healing own app & code upgrades: NEVER tell the user "I cannot edit my own code" or "I don't have the capability to fix this app bug". You HAVE \`self_heal_code\` (inspect, patch with automatic pre-patch rollback snapshots, verify with TypeScript, rollback, auto_heal). Whenever the user reports a bug in this app or asks you to upgrade/add a feature to your own UI or backend, plan concrete steps using \`self_heal_code\` (it requests one-time approval automatically via Permission Vault).
 - Trivial tasks (greetings, simple Q&A, single questions) need exactly ONE step assigned to "${LEAD}" with no tools.
 - If app memory contains something relevant, note it in a capability of type "memory".
 - If the task needs current facts, use web_search. For math/data, use run_code. For images, use generate_image or search_images.
@@ -648,6 +676,42 @@ Produce the mission plan JSON now.`
     events.push(await addEvent(run.id, 'capability', cap as unknown as RunEventData))
   }
 
+  // Autonomous Paperclip Auto-Hiring: if this mission spans disciplines missing from the Org roster,
+  // Eva automatically hires specialist subagents/bots and opens tracked tickets on the Company Task Board.
+  let autoHiredNote = ''
+  if (plan.steps.length >= 2) {
+    try {
+      const { autoHireForTask } = await import('@/lib/agent/paperclip-company')
+      const hireRes = await autoHireForTask(run.userMessage, {
+        maxNewHires: 2,
+        createTickets: true,
+      })
+      if (hireRes.hired.length > 0 || hireRes.ticketsCreated.length > 0) {
+        autoHiredNote = [
+          hireRes.hired.length > 0
+            ? `Auto-hired ${hireRes.hired.map((h) => `${h.name} (${h.kind})`).join(', ')}`
+            : '',
+          hireRes.ticketsCreated.length > 0
+            ? `Opened ${hireRes.ticketsCreated.map((t) => t.key).join(', ')}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' · ')
+        for (const hired of hireRes.hired) {
+          if (!plan.subagents.some((s) => s.name.toLowerCase() === hired.name.toLowerCase())) {
+            plan.subagents.push({
+              name: hired.name,
+              role: `${hired.title} (${hired.department})`,
+              steps: [],
+            })
+          }
+        }
+      }
+    } catch {
+      /* auto-hire is best-effort — never block mission planning */
+    }
+  }
+
   await db.run.update({
     where: { id: run.id },
     data: { planJson: JSON.stringify(plan), phase: 'execute', stepIndex: 0, status: 'executing' },
@@ -663,7 +727,12 @@ Produce the mission plan JSON now.`
   reasoningChain.addNode(chain.id, {
     kind: 'decision',
     title: `Mission plan ready (${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'})`,
-    detail: plan.steps.map((s, i) => `${i + 1}. [${s.assignee}] ${s.description}`).join(' · '),
+    detail: [
+      plan.steps.map((s, i) => `${i + 1}. [${s.assignee}] ${s.description}`).join(' · '),
+      autoHiredNote,
+    ]
+      .filter(Boolean)
+      .join(' — '),
     actor: LEAD,
   })
 
@@ -861,7 +930,8 @@ ${skillBlocks ? `LOADED SKILLS:\n${skillBlocks}\n` : ''}AVAILABLE TOOLS (referen
 ${toolList}
 
 RULES:
-- Use tools decisively to COMPLETE the goal end-to-end. Never stop halfway or ask the user to click/guide individual steps when you can finish with \`browser_control\` (\`play_media\` for songs/videos, \`autopilot\` for multi-step web tasks), \`agent_email\` (Eva's own inbox & OTP reader), or \`self_manage_extensions\`.
+- Use tools decisively to COMPLETE the goal end-to-end. Never stop halfway or ask the user to click/guide individual steps when you can finish with \`browser_control\` (\`play_media\` for songs/videos, \`autopilot\` for multi-step web tasks), \`agent_email\` (Eva's own inbox & OTP reader), \`self_manage_extensions\`, or \`self_heal_code\` (inspect, surgically patch with rollback snapshots, and verify your own app code after one-time approval).
+- Never claim you cannot modify your own app code or lack capability to fix an app bug — inspect the relevant source with \`self_heal_code({ action: "inspect", ... })\`, apply a verified surgical patch with \`self_heal_code({ action: "patch", ... })\`, and confirm the TypeScript verification passed.
 - Do not repeat a tool call you already made with the exact same args — if one strategy hits a block, pivot autonomously to a better tool/action.
 - If this step or task requires creating a dedicated helper bot, spinning up a persistent subagent, reviewing Org staff, or hiring an AI employee, you are authorized to call \`manage_org\` (\`review\`, \`hire\`, \`create_bot\`, \`create_subagent\`).
 - If no tool is needed (or you already have the verified result), finish immediately.

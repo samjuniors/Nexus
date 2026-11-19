@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Activity,
   BadgeCheck,
   Bot,
   ChevronDown,
@@ -9,7 +10,9 @@ import {
   Cpu,
   FileCheck2,
   FolderKanban,
+  GitBranch,
   GitFork,
+  Layers,
   Link2,
   Loader2,
   Maximize2,
@@ -24,6 +27,7 @@ import {
   RotateCcw,
   Scan,
   Search,
+  ShieldAlert,
   Sparkles,
   Tag,
   Trash2,
@@ -49,6 +53,13 @@ import {
   type GBrainLayoutMode,
   type LaidGBrainNode,
 } from '@/lib/agent/gbrain-layout'
+import { useEvaControl } from '@/lib/agent/eva-control-store'
+import type { TruthAuditFinding, TruthAuditReport } from '@/lib/agent/brain-truth-audit'
+import type { BrainTraceOperation } from '@/lib/agent/brain-trace'
+import {
+  GBrainContextPacksDrawer,
+  GBrainTruthAuditDrawer,
+} from '@/components/agent/gbrain-intelligence-drawers'
 import { cn } from '@/lib/utils'
 
 const LAYOUT_OPTIONS: { id: GBrainLayoutMode; label: string; icon: typeof Orbit }[] = [
@@ -124,6 +135,18 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
 
   const [view, setView] = useState({ tx: 0, ty: 0, scale: 1 })
   const [nodeOverrides, setNodeOverrides] = useState<Record<string, { x: number; y: number }>>({})
+  const [rightPanel, setRightPanel] = useState<'inspector' | 'audit' | 'packs'>('inspector')
+  const [auditReport, setAuditReport] = useState<TruthAuditReport | null>(null)
+  const [auditLoading, setAuditLoading] = useState(false)
+  const [busyFindingId, setBusyFindingId] = useState<string | null>(null)
+
+  const gbrainInitialPanel = useEvaControl((s) => s.gbrainInitialPanel)
+  const brainTraces = useEvaControl((s) => s.brainTraces)
+  const activePackEntityIds = useEvaControl((s) => s.activePackEntityIds)
+  const activePackNames = useEvaControl((s) => s.activePackNames)
+  const refreshContextPacks = useEvaControl((s) => s.refreshContextPacks)
+  const refreshBrainTraces = useEvaControl((s) => s.refreshBrainTraces)
+  const openReasoningForChain = useEvaControl((s) => s.openReasoningForChain)
 
   const canvasWrapRef = useRef<HTMLDivElement>(null)
   const detailRef = useRef<HTMLDivElement>(null)
@@ -149,12 +172,85 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
     }
   }, [])
 
+  const runTruthAudit = useCallback(async (deep = false) => {
+    setAuditLoading(true)
+    try {
+      const res = await fetch(`/api/brain/truth-audit${deep ? '?deep=1' : ''}`, {
+        cache: 'no-store',
+      })
+      const data = (await res.json()) as {
+        ok?: boolean
+        report?: TruthAuditReport
+        error?: string
+      }
+      if (data.ok && data.report) {
+        setAuditReport(data.report)
+      } else if (data.error) {
+        setMessage({ kind: 'warn', text: data.error })
+      }
+    } catch (e) {
+      setMessage({ kind: 'warn', text: e instanceof Error ? e.message : 'Truth audit failed' })
+    } finally {
+      setAuditLoading(false)
+    }
+  }, [])
+
+  const resolveAuditFinding = useCallback(
+    async (
+      finding: TruthAuditFinding,
+      action: 'keep_newer' | 'merge_entities' | 'archive_stale'
+    ) => {
+      setBusyFindingId(finding.id)
+      try {
+        const res = await fetch('/api/brain/truth-audit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action,
+            memoryIds: finding.memoryIds,
+            entityIds: finding.entityIds,
+          }),
+        })
+        const data = (await res.json()) as {
+          ok?: boolean
+          message?: string
+          report?: TruthAuditReport
+          error?: string
+        }
+        if (data.ok) {
+          if (data.report) setAuditReport(data.report)
+          if (data.message) setMessage({ kind: 'ok', text: data.message })
+          await refresh()
+        } else if (data.error) {
+          setMessage({ kind: 'warn', text: data.error })
+        }
+      } catch (e) {
+        setMessage({ kind: 'warn', text: e instanceof Error ? e.message : 'Resolution failed' })
+      } finally {
+        setBusyFindingId(null)
+      }
+    },
+    [refresh]
+  )
+
   useEffect(() => {
-    if (open) void refresh()
-  }, [open, refresh])
+    if (!open) return
+    void refresh()
+    void refreshContextPacks()
+    void refreshBrainTraces()
+    if (gbrainInitialPanel === 'audit') {
+      setRightPanel('audit')
+      void runTruthAudit(false)
+    } else if (gbrainInitialPanel === 'packs') {
+      setRightPanel('packs')
+    } else {
+      setRightPanel('inspector')
+    }
+  }, [open, gbrainInitialPanel, refresh, refreshContextPacks, refreshBrainTraces, runTruthAudit])
 
   const inspect = useCallback(async (nodeId: string) => {
     setSelected(nodeId)
+    setRightPanel('inspector')
     setDetail(null)
     setDetailLoading(true)
     setRenaming('')
@@ -340,6 +436,21 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
 
   const activeFocusId = hovered ?? selected
 
+  const activePackSet = useMemo(() => new Set(activePackEntityIds), [activePackEntityIds])
+
+  // Map nodeId -> most recent live Working Memory Trace operation for glowing canvas state
+  const tracedNodeMap = useMemo(() => {
+    const map = new Map<string, BrainTraceOperation>()
+    for (const ev of brainTraces.slice(0, 4)) {
+      for (const id of ev.nodeIds) {
+        if (!map.has(id)) map.set(id, ev.operation)
+      }
+    }
+    return map
+  }, [brainTraces])
+
+  const latestTrace = brainTraces[0] ?? null
+
   const neighborSet = useMemo(() => {
     const s = new Set<string>()
     if (!activeFocusId) return s
@@ -461,7 +572,7 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
       aria-label="GBrain interactive knowledge graph"
     >
       {/* Top Bar */}
-      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-sidebar px-4 py-2.5 md:px-5">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-sidebar px-3.5 py-2 md:px-4">
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -478,12 +589,12 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
             <PanelLeft className="h-3.5 w-3.5" />
           </button>
           <Network className="h-4 w-4 text-sky-500" />
-          <h2 className="text-sm font-semibold tracking-tight">GBrain Knowledge Graph</h2>
+          <h2 className="text-sm font-semibold tracking-tight whitespace-nowrap">GBrain Knowledge Graph</h2>
         </div>
 
         {/* Clean tabular stats */}
         {graph && (
-          <div className="hidden items-center gap-1.5 font-mono text-[11px] tabular-nums text-muted-foreground xl:flex">
+          <div className="hidden items-center gap-1.5 font-mono text-[11px] tabular-nums text-muted-foreground 2xl:flex">
             <span>
               {visibleNodes.length}/{graph.stats.nodes} nodes
             </span>
@@ -518,7 +629,7 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                 onClick={() => setLayoutMode(id)}
                 aria-pressed={active}
                 className={cn(
-                  'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium whitespace-nowrap transition-colors',
+                  'inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium whitespace-nowrap transition-colors',
                   active
                     ? 'bg-foreground text-background'
                     : 'text-muted-foreground hover:text-foreground'
@@ -533,18 +644,64 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
 
         <div className="ml-auto flex items-center gap-1.5">
           <Button
-            variant="outline"
+            variant={rightPanel === 'packs' || activePackNames.length > 0 ? 'secondary' : 'outline'}
             size="sm"
-            className="h-8 gap-1.5 text-xs"
-            onClick={() => setCreateOpen((v) => !v)}
+            data-gbrain-open-packs="1"
+            className={cn(
+              'h-8 gap-1.5 text-xs',
+              activePackNames.length > 0 && 'border-sky-500/40 text-sky-600 dark:text-sky-400'
+            )}
+            onClick={() => {
+              if (rightPanel === 'packs') setRightPanel('inspector')
+              else {
+                setRightPanel('packs')
+                void refreshContextPacks()
+              }
+            }}
           >
-            <Plus className="h-3.5 w-3.5" />
-            <span>New node</span>
+            <Layers className="h-3.5 w-3.5" />
+            <span>
+              {activePackNames.length > 0
+                ? `Packs (${activePackNames.length})`
+                : 'Context Packs'}
+            </span>
+          </Button>
+          <Button
+            variant={rightPanel === 'audit' ? 'secondary' : 'outline'}
+            size="sm"
+            data-gbrain-open-audit="1"
+            className="h-8 gap-1.5 text-xs"
+            onClick={() => {
+              if (rightPanel === 'audit') setRightPanel('inspector')
+              else {
+                setRightPanel('audit')
+                if (!auditReport) void runTruthAudit(false)
+              }
+            }}
+          >
+            <ShieldAlert className="h-3.5 w-3.5 text-amber-500" />
+            <span>Truth Audit</span>
+            {auditReport && auditReport.counts.total > 0 && (
+              <span className="font-mono text-[10px] tabular-nums text-amber-600 dark:text-amber-400">
+                {auditReport.counts.total}
+              </span>
+            )}
           </Button>
           <Button
             variant="outline"
             size="sm"
             className="h-8 gap-1.5 text-xs"
+            title="Create new categorized node"
+            onClick={() => setCreateOpen((v) => !v)}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span className="hidden xl:inline">New</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1.5 text-xs"
+            title="Sync workspace into GBrain"
             disabled={busy || loading}
             onClick={() =>
               void act(async () => {
@@ -557,12 +714,13 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
             }
           >
             <RefreshCw className={cn('h-3.5 w-3.5', busy && 'animate-spin')} />
-            <span className="hidden sm:inline">Sync workspace</span>
+            <span className="hidden lg:inline">Sync</span>
           </Button>
           <Button
             variant="outline"
             size="sm"
             className="h-8 gap-1.5 text-xs"
+            title="Prune orphaned entities"
             disabled={busy || loading}
             onClick={() =>
               void act(async () => {
@@ -574,7 +732,7 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
             }
           >
             <Sparkles className="h-3.5 w-3.5" />
-            <span className="hidden md:inline">Prune</span>
+            <span className="hidden 2xl:inline">Prune</span>
           </Button>
           <Button
             variant="ghost"
@@ -1194,12 +1352,22 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                   const isHovered = l.node.id === hovered
                   const inNeighborhood = activeFocusId === null || neighborSet.has(l.node.id)
                   const cat = GBRAIN_CATEGORY_MAP[l.node.category] ?? GBRAIN_CATEGORY_MAP.concepts
+                  const traceOp = tracedNodeMap.get(l.node.id) ?? null
+                  const inActivePack = activePackSet.has(l.node.id)
+                  const traceColor =
+                    traceOp === 'write'
+                      ? '#10b981'
+                      : traceOp === 'reason'
+                        ? '#a78bfa'
+                        : '#38bdf8'
 
                   return (
                     <g
                       key={l.node.id}
                       data-graph-node="1"
                       data-node-category={l.node.category}
+                      data-node-traced={traceOp ?? undefined}
+                      data-node-in-pack={inActivePack ? '1' : undefined}
                       transform={`translate(${l.x}, ${l.y})`}
                       className="cursor-pointer"
                       opacity={inNeighborhood ? 1 : 0.22}
@@ -1217,7 +1385,45 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                         }
                       }}
                     >
-                      <title>{`${l.node.name} · ${cat.label} (${l.node.degree} links, ${l.node.memoryCount} memories) — click to inspect, drag to move`}</title>
+                      <title>{`${l.node.name} · ${cat.label} (${l.node.degree} links, ${l.node.memoryCount} memories)${traceOp ? ` · Live ${traceOp}` : ''}${inActivePack ? ' · Active Context Pack' : ''} — click to inspect, drag to move`}</title>
+
+                      {/* Live Working Memory Trace Halo */}
+                      {traceOp && (
+                        <>
+                          <rect
+                            x={-HALF_W - 6}
+                            y={-HALF_H - 6}
+                            width={CARD_W + 12}
+                            height={CARD_H + 12}
+                            rx={13}
+                            fill="none"
+                            stroke={traceColor}
+                            strokeWidth={1.8}
+                            strokeDasharray="6 3"
+                            strokeOpacity={0.9}
+                          />
+                          <g transform={`translate(${HALF_W - 24}, ${-HALF_H - 9})`} pointerEvents="none">
+                            <rect
+                              x={-22}
+                              y={-8}
+                              width={44}
+                              height={15}
+                              rx={4}
+                              fill={traceColor}
+                            />
+                            <text
+                              y={2.5}
+                              textAnchor="middle"
+                              fontSize={8.5}
+                              fontWeight={600}
+                              fill="#09090b"
+                              className="font-mono"
+                            >
+                              {traceOp}
+                            </text>
+                          </g>
+                        </>
+                      )}
 
                       {/* Selection / Hover halo */}
                       {(isSelected || isHovered) && (
@@ -1242,8 +1448,14 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                         height={CARD_H}
                         rx={9}
                         fill="var(--card)"
-                        stroke={isSelected ? '#38bdf8' : 'var(--border)'}
-                        strokeWidth={isSelected ? 1.5 : 1}
+                        stroke={
+                          isSelected
+                            ? '#38bdf8'
+                            : inActivePack
+                              ? '#38bdf8'
+                              : 'var(--border)'
+                        }
+                        strokeWidth={isSelected || inActivePack ? 1.5 : 1}
                       />
 
                       {/* Subtle top semantic category strip (clean horizontal accent, not a thick left border) */}
@@ -1254,7 +1466,7 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                         height={2.5}
                         rx={1.25}
                         fill={cat.accent}
-                        opacity={isSelected || isHovered ? 1 : 0.85}
+                        opacity={isSelected || isHovered || inActivePack ? 1 : 0.85}
                       />
 
                       {/* Category dot + Node Title */}
@@ -1274,6 +1486,16 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                       >
                         {truncateText(l.node.name, 19)}
                       </text>
+
+                      {/* Active Context Pack Pin Indicator */}
+                      {inActivePack && (
+                        <circle
+                          cx={HALF_W - 12}
+                          cy={-6}
+                          r={3}
+                          fill="#38bdf8"
+                        />
+                      )}
 
                       {/* Clean unboxed metadata subline */}
                       <text
@@ -1301,9 +1523,64 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
             <span>·</span>
             <span>Drag cards to arrange</span>
           </div>
+
+          {/* Live Working Memory Trace Strip */}
+          {latestTrace && (
+            <div
+              data-gbrain-live-trace="1"
+              className="absolute right-3 bottom-3 z-10 flex max-w-md items-center gap-2 rounded-lg border border-border bg-card/95 px-3 py-1.5 text-[11px] shadow-md backdrop-blur"
+            >
+              <Activity className="h-3.5 w-3.5 shrink-0 text-sky-500" />
+              <span className="shrink-0 font-mono text-[10px] font-semibold uppercase text-sky-600 dark:text-sky-400">
+                {latestTrace.operation}
+              </span>
+              <span className="min-w-0 truncate text-foreground">
+                {latestTrace.nodeNames.slice(0, 3).join(', ') || latestTrace.summary}
+              </span>
+              {latestTrace.nodeIds[0] && (
+                <button
+                  type="button"
+                  onClick={() => focusNode(latestTrace.nodeIds[0])}
+                  className="shrink-0 font-mono text-[10px] text-sky-600 hover:underline dark:text-sky-400"
+                >
+                  Focus
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  onOpenChange(false)
+                  openReasoningForChain()
+                }}
+                title="Open Eva Reasoning Chain"
+                className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                <GitBranch className="h-3 w-3" />
+                <span>Chain</span>
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Right Inspector Drawer */}
+        {/* Right Contextual Drawer: Truth Audit, Context Packs, or Node Inspector */}
+        {rightPanel === 'audit' ? (
+          <GBrainTruthAuditDrawer
+            report={auditReport}
+            loading={auditLoading}
+            busyFindingId={busyFindingId}
+            onRunScan={(deep) => void runTruthAudit(deep)}
+            onResolve={(finding, action) => void resolveAuditFinding(finding, action)}
+            onFocusNode={(id) => focusNode(id)}
+            onClose={() => setRightPanel('inspector')}
+          />
+        ) : rightPanel === 'packs' ? (
+          <GBrainContextPacksDrawer
+            selectedNodeId={selected}
+            selectedNodeName={detail?.entity.name ?? null}
+            currentCategoryFilter={categoryFilter}
+            onClose={() => setRightPanel('inspector')}
+          />
+        ) : (
         <aside
           ref={detailRef}
           className="nice-scroll flex h-64 w-full shrink-0 flex-col overflow-y-auto border-t border-border bg-sidebar md:h-auto md:w-80 md:border-t-0 md:border-l"
@@ -1633,6 +1910,7 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
             </div>
           )}
         </aside>
+        )}
       </div>
     </div>
   )

@@ -1,7 +1,8 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  Activity,
   Bot,
   Briefcase,
   Building2,
@@ -38,6 +39,13 @@ import { Textarea } from '@/components/ui/textarea'
 import { api, type AiEmployeeDTO } from '@/lib/agent/client'
 import { Markdown } from '@/components/agent/markdown'
 import { MochiEyes } from '@/components/agent/mochi-eyes'
+import {
+  PAPERCLIP_SUBTABS,
+  PaperclipByoaAndAutoHire,
+  PaperclipHeartbeatsBudgets,
+  PaperclipTaskBoard,
+  type CompanySnapshotDTO,
+} from '@/components/agent/paperclip-company-tabs'
 import { useEva } from '@/components/agent/eva-provider'
 import { pickEmployeeEyeArchetype } from '@/lib/agent/mochi-eyes'
 import { useApp } from '@/lib/agent/store'
@@ -122,6 +130,9 @@ export function OrgView() {
   const { employees, skills, tools, refreshOrg, refreshPlugins, refreshTools } = useApp()
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [companyTab, setCompanyTab] = useState<'org' | 'board' | 'heartbeats' | 'byoa'>('org')
+  const [companySnapshot, setCompanySnapshot] = useState<CompanySnapshotDTO | null>(null)
+  const [companyBusy, setCompanyBusy] = useState(false)
   const [viewMode, setViewMode] = useState<'tree' | 'grid'>('tree')
   const [kindFilter, setKindFilter] = useState<'all' | 'employee' | 'bot'>('all')
   const [query, setQuery] = useState('')
@@ -153,9 +164,52 @@ export function OrgView() {
     review: Awaited<ReturnType<typeof api.orgReview>>['review']
   } | null>(null)
 
+  const refreshCompany = useCallback(async () => {
+    try {
+      const res = await fetch('/api/company', { cache: 'no-store' })
+      if (!res.ok) return
+      const data = (await res.json()) as CompanySnapshotDTO
+      setCompanySnapshot(data)
+    } catch {
+      /* ignore transient fetch error */
+    }
+  }, [])
+
+  const runCompanyAction = useCallback(
+    async (payload: Record<string, unknown>, successMsg?: string) => {
+      setCompanyBusy(true)
+      try {
+        const res = await fetch('/api/company', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        const data = (await res.json()) as {
+          error?: string
+          snapshot?: CompanySnapshotDTO
+        } & Partial<CompanySnapshotDTO>
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+        if (data.snapshot) setCompanySnapshot(data.snapshot)
+        else if (data.company && data.metrics) setCompanySnapshot(data as CompanySnapshotDTO)
+        await Promise.all([refreshOrg(), refreshTools()])
+        if (successMsg) toast({ title: successMsg })
+      } catch (e) {
+        toast({
+          title: 'Company action failed',
+          description: e instanceof Error ? e.message : String(e),
+          variant: 'destructive',
+        })
+      } finally {
+        setCompanyBusy(false)
+      }
+    },
+    [refreshOrg, refreshTools, toast]
+  )
+
   useEffect(() => {
     void refreshOrg()
-  }, [refreshOrg])
+    void refreshCompany()
+  }, [refreshOrg, refreshCompany])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -549,22 +603,121 @@ export function OrgView() {
           </section>
         )}
 
-        {/* Metrics Strip */}
-        <div className="grid grid-cols-3 gap-3">
-          <div className="rounded-xl border border-white/[0.08] bg-black/25 p-3.5">
-            <div className="font-mono text-lg font-semibold tabular-nums text-zinc-100">{stats.total}</div>
-            <div className="text-[11px] text-muted-foreground">Total Org Members</div>
+        {/* Metrics Strip — Paperclip Company Control Plane */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-xl border border-border bg-card/40 p-3.5">
+            <div className="font-mono text-lg font-semibold tabular-nums text-foreground">
+              {stats.activeCount} / {stats.total}
+            </div>
+            <div className="text-[11px] text-muted-foreground">Active Agents &amp; Bots</div>
           </div>
-          <div className="rounded-xl border border-white/[0.08] bg-black/25 p-3.5">
-            <div className="font-mono text-lg font-semibold tabular-nums text-zinc-100">{stats.botCount}</div>
-            <div className="text-[11px] text-muted-foreground">Bots &amp; Subagents</div>
+          <div className="rounded-xl border border-border bg-card/40 p-3.5">
+            <div className="font-mono text-lg font-semibold tabular-nums text-foreground">
+              {companySnapshot?.metrics.openTickets ?? 0}
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              Open Machine Tickets
+              {(companySnapshot?.metrics.approvalPending ?? 0) > 0
+                ? ` · ${companySnapshot?.metrics.approvalPending} gate`
+                : ''}
+            </div>
           </div>
-          <div className="rounded-xl border border-white/[0.08] bg-black/25 p-3.5">
-            <div className="font-mono text-lg font-semibold tabular-nums text-zinc-100">{stats.completed}</div>
-            <div className="text-[11px] text-muted-foreground">Tasks Executed</div>
+          <div className="rounded-xl border border-border bg-card/40 p-3.5">
+            <div className="font-mono text-lg font-semibold tabular-nums text-foreground">
+              ${(companySnapshot?.metrics.totalSpentUsd ?? 0).toFixed(2)}
+              <span className="text-xs font-normal text-muted-foreground">
+                {' '}/ ${companySnapshot?.metrics.monthlyBudgetUsd ?? 250}
+              </span>
+            </div>
+            <div className="text-[11px] text-muted-foreground">Monthly Company Spend</div>
+          </div>
+          <div className="rounded-xl border border-border bg-card/40 p-3.5">
+            <div className="font-mono text-lg font-semibold tabular-nums text-foreground">
+              {companySnapshot?.metrics.totalHeartbeats ?? 0}
+            </div>
+            <div className="text-[11px] text-muted-foreground">Heartbeats Executed</div>
           </div>
         </div>
 
+        {/* Paperclip Control Plane Sub-Tabs */}
+        <div
+          role="tablist"
+          aria-label="Paperclip company sections"
+          className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2"
+        >
+          <div className="flex flex-wrap items-center gap-1">
+            {PAPERCLIP_SUBTABS.map(({ id, label, icon: Icon }) => {
+              const active = companyTab === id
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  data-paperclip-tab={id}
+                  onClick={() => setCompanyTab(id)}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors',
+                    active
+                      ? 'border-sky-500/40 bg-sky-500/12 text-sky-600 dark:text-sky-400'
+                      : 'border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={companyBusy || employees.length === 0}
+            onClick={() =>
+              void runCompanyAction(
+                { action: 'run_all_heartbeats' },
+                'Paperclip heartbeat wave completed'
+              )
+            }
+            className="h-7 gap-1.5 whitespace-nowrap text-[11px]"
+          >
+            {companyBusy ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Activity className="h-3 w-3 text-emerald-500" />
+            )}
+            Pulse Company
+          </Button>
+        </div>
+
+        {companyTab === 'board' && companySnapshot && (
+          <PaperclipTaskBoard
+            snapshot={companySnapshot}
+            employees={employees}
+            busy={companyBusy}
+            onAction={runCompanyAction}
+          />
+        )}
+
+        {companyTab === 'heartbeats' && companySnapshot && (
+          <PaperclipHeartbeatsBudgets
+            snapshot={companySnapshot}
+            employees={employees}
+            busy={companyBusy}
+            onAction={runCompanyAction}
+          />
+        )}
+
+        {companyTab === 'byoa' && companySnapshot && (
+          <PaperclipByoaAndAutoHire
+            snapshot={companySnapshot}
+            busy={companyBusy}
+            onAction={runCompanyAction}
+          />
+        )}
+
+        {companyTab === 'org' && (
+          <>
         {/* Filter & View Bar */}
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-52 flex-1">
@@ -913,6 +1066,8 @@ export function OrgView() {
               )}
             </div>
           </div>
+        )}
+          </>
         )}
       </div>
 

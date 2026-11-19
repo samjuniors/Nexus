@@ -7,6 +7,7 @@ export type CapabilityKey =
   | 'browser_control'
   | 'workspace_shell'
   | 'desktop_bridge'
+  | 'self_code_edit'
 
 export type PermissionPolicy = 'always' | 'ask' | 'deny'
 
@@ -51,6 +52,13 @@ export const CAPABILITY_SPECS: CapabilitySpec[] = [
     title: 'Connected Desktop Computer Control',
     description:
       'Allow Eva to open apps, read host info, or execute approved actions on your paired Mac/Windows/Linux computer.',
+    risk: 'high',
+  },
+  {
+    capability: 'self_code_edit',
+    title: 'Self-Healing Code & App Repair',
+    description:
+      'Allow Eva to inspect and surgically patch her own app source code, run TypeScript build verification, and keep automatic pre-patch rollback snapshots.',
     risk: 'high',
   },
 ]

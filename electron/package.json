@@ -1,0 +1,13 @@
+{
+  "name": "nexus-eva-desktop",
+  "version": "1.0.0",
+  "description": "Native Electron desktop shell for Nexus Agent OS & Eva Companion",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^35.0.0"
+  }
+}

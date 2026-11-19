@@ -10,12 +10,15 @@ import {
   Download,
   FolderSearch,
   GraduationCap,
+  Layers,
   Loader2,
   Moon,
   Plus,
   Puzzle,
   Server,
   Share2,
+  ShieldAlert,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Upload,
@@ -118,6 +121,9 @@ export function BrainView() {
   const [teachBusy, setTeachBusy] = useState(false)
   const [taught, setTaught] = useState<{ content: string; entities: number } | null>(null)
   const setGbrainGraphOpen = useEvaControl((s) => s.setGbrainGraphOpen)
+  const openSplit = useEvaControl((s) => s.openSplit)
+  const activePackNames = useEvaControl((s) => s.activePackNames)
+  const brainTracesCount = useEvaControl((s) => s.brainTraces.length)
   const [indexBusy, setIndexBusy] = useState(false)
   const [indexSummary, setIndexSummary] = useState<string | null>(null)
   const [portableBusy, setPortableBusy] = useState(false)
@@ -663,10 +669,53 @@ export function BrainView() {
             <span className="text-[11px] text-muted-foreground">
               — all memory as an entity graph: recall walks it (Personalized PageRank) and only the activated slice ever enters a prompt
             </span>
-            <span className="ml-auto">
+            <span className="ml-auto flex flex-wrap items-center gap-1.5">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1.5 text-xs"
+                onClick={() => setGbrainGraphOpen(true, 'audit')}
+              >
+                <ShieldAlert className="h-3.5 w-3.5 text-amber-400" />
+                <span>Truth Audit</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1.5 text-xs"
+                onClick={() => setGbrainGraphOpen(true, 'packs')}
+              >
+                <Layers className="h-3.5 w-3.5 text-sky-400" />
+                <span>
+                  {activePackNames.length > 0 ? `Packs (${activePackNames.length})` : 'Context Packs'}
+                </span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1.5 text-xs"
+                onClick={() => openSplit('self_heal', 'Self-Heal Studio')}
+              >
+                <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+                <span>Self-Heal</span>
+              </Button>
               <GBrainGraphButton onClick={() => setGbrainGraphOpen(true)} />
             </span>
           </div>
+          {(activePackNames.length > 0 || brainTracesCount > 0) && (
+            <div className="mt-2.5 flex flex-wrap items-center gap-2 font-mono text-[10.5px] text-muted-foreground">
+              {activePackNames.length > 0 && (
+                <span>
+                  Active packs:{' '}
+                  <span className="text-sky-400">{activePackNames.join(', ')}</span>
+                </span>
+              )}
+              {activePackNames.length > 0 && brainTracesCount > 0 && <span>·</span>}
+              {brainTracesCount > 0 && (
+                <span>{brainTracesCount} live working-memory trace events recorded</span>
+              )}
+            </div>
+          )}
 
           <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
             <div className="rounded-xl border border-white/[0.07] bg-black/20 p-3">

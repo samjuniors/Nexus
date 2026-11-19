@@ -64,6 +64,7 @@ const SOURCE_META: Record<ReasoningChain['source'], { label: string; icon: typeo
   browser_autopilot: { label: 'Browser Autopilot', icon: Globe },
   mission: { label: 'Mission', icon: Workflow },
   voice_live: { label: 'Voice Action', icon: Mic },
+  self_heal: { label: 'Self-Heal', icon: ShieldCheck },
 }
 
 const FILTERS: { id: NodeFilter; label: string }[] = [

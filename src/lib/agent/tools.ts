@@ -177,9 +177,9 @@ const BUILTIN_TOOL_SPECS: Record<string, { name: string; description: string; ar
     app_control: {
       name: 'App UI Self-Control',
       description:
-        'Control the Nexus Agent OS interface visually with an animated live cursor: switch tabs, open or close split-screen panels (reasoning, browser, identity, permissions, devices, org, artifacts, tools, automations, brain), switch between standard and Voice Focus layout modes, collapse/expand the sidebar rail, open the interactive GBrain graph, show popups, click buttons/targets, or toggle light/dark theme.',
+        'Control the Nexus Agent OS interface visually with an animated live cursor: switch tabs, open or close split-screen panels (reasoning, self_heal, browser, identity, permissions, devices, org, artifacts, tools, automations, brain), switch between standard and Voice Focus layout modes, collapse/expand the sidebar rail, open the interactive GBrain graph, show popups, click buttons/targets, or toggle light/dark theme.',
       argSpec:
-        '{"action": "navigate_tab"|"open_split"|"close_split"|"set_layout_mode"|"toggle_sidebar"|"open_gbrain_graph"|"open_popup"|"close_popup"|"click_target"|"set_theme", "tab"?: string, "mode"?: "reasoning"|"browser"|"identity"|"permissions"|"devices"|"org"|"artifacts"|"tools"|"automations"|"brain"|"standard"|"focus", "collapsed"?: boolean, "title"?: string, "body"?: string, "selector"?: string, "label"?: string, "theme"?: "light"|"dark", "url"?: string}',
+        '{"action": "navigate_tab"|"open_split"|"close_split"|"set_layout_mode"|"toggle_sidebar"|"open_gbrain_graph"|"open_popup"|"close_popup"|"click_target"|"set_theme", "tab"?: string, "mode"?: "reasoning"|"self_heal"|"browser"|"identity"|"permissions"|"devices"|"org"|"artifacts"|"tools"|"automations"|"brain"|"standard"|"focus", "collapsed"?: boolean, "title"?: string, "body"?: string, "selector"?: string, "label"?: string, "theme"?: "light"|"dark", "url"?: string}',
     },
     self_manage_extensions: {
       name: 'Self-Install & Manage Extensions',
@@ -194,6 +194,13 @@ const BUILTIN_TOOL_SPECS: Record<string, { name: string; description: string; ar
         'List paired local Mac/Windows/Linux computers and execute approved actions (system_info, open_url, open_app, shell) on an online computer via the optional Nexus Companion Bridge.',
       argSpec:
         '{"action": "list"|"system_info"|"open_url"|"open_app"|"shell", "deviceId"?: string, "url"?: string, "app"?: string, "command"?: string}',
+    },
+    self_heal_code: {
+      name: 'Self-Healing Code & App Repair',
+      description:
+        'Inspect Eva\'s own Next.js/TypeScript source code, apply surgical verified code patches with automatic pre-patch snapshots and rollback protection, run TypeScript build verification, or trigger autonomous error repair. Use this whenever a bug occurs or a requested app feature needs real code changes after one-time approval.',
+      argSpec:
+        '{"action": "inspect"|"patch"|"verify"|"rollback"|"auto_heal", "mode"?: "list"|"search"|"read", "path"?: string, "query"?: string, "startLine"?: number, "endLine"?: number, "title"?: string, "errorMessage"?: string, "edits"?: [{"path": string, "mode": "replace"|"write", "target"?: string, "replacement"?: string, "content"?: string, "summary"?: string}], "verify"?: boolean, "sessionId"?: string, "testFile"?: string}',
     },
   }
 
@@ -1317,6 +1324,18 @@ export async function executeTool(
               (r) => `[${r.cite}] (${r.type}) ${r.content}${r.trail.length ? ` — via ${r.trail.join(' → ')}` : ''}`
             )
             await touchRecalledMemories(g.recalled.map((r) => r.id))
+            try {
+              const { recordWorkingMemoryTrace } = await import('@/lib/agent/brain-trace')
+              await recordWorkingMemoryTrace({
+                runId: runId || undefined,
+                operation: 'recall',
+                memoryIds: g.recalled.map((r) => r.id),
+                entityNames: g.recalled.flatMap((r) => r.trail),
+                summary: `Recalled ${g.recalled.length} graph memories for "${truncate(query, 60)}"`,
+              })
+            } catch {
+              /* trace best-effort */
+            }
           }
         } catch {
           // graph recall is best-effort
@@ -2211,6 +2230,7 @@ export async function executeTool(
         if (action === 'open_split') {
           const validModes = [
             'reasoning',
+            'self_heal',
             'browser',
             'identity',
             'permissions',
@@ -2503,6 +2523,149 @@ export async function executeTool(
           raw: res.ok ? res.output : `Error: ${res.error ?? res.output}`,
           display: { kind: 'text', text: res.ok ? `${target.name}: ${truncate(res.output, 600)}` : `Error: ${res.error}` },
         }
+      }
+
+      case 'self_heal_code': {
+        const {
+          applySelfHealPatch,
+          inspectAppCode,
+          rollbackSelfHealSession,
+          runAutonomousSelfHeal,
+          verifyAppBuild,
+        } = await import('@/lib/agent/self-heal')
+
+        const action = str(args.action || 'inspect').toLowerCase()
+
+        if (action === 'inspect') {
+          const mode = (['list', 'search', 'read'].includes(str(args.mode)) ? str(args.mode) : 'list') as
+            | 'list'
+            | 'search'
+            | 'read'
+          const res = await inspectAppCode({
+            mode,
+            path: str(args.path) || undefined,
+            query: str(args.query) || undefined,
+            startLine: typeof args.startLine === 'number' ? args.startLine : undefined,
+            endLine: typeof args.endLine === 'number' ? args.endLine : undefined,
+          })
+          return {
+            ok: res.ok,
+            summary: res.ok ? `Inspected app code (${mode})` : `Code inspection failed`,
+            raw: truncate(res.output, 6000),
+            display: { kind: 'text', text: truncate(res.output, 900) },
+          }
+        }
+
+        if (action === 'verify') {
+          controlBus.broadcastUiCommand({ command: 'open_split', mode: 'self_heal', title: 'Self-Heal Studio' })
+          const verification = await verifyAppBuild({ testFile: str(args.testFile) || undefined })
+          return {
+            ok: verification.ok,
+            summary: verification.ok
+              ? `Build verification passed (${verification.durationMs}ms)`
+              : `Build verification failed (${verification.durationMs}ms)`,
+            raw: verification.output,
+            display: {
+              kind: 'text',
+              text: `${verification.ok ? 'PASS' : 'FAIL'} · ${verification.command} (${verification.durationMs}ms)\n${truncate(verification.output, 800)}`,
+            },
+          }
+        }
+
+        if (action === 'rollback') {
+          const sessionId = str(args.sessionId)
+          if (!sessionId) {
+            return { ok: false, summary: 'Missing sessionId for rollback', raw: 'Error: sessionId is required.' }
+          }
+          const res = await rollbackSelfHealSession(sessionId)
+          controlBus.broadcastUiCommand({ command: 'open_split', mode: 'self_heal', title: 'Self-Heal Studio' })
+          return {
+            ok: res.ok,
+            summary: `Rolled back ${res.restored.length + res.deleted.length} file(s)`,
+            raw: res.session.summary || 'Snapshot restored.',
+            display: { kind: 'text', text: res.session.summary || 'Snapshot restored cleanly.' },
+          }
+        }
+
+        // Mutating actions ('patch' or 'auto_heal') require one-time self_code_edit permission
+        const perm = await requireCapabilityPermission({
+          capability: 'self_code_edit',
+          actionSummary:
+            action === 'auto_heal'
+              ? `Self-heal issue: ${truncate(str(args.errorMessage || args.title || 'App error'), 120)}`
+              : `Patch app code: ${truncate(str(args.title || 'Apply verified fix'), 120)}`,
+          details: Array.isArray(args.edits)
+            ? (args.edits as { path?: string }[]).map((e) => e.path).filter(Boolean).join(', ')
+            : str(args.path) || undefined,
+        })
+        if (!perm.allowed) {
+          return {
+            ok: false,
+            summary: 'Self-healing code permission declined',
+            raw: perm.reason ?? 'Permission declined for self_code_edit.',
+            display: { kind: 'text', text: perm.reason ?? 'Permission declined for self_code_edit.' },
+          }
+        }
+
+        controlBus.broadcastUiCommand({ command: 'open_split', mode: 'self_heal', title: 'Self-Heal Studio' })
+        controlBus.broadcastEvaMood('working', 'Self-healing app code…', 15_000)
+
+        if (action === 'auto_heal') {
+          const res = await runAutonomousSelfHeal({
+            trigger: 'agent_tool',
+            errorMessage: str(args.errorMessage || args.title || 'Diagnose and repair current app issue'),
+            stack: str(args.stack) || undefined,
+            viewName: str(args.viewName) || undefined,
+            targetFileHint: str(args.path) || undefined,
+          })
+          controlBus.broadcastEvaMood(
+            res.ok ? 'happy' : 'curious',
+            res.ok ? 'Self-heal verified' : 'Self-heal completed with findings',
+            2600
+          )
+          return {
+            ok: res.ok,
+            summary: res.ok ? `Self-heal verified (${res.session.patches.length} file(s))` : 'Self-heal could not auto-verify',
+            raw: `${res.message}\nSession ID: ${res.session.id}\nSnapshot rollback available: ${res.session.canRollback}`,
+            display: { kind: 'text', text: `${res.message}\nSession: ${res.session.id}` },
+          }
+        }
+
+        if (action === 'patch') {
+          const edits = Array.isArray(args.edits) ? (args.edits as Parameters<typeof applySelfHealPatch>[0]['edits']) : []
+          const res = await applySelfHealPatch({
+            sessionId: str(args.sessionId) || undefined,
+            trigger: 'agent_tool',
+            title: str(args.title || 'Eva self-healing patch'),
+            errorContext: str(args.errorMessage) || undefined,
+            edits,
+            verify: args.verify !== false,
+            autoRollbackOnFail: args.autoRollbackOnFail !== false,
+            testFile: str(args.testFile) || undefined,
+          })
+          controlBus.broadcastEvaMood(
+            res.ok ? 'happy' : 'error',
+            res.ok ? 'Code patch verified' : 'Patch failed typecheck & rolled back',
+            2600
+          )
+          return {
+            ok: res.ok,
+            summary: res.ok
+              ? `Verified patch across ${res.session.patches.length} file(s) (session ${res.session.id})`
+              : 'Patch failed verification and auto-rolled back',
+            raw: res.ok
+              ? `${res.session.summary}\nSession ID: ${res.session.id}\nPatched files: ${res.session.patches.map((p) => p.path).join(', ')}`
+              : `Error: ${res.error}\nSession ID: ${res.session.id}`,
+            display: {
+              kind: 'text',
+              text: res.ok
+                ? `Verified patch (${res.session.id}): ${res.session.patches.map((p) => `${p.path} (+${p.addedLines}/-${p.removedLines})`).join(', ')}`
+                : `Auto-rolled back (${res.session.id}): ${truncate(res.error || 'Verification failed', 500)}`,
+            },
+          }
+        }
+
+        return { ok: false, summary: `Unknown self_heal_code action: ${action}`, raw: `Unsupported action "${action}".` }
       }
 
       default: {

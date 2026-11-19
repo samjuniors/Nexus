@@ -204,7 +204,22 @@ export async function saveMemoryGbrain(input: {
   importance?: number
   runId?: string | null
 }): Promise<RememberResult> {
-  return gbrainRemember(gbrainStore(), input)
+  const res = await gbrainRemember(gbrainStore(), input)
+  try {
+    const { recordWorkingMemoryTrace } = await import('@/lib/agent/brain-trace')
+    const memId = res.page?.id
+    const entityNames = (res.entities ?? []).map((e) => e.resolvedTo).filter(Boolean)
+    await recordWorkingMemoryTrace({
+      runId: input.runId ?? undefined,
+      operation: 'write',
+      memoryIds: memId ? [memId] : [],
+      entityNames,
+      summary: `Stored ${input.type} memory: ${input.content.slice(0, 90)}`,
+    })
+  } catch {
+    /* trace is best-effort */
+  }
+  return res
 }
 
 /**
@@ -235,6 +250,12 @@ export async function recordRetrievalFor(memoryId: string, query: string): Promi
         lastAccessedAt: new Date(),
         strength: Math.min(1, row.strength + 0.15 * (1 / (1 + row.accessCount))),
       },
+    })
+    const { recordWorkingMemoryTrace } = await import('@/lib/agent/brain-trace')
+    await recordWorkingMemoryTrace({
+      operation: 'recall',
+      memoryIds: [memoryId],
+      summary: `Recalled for "${query.slice(0, 72)}"`,
     })
   } catch {
     // ledger is best-effort

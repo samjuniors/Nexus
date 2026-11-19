@@ -11,6 +11,8 @@ import type {
   PermissionRequestPayload,
 } from '@/lib/agent/control-bus'
 import type { ReasoningChain } from '@/lib/agent/reasoning-chain'
+import type { BrainTraceEvent } from '@/lib/agent/brain-trace'
+import type { SelfHealSession } from '@/lib/agent/self-heal'
 
 const VALID_TABS = new Set<Tab>([
   'agent',
@@ -28,6 +30,7 @@ const VALID_TABS = new Set<Tab>([
 
 const VALID_SPLIT_MODES = new Set<SplitMode>([
   'reasoning',
+  'self_heal',
   'browser',
   'identity',
   'permissions',
@@ -89,10 +92,48 @@ export function useControlBus() {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let attempt = 0
 
-    // Initial hydration of grants, paired devices, and recent reasoning chains
+    // Initial hydration of grants, paired devices, reasoning chains, brain context packs, traces, and self-heal sessions
     void useEvaControl.getState().refreshPermissions()
     void useEvaControl.getState().refreshDevices()
     void useEvaControl.getState().refreshReasoningChains()
+    void useEvaControl.getState().refreshContextPacks()
+    void useEvaControl.getState().refreshBrainTraces()
+    void useEvaControl.getState().refreshSelfHealSessions()
+
+    const ignoreRuntimeError = (text: string) =>
+      !text ||
+      /ResizeObserver loop|WebSocket|HMR|hot-reloader|Loading chunk|AbortError/i.test(text)
+
+    const onWindowError = (ev: ErrorEvent) => {
+      const message = ev.message || ev.error?.message || ''
+      if (ignoreRuntimeError(message)) return
+      useEvaControl.getState().setRuntimeErrorAlert({
+        message: message.slice(0, 320),
+        stack: typeof ev.error?.stack === 'string' ? ev.error.stack.slice(0, 1400) : undefined,
+        source: ev.filename ? `${ev.filename}:${ev.lineno ?? 0}` : 'window.error',
+        timestamp: new Date().toISOString(),
+      })
+    }
+
+    const onUnhandledRejection = (ev: PromiseRejectionEvent) => {
+      const reason = ev.reason
+      const message =
+        reason instanceof Error
+          ? reason.message
+          : typeof reason === 'string'
+            ? reason
+            : ''
+      if (ignoreRuntimeError(message)) return
+      useEvaControl.getState().setRuntimeErrorAlert({
+        message: message.slice(0, 320),
+        stack: reason instanceof Error && reason.stack ? reason.stack.slice(0, 1400) : undefined,
+        source: 'unhandledrejection',
+        timestamp: new Date().toISOString(),
+      })
+    }
+
+    window.addEventListener('error', onWindowError)
+    window.addEventListener('unhandledrejection', onUnhandledRejection)
 
     const scheduleCursorHide = () => {
       if (cursorTimerRef.current) clearTimeout(cursorTimerRef.current)
@@ -126,6 +167,12 @@ export function useControlBus() {
         if (Array.isArray(msg.reasoningChains)) {
           ctrl.setReasoningChains(msg.reasoningChains as ReasoningChain[])
         }
+        if (Array.isArray(msg.brainTraces)) {
+          ctrl.setBrainTraces(msg.brainTraces as BrainTraceEvent[])
+        }
+        if (Array.isArray(msg.selfHealSessions)) {
+          ctrl.setSelfHealSessions(msg.selfHealSessions as SelfHealSession[])
+        }
         return
       }
 
@@ -136,6 +183,21 @@ export function useControlBus() {
 
       if (type === 'reasoning:clear') {
         ctrl.setReasoningChains([])
+        return
+      }
+
+      if (type === 'brain:trace' && msg.item) {
+        ctrl.pushBrainTrace(msg.item as BrainTraceEvent)
+        return
+      }
+
+      if (type === 'brain:trace_clear') {
+        ctrl.setBrainTraces([])
+        return
+      }
+
+      if (type === 'self_heal:update' && msg.session) {
+        ctrl.upsertSelfHealSession(msg.session as SelfHealSession)
         return
       }
 
@@ -224,6 +286,7 @@ export function useControlBus() {
             if (mode === 'devices') void ctrl.refreshDevices()
             if (mode === 'identity') void ctrl.refreshIdentity()
             if (mode === 'reasoning') void ctrl.refreshReasoningChains()
+            if (mode === 'self_heal') void ctrl.refreshSelfHealSessions()
           }
           return
         }
@@ -369,6 +432,8 @@ export function useControlBus() {
 
     return () => {
       closed = true
+      window.removeEventListener('error', onWindowError)
+      window.removeEventListener('unhandledrejection', onUnhandledRejection)
       if (reconnectTimer) clearTimeout(reconnectTimer)
       if (cursorTimerRef.current) clearTimeout(cursorTimerRef.current)
       if (moodTimerRef.current) clearTimeout(moodTimerRef.current)

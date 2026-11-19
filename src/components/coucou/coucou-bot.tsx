@@ -12,6 +12,9 @@ import {
 } from '@/lib/coucou/types'
 import { resolveOutfit, type OutfitSelection } from '@/lib/coucou/wardrobe'
 import type { EyeArchetype, EyeExpression } from '@/lib/agent/mochi-eyes'
+import type { EvaEmotionId } from '@/lib/agent/eva-emotions'
+import type { HandTrackingState } from '@/lib/agent/hand-tracking'
+import { HandTrackingSvgLayer } from '@/components/coucou/hand-tracking-svg-layer'
 import { cn } from '@/lib/utils'
 
 export interface CoucouBotProps {
@@ -29,6 +32,20 @@ export interface CoucouBotProps {
   greetSeq?: number
   /** Dance gently when music/media is playing */
   dancing?: boolean
+  /** Animate small talking mouth in sync with live voice output */
+  isSpeaking?: boolean
+  /** 0..1 audio amplitude driving mouth lip-sync and hand gesture energy */
+  speakingLevel?: number
+  /** Show attentive lifted hands when Camera or Screen eyes are active */
+  visionActive?: boolean
+  /** Show perked ears & acoustic wave arcs when Eva's Ears are actively listening */
+  earListening?: boolean
+  /** Show active working hand cadence when Eva's Hands are executing tasks/tools */
+  handsActive?: boolean
+  /** Live tool-use / file-manipulation hand-tracking state rendered by the companion SVG overlay */
+  handTracking?: HandTrackingState | null
+  /** Current Eva emotion / feeling driving mouth curve and soft cheek blush */
+  emotion?: EvaEmotionId
   /** Compact mini-bot rendering for header and subagent cards */
   mini?: boolean
   /** Canvas CSS pixel size */
@@ -54,6 +71,13 @@ export function CoucouBot({
   emoteTrigger,
   greetSeq = 0,
   dancing = false,
+  isSpeaking = false,
+  speakingLevel = 0,
+  visionActive = false,
+  earListening = false,
+  handsActive = false,
+  handTracking = null,
+  emotion = 'calm',
   mini = false,
   size = 84,
   interactive = true,
@@ -82,6 +106,13 @@ export function CoucouBot({
     engine.setState(resolvedState, true)
     engine.setOutfit(resolvedOutfit, false)
     engine.setDancing(dancing)
+    engine.isSpeaking = isSpeaking
+    engine.speakingLevel = speakingLevel
+    engine.visionActive = visionActive
+    engine.earListening = earListening
+    engine.handsActive = handsActive
+    engine.svgHandTrackingActive = Boolean(!mini && size >= 64 && handTracking?.active && handTracking.action !== 'idle')
+    engine.emotion = emotion
     engine.onDizzy = () => {
       engine.setState('dizzy')
       setTimeout(() => {
@@ -139,7 +170,7 @@ export function CoucouBot({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size, mini])
 
-  // Sync dynamic state, color, outfit, and dancing without re-creating the engine
+  // Sync dynamic state, color, outfit, dancing, 4 senses (eyes/ears/mouth/hands), and emotions
   useEffect(() => {
     const engine = engineRef.current
     if (!engine) return
@@ -147,7 +178,29 @@ export function CoucouBot({
     engine.setState(resolvedState)
     engine.setOutfit(resolvedOutfit, true)
     engine.setDancing(dancing)
-  }, [resolvedState, resolvedColor, resolvedOutfit, dancing])
+    engine.isSpeaking = isSpeaking
+    engine.speakingLevel = speakingLevel
+    engine.visionActive = visionActive
+    engine.earListening = earListening
+    engine.handsActive = handsActive
+    engine.svgHandTrackingActive = Boolean(!mini && size >= 64 && handTracking?.active && handTracking.action !== 'idle')
+    engine.emotion = emotion
+  }, [
+    resolvedState,
+    resolvedColor,
+    resolvedOutfit,
+    dancing,
+    isSpeaking,
+    speakingLevel,
+    visionActive,
+    earListening,
+    handsActive,
+    handTracking?.active,
+    handTracking?.action,
+    mini,
+    size,
+    emotion,
+  ])
 
   // Trigger requested emotes
   useEffect(() => {
@@ -242,6 +295,7 @@ export function CoucouBot({
         style={{ width: size, height: size }}
         className="relative block"
       />
+      <HandTrackingSvgLayer handTracking={handTracking} size={size} mini={mini} />
     </div>
   )
 }

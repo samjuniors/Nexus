@@ -3,11 +3,15 @@
 import { CoucouBot } from '@/components/coucou/coucou-bot'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
 import type { EyeArchetype, EyeExpression } from '@/lib/agent/mochi-eyes'
+import type { EvaEmotionId } from '@/lib/agent/eva-emotions'
+import type { HandTrackingState } from '@/lib/agent/hand-tracking'
 import type { OutfitSelection } from '@/lib/coucou/wardrobe'
 
 interface MochiEyesProps {
   expression?: EyeExpression
   archetype?: EyeArchetype
+  emotion?: EvaEmotionId
+  handTracking?: HandTrackingState | null
   size?: 'xs' | 'sm' | 'md' | 'lg'
   amplitude?: number
   trackGaze?: boolean
@@ -31,6 +35,8 @@ const SIZE_PX: Record<NonNullable<MochiEyesProps['size']>, number> = {
 export function MochiEyes({
   expression = 'idle',
   archetype = 'eva',
+  emotion,
+  handTracking,
   size = 'sm',
   trackGaze,
   outfit,
@@ -47,6 +53,8 @@ export function MochiEyes({
     <CoucouBot
       expression={expression}
       archetype={archetype}
+      emotion={emotion}
+      handTracking={handTracking}
       outfit={resolvedOutfit}
       dancing={archetype === 'eva' ? evaDancing : false}
       mini={isMini}

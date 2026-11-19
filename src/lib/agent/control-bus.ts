@@ -1,8 +1,11 @@
 import type WebSocket from 'ws'
 import { reasoningChain, type ReasoningChain } from '@/lib/agent/reasoning-chain'
+import { brainTrace, type BrainTraceEvent } from '@/lib/agent/brain-trace'
+import { selfHealManager, type SelfHealSession } from '@/lib/agent/self-heal'
 
 export type ControlSplitMode =
   | 'reasoning'
+  | 'self_heal'
   | 'browser'
   | 'permissions'
   | 'devices'
@@ -124,17 +127,29 @@ class NexusControlBus {
         this.broadcast({ type: 'reasoning:clear' })
       }
     })
+    brainTrace.subscribe((event) => {
+      if (event.type === 'trace') {
+        this.broadcastBrainTrace(event.item)
+      } else {
+        this.broadcast({ type: 'brain:trace_clear' })
+      }
+    })
+    selfHealManager.subscribe((session) => {
+      this.broadcastSelfHealUpdate(session)
+    })
   }
 
   registerUiClient(ws: WebSocket) {
     this.uiClients.add(ws)
-    // Initial sync: send latest browser frame, any active permission prompts, online device IDs, and recent reasoning chains
+    // Initial sync: send latest browser frame, any active permission prompts, online device IDs, reasoning chains, brain traces, and self-heal sessions
     this.safeSend(ws, {
       type: 'control:init',
       browserFrame: this.latestBrowserFrame,
       pendingPermissions: Array.from(this.pendingPermissions.values()).map((p) => p.request),
       onlineDeviceIds: Array.from(this.deviceSockets.keys()),
       reasoningChains: reasoningChain.listChains(20),
+      brainTraces: brainTrace.list(20),
+      selfHealSessions: selfHealManager.listSessions(15),
     })
 
     ws.on('close', () => {
@@ -187,6 +202,14 @@ class NexusControlBus {
 
   broadcastReasoningUpdate(chain: ReasoningChain) {
     this.broadcast({ type: 'reasoning:update', chain })
+  }
+
+  broadcastBrainTrace(item: BrainTraceEvent) {
+    this.broadcast({ type: 'brain:trace', item })
+  }
+
+  broadcastSelfHealUpdate(session: SelfHealSession) {
+    this.broadcast({ type: 'self_heal:update', session })
   }
 
   getLatestBrowserFrame(): BrowserFramePayload | null {

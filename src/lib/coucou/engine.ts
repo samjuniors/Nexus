@@ -238,6 +238,16 @@ export class BotEngine {
   // Mouth spring (fraction of R)
   slotH = 0; slotHTarget = 0; slotHVel = 0; isChewing = false;
 
+  // Live speech lip-sync, 4 senses (eyes/ears/mouth/hands), & emotional state
+  isSpeaking = false;
+  speakingLevel = 0;
+  private speechOpen = 0;
+  visionActive = false;
+  earListening = false;
+  handsActive = false;
+  svgHandTrackingActive = false;
+  emotion: "calm" | "happy" | "curious" | "focused" | "excited" | "empathetic" | "proud" | "sleepy" | "concerned" = "calm";
+
   col: RGB = C.idle;
   colT: RGB = C.idle;
 
@@ -810,6 +820,7 @@ export class BotEngine {
       x.translate(-cx, -cy);
     }
 
+    this.drawEarsBehind(x, R, rx, ry, cx, cy);
     this.drawHandsBehind(x, R, rx, ry, cx, cy);
 
     x.save();
@@ -825,21 +836,32 @@ export class BotEngine {
     const body = this.bodyPath(rx, ry, R);
     this.drawBody(x, body, R, rx, ry);
 
-    const blushVal = Math.max(this.blush, this.tint * 0.5) * (1 - this.morph);
+    const emotionBlush =
+      this.emotion === "happy" || this.emotion === "empathetic"
+        ? 0.58
+        : this.emotion === "excited" || this.emotion === "proud"
+          ? 0.48
+          : this.emotion === "curious"
+            ? 0.22
+            : 0;
+    const blushVal = Math.max(this.blush, emotionBlush, this.tint * 0.45) * (1 - this.morph);
     if (blushVal > 0.01) {
       x.save();
       x.clip(body);
       const yOffset = Math.sin(this.yaw) * rx * 0.8;
-      x.fillStyle = `rgba(255,120,150,${0.5 * blushVal})`;
+      x.fillStyle = `rgba(255,120,150,${0.48 * blushVal})`;
       for (const sd of [-1, 1]) {
         x.beginPath();
-        x.ellipse(sd * rx * 0.55 + yOffset, ry * 0.2, R * 0.17, R * 0.1, 0, 0, Math.PI * 2);
+        x.ellipse(sd * rx * 0.56 + yOffset, ry * 0.28, R * 0.16, R * 0.09, 0, 0, Math.PI * 2);
         x.fill();
       }
       x.restore();
     }
 
     this.drawEyes(x, body, R, rx, ry);
+    if (!this.isMini && this.morph < 0.25) {
+      this.drawSpeechMouth(x, body, R, rx, ry);
+    }
     if (this.morph > 0.05) this.drawMouth(x, body, R);
 
     if (head) drawOutfitFront(x, this.outfit, head, outfitState);
@@ -1127,21 +1149,200 @@ export class BotEngine {
     x.restore();
   }
 
-  /** Hands sit behind the body — drawn before it, in world coordinates. */
+  /** Small expressive animated speech mouth cleanly BELOW the eyes — syncs with live voice & emotion. */
+  private drawSpeechMouth(x: CanvasRenderingContext2D, body: Path2D, R: number, rx: number, ry: number) {
+    const t = now();
+    const targetOpen = this.isSpeaking
+      ? Math.min(1, 0.28 + this.speakingLevel * 0.72 + Math.abs(Math.sin(t * 17)) * 0.24)
+      : 0;
+    this.speechOpen = lerp(this.speechOpen, targetOpen, this.isSpeaking ? 0.38 : 0.22);
+
+    const mouthYaw = this.yaw;
+    // Negative pitch projects DOWNWARD (-Math.sin(pitch) > 0).
+    // Eyes sit at EYE_P (-0.12 -> +0.12*ry). Subtracting 0.43 puts mouth cleanly on the lower face (+0.52*ry), well below both neutral and arched eyes.
+    const mouthPitch = EYE_P - 0.43 + this.pitch + (this.rigidRoll ? 0 : this.roll);
+    const cp = Math.cos(mouthPitch);
+    if (Math.cos(mouthYaw) * cp <= 0.05) return;
+
+    const mx = Math.sin(mouthYaw) * cp * rx;
+    const my = -Math.sin(mouthPitch) * ry;
+    const fx = Math.max(0.32, Math.cos(mouthYaw));
+    const ink = INK;
+
+    x.save();
+    x.clip(body);
+    x.translate(mx, my);
+    x.scale(fx, 1);
+
+    if (this.speechOpen > 0.04) {
+      // Animated rounded talking mouth that opens/closes naturally with speech amplitude
+      const mw = R * (0.21 + this.speechOpen * 0.14);
+      const mh = R * (0.065 + this.speechOpen * 0.2);
+      roundRectPath(x, -mw / 2, -mh / 2, mw, mh, Math.min(mw / 2, mh / 2));
+      x.fillStyle = ink;
+      x.fill();
+
+      // Subtle warm tongue highlight when speaking clearly
+      if (this.speechOpen > 0.3) {
+        x.beginPath();
+        x.ellipse(0, mh * 0.24, mw * 0.29, mh * 0.22, 0, 0, Math.PI * 2);
+        x.fillStyle = "rgba(255, 132, 152, 0.75)";
+        x.fill();
+      }
+    } else if (this.state === "sleeping" || this.emotion === "sleepy") {
+      // Tiny calm sleeping "o" mouth
+      x.beginPath();
+      x.arc(0, 0, R * 0.05, 0, Math.PI * 2);
+      x.strokeStyle = "rgba(26,20,18,0.58)";
+      x.lineWidth = Math.max(1.1, R * 0.045);
+      x.stroke();
+    } else if (this.state === "error" || this.emotion === "concerned") {
+      // Subtle concerned downward curve
+      x.strokeStyle = ink;
+      x.lineWidth = Math.max(1.2, R * 0.05);
+      x.lineCap = "round";
+      x.beginPath();
+      x.moveTo(-R * 0.11, R * 0.03);
+      x.quadraticCurveTo(0, -R * 0.04, R * 0.11, R * 0.03);
+      x.stroke();
+    } else if (this.emotion === "curious") {
+      // Small intrigued "o" / gentle curious smile
+      x.beginPath();
+      x.ellipse(0, 0, R * 0.06, R * 0.075, 0, 0, Math.PI * 2);
+      x.fillStyle = "rgba(26,20,18,0.82)";
+      x.fill();
+    } else if (this.emotion === "happy" || this.emotion === "excited" || this.emotion === "proud" || this.state === "finished" || this.isDancing) {
+      // Warm open-hearted smile curve
+      const smileW = R * 0.155;
+      const smileDepth = R * 0.095;
+      x.strokeStyle = "rgba(26,20,18,0.86)";
+      x.lineWidth = Math.max(1.3, R * 0.054);
+      x.lineCap = "round";
+      x.beginPath();
+      x.moveTo(-smileW, -smileDepth * 0.25);
+      x.quadraticCurveTo(0, smileDepth, smileW, -smileDepth * 0.25);
+      x.stroke();
+    } else {
+      // Small friendly resting smile curve below the eyes
+      const smileW = R * 0.12;
+      const smileDepth = this.emotion === "empathetic" ? R * 0.072 : R * 0.055;
+      x.strokeStyle = "rgba(26,20,18,0.82)";
+      x.lineWidth = Math.max(1.2, R * 0.05);
+      x.lineCap = "round";
+      x.beginPath();
+      x.moveTo(-smileW, -smileDepth * 0.2);
+      x.quadraticCurveTo(0, smileDepth, smileW, -smileDepth * 0.2);
+      x.stroke();
+    }
+    x.restore();
+  }
+
+  /** Sculpted expressive ears perched cleanly on the upper crown corners — perk gently and emit acoustic arcs when listening. */
+  private drawEarsBehind(
+    x: CanvasRenderingContext2D,
+    R: number, rx: number, ry: number, cx: number, cy: number,
+  ) {
+    if (this.isMini || R <= 14 || this.morph > 0.35) return;
+    const n = now();
+    const perk = this.earListening ? 1 : 0.3;
+    const earW = 0.21 * ry;
+    const earH = 0.27 * ry;
+    const hwB = rx * this.sx;
+    const hhB = ry * this.sy;
+
+    for (const sd of [-1, 1]) {
+      const twitch = this.earListening
+        ? Math.sin(n * 5.2 + sd) * 0.045 * perk
+        : Math.sin(n * 1.4 + sd) * 0.015;
+      // Perched cleanly high on the upper-left / upper-right rounded corners of the mochi head
+      const localX = sd * (hwB * 0.80);
+      const localY = -hhB * (0.72 + perk * 0.07);
+      const cosT = Math.cos(this.tilt);
+      const sinT = Math.sin(this.tilt);
+      const worldX = cx + cosT * localX - sinT * localY;
+      const worldY = cy + sinT * localX + cosT * localY;
+
+      x.save();
+      x.translate(worldX, worldY);
+      // Angled naturally outward along the upper head silhouette (~34 deg)
+      x.rotate(this.tilt + sd * (0.60 - perk * 0.1 + twitch));
+
+      const g = x.createLinearGradient(0, -earH, 0, earH);
+      if (this.bodyColor) {
+        g.addColorStop(0, rgba(mix3(this.bodyColor, [1, 1, 1], 0.35)));
+        g.addColorStop(1, rgba(this.bodyColor));
+      } else {
+        g.addColorStop(0, rgba(BASE_TOP));
+        g.addColorStop(1, rgba(BASE_BOTTOM));
+      }
+
+      // Soft rounded mochi ear silhouette (wider base tucking seamlessly into head, rounded tip)
+      x.beginPath();
+      x.moveTo(-earW * 0.88, earH * 0.45);
+      x.bezierCurveTo(-earW * 1.05, -earH * 0.65, -earW * 0.45, -earH * 1.1, 0, -earH * 1.08);
+      x.bezierCurveTo(earW * 0.45, -earH * 1.1, earW * 1.05, -earH * 0.65, earW * 0.88, earH * 0.45);
+      x.quadraticCurveTo(0, earH * 0.85, -earW * 0.88, earH * 0.45);
+      x.closePath();
+      x.fillStyle = g;
+      x.fill();
+      x.strokeStyle = "rgba(0,0,0,0.07)";
+      x.lineWidth = Math.max(0.8, R * 0.02);
+      x.stroke();
+
+      // Soft inner ear recess
+      x.beginPath();
+      x.ellipse(0, -earH * 0.12, earW * 0.44, earH * 0.48, 0, 0, Math.PI * 2);
+      x.fillStyle = this.earListening
+        ? "rgba(56, 189, 248, 0.32)"
+        : "rgba(255, 138, 162, 0.24)";
+      x.fill();
+
+      // Delicate acoustic soundwave arc radiating from ear tip when actively listening
+      if (this.earListening) {
+        const pulse = (n * 1.8 + (sd > 0 ? 0 : 0.5)) % 1;
+        const waveR = earH * (0.95 + pulse * 0.85);
+        const alpha = (1 - pulse) * 0.46;
+        x.strokeStyle = `rgba(56, 189, 248, ${alpha.toFixed(3)})`;
+        x.lineWidth = Math.max(1.1, R * 0.036);
+        x.lineCap = "round";
+        x.beginPath();
+        x.arc(0, -earH * 0.35, waveR, -Math.PI * 0.78, -Math.PI * 0.22);
+        x.stroke();
+      }
+      x.restore();
+    }
+  }
+
+  /** Hands sit behind/beside the body — persistent expressive gestures for Eva. */
   private drawHandsBehind(
     x: CanvasRenderingContext2D,
     R: number, rx: number, ry: number, cx: number, cy: number,
   ) {
-    if (this.hands <= 0.01 || this.isMini) return;
+    if (this.isMini) return;
     if (R <= 14) return; // meaningless at compact/peek sizes
+    // Hand over control cleanly to the articulated SVG hand-tracking layer during active tool/file actions
+    if (this.svgHandTrackingActive) return;
 
     const n = now();
+    const isWaving = n >= this.waveStart && this.waveStart > 0 && n < this.waveUntil;
+    const isWorking = this.handsActive || this.state === "working" || this.state === "searching";
+    const isThinking = this.state === "thinking";
+    const isSleeping = this.state === "sleeping";
+
+    // Keep subtle hands visible whenever Eva is active, speaking, working, viewing, or waving
+    const activeHandPresence = isWaving
+      ? Math.max(this.hands, 1)
+      : isSleeping
+        ? Math.max(this.hands, 0.55)
+        : Math.max(this.hands, this.isSpeaking || isWorking || this.visionActive ? 0.92 : 0.78);
+
+    if (activeHandPresence <= 0.01) return;
+
     const bodyH = 2 * ry;
-    const hew = 0.3 * ry * this.hands;
-    const heh = 0.26 * ry * this.hands;
+    const hew = 0.26 * ry * activeHandPresence;
+    const heh = 0.22 * ry * activeHandPresence;
     const hwB = rx * this.sx;
     const hhB = ry * this.sy;
-    const isWaving = n >= this.waveStart && this.waveStart > 0 && n < this.waveUntil;
 
     for (const sd of [-1, 1]) {
       let localX: number;
@@ -1152,22 +1353,54 @@ export class BotEngine {
         const wt = n - this.waveStart;
         const rise = Math.min(1, wt / 0.18);
         const riseEased = 1 - Math.pow(1 - rise, 3);
-        const restX = hwB * 1.08;
-        const restY = hhB * 0.7;
+        const restX = hwB * 1.04;
+        const restY = hhB * 0.58;
         const oscX = Math.cos(13 * wt) * 0.06 * bodyH;
         const oscY = -Math.sin(13 * wt) * 0.14 * bodyH;
-        const waveX = hwB * 1.1 + oscX;
+        const waveX = hwB * 1.08 + oscX;
         const waveY = -hhB * 0.15 + oscY;
         localX = restX + (waveX - restX) * riseEased;
         localY = restY + (waveY - restY) * riseEased;
         handRot = (-0.5 + Math.sin(13 * wt) * 0.35) * riseEased;
       } else if (sd < 0 && isWaving) {
         const wt = n - this.waveStart;
-        localX = -hwB * 1.08;
-        localY = hhB * 0.7 + Math.sin(6 * wt) * 0.04 * bodyH;
+        localX = -hwB * 1.04;
+        localY = hhB * 0.58 + Math.sin(6 * wt) * 0.04 * bodyH;
+      } else if (isWorking) {
+        // Rhythmic alternating typing / tool-use hand cadence
+        const phase = n * 9 + (sd > 0 ? Math.PI : 0);
+        localX = sd * hwB * 0.96;
+        localY = hhB * 0.52 + Math.sin(phase) * 0.1 * bodyH;
+        handRot = sd * Math.sin(phase) * 0.22;
+      } else if (this.isSpeaking) {
+        // Gentle expressive conversational hand movement
+        const amp = 0.07 + this.speakingLevel * 0.08;
+        const phase = n * 6.5 + (sd > 0 ? 0.9 : 0);
+        localX = sd * (hwB * 1.04 + Math.cos(phase) * 0.03 * bodyH);
+        localY = hhB * 0.44 - Math.abs(Math.sin(phase)) * amp * bodyH;
+        handRot = sd * (-0.18 + Math.sin(phase) * 0.22);
+      } else if (this.visionActive) {
+        // Subtle attentive lifted hands while camera/screen eyes are active
+        const sway = Math.sin(n * 3.2 + sd) * 0.04 * bodyH;
+        localX = sd * hwB * 1.05;
+        localY = hhB * 0.3 + sway;
+        handRot = sd * -0.24;
+      } else if (isThinking) {
+        // Right hand gently raised toward chin while thinking
+        if (sd > 0) {
+          localX = hwB * 0.84;
+          localY = hhB * 0.26 + Math.sin(n * 2.6) * 0.03 * bodyH;
+          handRot = -0.35;
+        } else {
+          localX = -hwB * 1.02;
+          localY = hhB * 0.62;
+        }
       } else {
-        localX = sd * hwB * 1.08;
-        localY = hhB * 0.7;
+        // Calm idle breathing float
+        const breath = Math.sin(n * 2.2 + (sd > 0 ? 0.4 : 0)) * 0.035 * bodyH;
+        localX = sd * hwB * 1.02;
+        localY = hhB * 0.58 + breath;
+        handRot = sd * 0.08;
       }
 
       const cosT = Math.cos(this.tilt);
@@ -1199,8 +1432,8 @@ export class BotEngine {
 
   private drawBadge(x: CanvasRenderingContext2D, badge: Badge, R: number, cx: number, cy: number) {
     const bs = this.badgeS * (this.isMini ? 1.25 : 1);
-    const bx = cx - R * 0.72 * this.sx;
-    const by = cy - R * 0.72 * this.sy;
+    const bx = cx - R * 0.42 * this.sx;
+    const by = cy - R * 0.88 * this.sy;
     const t = now();
 
     x.save();

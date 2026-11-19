@@ -1,14 +1,12 @@
 'use client'
 
 import { useSyncExternalStore } from 'react'
-import { useTheme } from 'next-themes'
 import {
   Bot,
   Brain,
   CalendarClock,
   ChevronDown,
   Command,
-  Ear,
   Focus,
   FolderOpen,
   GitBranch,
@@ -16,19 +14,18 @@ import {
   Hexagon,
   Laptop,
   Mail,
-  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   Puzzle,
   Server,
+  Settings,
   Shield,
+  ShieldCheck,
   Sparkles,
   Store,
-  Sun,
   Users,
   Wrench,
 } from 'lucide-react'
-import { useEva } from '@/components/agent/eva-provider'
 import { useEvaControl, type SplitMode } from '@/lib/agent/eva-control-store'
 import { useApp } from '@/lib/agent/store'
 import type { Tab } from '@/lib/agent/client'
@@ -59,6 +56,7 @@ const CUSTOMIZE_NAV: NavItem[] = [
 
 const SPLIT_ACTIONS: { mode: SplitMode; label: string; title: string; icon: typeof Globe }[] = [
   { mode: 'reasoning', label: 'Reasoning', title: 'Reasoning Chain', icon: GitBranch },
+  { mode: 'self_heal', label: 'Self-Heal', title: 'Self-Heal Studio', icon: ShieldCheck },
   { mode: 'browser', label: 'Browser', title: 'Live Browser', icon: Globe },
   { mode: 'identity', label: 'Inbox', title: 'Eva Email & Identity', icon: Mail },
   { mode: 'permissions', label: 'Permissions', title: 'Permissions Vault', icon: Shield },
@@ -149,11 +147,11 @@ function SectionHeading({ label, collapsed }: { label: string; collapsed: boolea
 export function Sidebar({ onOpenCommandPalette }: { onOpenCommandPalette?: () => void }) {
   const { activeTab, setTab, plugins, skills, tools, mcps, memories, artifacts, employees, automations, brain } =
     useApp()
-  const { voice, wake, onToggleSleepMode, onArmEar } = useEva()
   const layoutMode = useEvaControl((s) => s.layoutMode)
   const setLayoutMode = useEvaControl((s) => s.setLayoutMode)
   const collapsed = useEvaControl((s) => s.sidebarCollapsed)
   const toggleCollapsed = useEvaControl((s) => s.toggleSidebarCollapsed)
+  const setSettingsOpen = useEvaControl((s) => s.setSettingsOpen)
   const splitOpen = useEvaControl((s) => s.splitOpen)
   const splitMode = useEvaControl((s) => s.splitMode)
   const openSplit = useEvaControl((s) => s.openSplit)
@@ -161,14 +159,7 @@ export function Sidebar({ onOpenCommandPalette }: { onOpenCommandPalette?: () =>
   const pendingPermissions = useEvaControl((s) => s.pendingPermissions.length)
   const onlineDevices = useEvaControl((s) => s.onlineDeviceIds.length)
   const reasoningCount = useEvaControl((s) => s.reasoningChains.length)
-
-  const { resolvedTheme, setTheme } = useTheme()
-  const mounted = useSyncExternalStore(
-    () => () => {},
-    () => true,
-    () => false
-  )
-  const isLight = mounted && resolvedTheme === 'light'
+  const selfHealCount = useEvaControl((s) => s.selfHealSessions.length)
 
   const customizeOpen = useSyncExternalStore(
     (listener) => customizeStore.subscribe(listener),
@@ -292,10 +283,10 @@ export function Sidebar({ onOpenCommandPalette }: { onOpenCommandPalette?: () =>
         </button>
       </div>
 
-      {/* Navigation */}
+        {/* Navigation */}
       <nav className={cn('nice-scroll flex-1 space-y-0.5 overflow-y-auto pb-2', collapsed ? 'px-2' : 'px-2.5')} aria-label="Main navigation">
         <SectionHeading label="Workspace" collapsed={collapsed} />
-        {PRIMARY_NAV.map((item) => (
+        {PRIMARY_NAV.filter((item) => brainConnected || (item.tab !== 'brain' && item.tab !== 'memory')).map((item) => (
           <NavButton
             key={item.tab}
             item={item}
@@ -351,7 +342,9 @@ export function Sidebar({ onOpenCommandPalette }: { onOpenCommandPalette?: () =>
                 ? onlineDevices
                 : mode === 'reasoning'
                   ? reasoningCount
-                  : 0
+                  : mode === 'self_heal'
+                    ? selfHealCount
+                    : 0
           return (
             <button
               key={mode}
@@ -389,76 +382,21 @@ export function Sidebar({ onOpenCommandPalette }: { onOpenCommandPalette?: () =>
         })}
       </nav>
 
-      {/* Compact minimal footer: Eva Ear + Theme */}
-      <div className={cn('space-y-1.5 border-t border-border/60 p-2', !collapsed && 'p-2.5')}>
+      {/* Single minimal Settings footer trigger */}
+      <div className={cn('border-t border-border/60 p-2', !collapsed && 'p-2.5')}>
         <button
           type="button"
-          data-eva-ear-control="1"
-          onClick={
-            !wake.sleepMode && (wake.status === 'awaiting-mic' || wake.status === 'error')
-              ? onArmEar
-              : onToggleSleepMode
-          }
-          aria-pressed={!wake.sleepMode && (wake.status === 'armed' || voice.isActive)}
-          aria-label={
-            wake.sleepMode
-              ? 'Wake Eva always-on ear'
-              : wake.status === 'awaiting-mic' || wake.status === 'error'
-                ? 'Arm Eva microphone ear'
-                : 'Put Eva in Sleep Mode'
-          }
-          title={
-            wake.sleepMode
-              ? 'Eva is sleeping — click to wake'
-              : wake.status === 'awaiting-mic' || wake.status === 'error'
-                ? 'Unlock microphone for Hey Eva'
-                : `Eva Ear On — say "${wake.wakePhrase}"`
-          }
+          data-eva-target="open-settings"
+          onClick={() => setSettingsOpen(true)}
+          aria-label="Open Settings"
+          title="Settings"
           className={cn(
-            'flex w-full items-center rounded-lg border text-xs transition-colors',
-            collapsed ? 'justify-center py-2' : 'justify-between gap-2 px-2.5 py-2',
-            wake.sleepMode
-              ? 'border-border bg-muted/40 text-muted-foreground hover:text-foreground'
-              : wake.status === 'awaiting-mic' || wake.status === 'error'
-                ? 'border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-                : 'border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300'
+            'flex w-full items-center rounded-lg border border-border/70 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
+            collapsed ? 'justify-center py-2' : 'gap-2.5 px-2.5 py-2'
           )}
         >
-          <span className="flex items-center gap-2">
-            {wake.sleepMode ? <Moon className="h-3.5 w-3.5" /> : <Ear className="h-3.5 w-3.5" />}
-            {!collapsed && (
-              <span className="font-medium">
-                {wake.sleepMode
-                  ? 'Eva · Sleep'
-                  : voice.isActive
-                    ? 'Eva · Live'
-                    : wake.status === 'awaiting-mic' || wake.status === 'error'
-                      ? 'Arm Ear'
-                      : 'Ear · On'}
-              </span>
-            )}
-          </span>
-          {!collapsed && (
-            <span className="font-mono text-[10px] opacity-80">
-              {wake.sleepMode ? 'Wake' : wake.status === 'awaiting-mic' || wake.status === 'error' ? 'Unlock' : 'Sleep'}
-            </span>
-          )}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setTheme(isLight ? 'dark' : 'light')}
-          aria-label={isLight ? 'Switch to dark theme' : 'Switch to light theme'}
-          title={isLight ? 'Switch to dark theme' : 'Switch to light theme'}
-          className={cn(
-            'flex w-full items-center rounded-lg border border-border/70 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
-            collapsed ? 'justify-center py-2' : 'justify-between gap-2 px-2.5 py-1.5'
-          )}
-        >
-          <span className="flex items-center gap-2">
-            {isLight ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
-            {!collapsed && <span>{isLight ? 'Dark theme' : 'Light theme'}</span>}
-          </span>
+          <Settings className="h-4 w-4 shrink-0" />
+          {!collapsed && <span className="flex-1 text-left">Settings</span>}
         </button>
       </div>
     </aside>

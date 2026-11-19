@@ -16,6 +16,23 @@ import type {
 import type { ConnectedDeviceDTO } from '@/lib/agent/device-bridge'
 import type { OutfitSelection } from '@/lib/coucou/wardrobe'
 import type { ReasoningChain } from '@/lib/agent/reasoning-chain'
+import type { BrainTraceEvent } from '@/lib/agent/brain-trace'
+import type { BrainContextPack } from '@/lib/agent/brain-context-packs'
+import type {
+  SelfHealSession,
+  SelfHealTrigger,
+  SelfHealVerification,
+} from '@/lib/agent/self-heal'
+import type { GBrainCategoryId } from '@/lib/agent/gbrain-categories'
+import type { EvaEmotionId } from '@/lib/agent/eva-emotions'
+import type { HandTrackingAction } from '@/lib/agent/hand-tracking'
+
+export interface RuntimeErrorAlert {
+  message: string
+  stack?: string
+  source?: string
+  timestamp: string
+}
 
 export interface AgentIdentityDTO {
   address: string
@@ -47,6 +64,7 @@ export type LayoutMode = 'standard' | 'focus'
 
 export type SplitMode =
   | 'reasoning'
+  | 'self_heal'
   | 'browser'
   | 'identity'
   | 'permissions'
@@ -97,6 +115,16 @@ function readSavedSidebarCollapsed(): boolean {
   }
 }
 
+function readSavedAutoVoiceFocus(): boolean {
+  if (typeof window === 'undefined') return true
+  try {
+    const v = window.localStorage.getItem('nexus-auto-voice-focus')
+    return v === null ? true : v === '1'
+  } catch {
+    return true
+  }
+}
+
 interface EvaControlState {
   controlConnected: boolean
   layoutMode: LayoutMode
@@ -126,12 +154,30 @@ interface EvaControlState {
   reasoningChains: ReasoningChain[]
   activeReasoningChainId: string | null
   reasoningBusy: boolean
+  gbrainInitialPanel: 'none' | 'audit' | 'packs'
+  brainTraces: BrainTraceEvent[]
+  contextPacks: BrainContextPack[]
+  activePackEntityIds: string[]
+  activePackNames: string[]
+  contextPacksBusy: boolean
+  selfHealSessions: SelfHealSession[]
+  activeSelfHealId: string | null
+  selfHealBusy: boolean
+  selfHealVerifyResult: SelfHealVerification | null
+  selfHealError: string | null
+  runtimeErrorAlert: RuntimeErrorAlert | null
+  settingsOpen: boolean
+  companionResetSeq: number
+  autoVoiceFocus: boolean
 
   setControlConnected: (connected: boolean) => void
   setLayoutMode: (mode: LayoutMode) => void
   setSidebarCollapsed: (collapsed: boolean) => void
   toggleSidebarCollapsed: () => void
-  setGbrainGraphOpen: (open: boolean) => void
+  setSettingsOpen: (open: boolean) => void
+  resetCompanionPosition: () => void
+  setAutoVoiceFocus: (enabled: boolean) => void
+  setGbrainGraphOpen: (open: boolean, initialPanel?: 'none' | 'audit' | 'packs') => void
   openSplit: (mode: SplitMode, title?: string) => void
   closeSplit: () => void
   setBrowserFrame: (frame: BrowserFramePayload | null) => void
@@ -153,6 +199,35 @@ interface EvaControlState {
   openReasoningForChain: (chainId?: string | null) => void
   refreshReasoningChains: () => Promise<void>
   clearReasoningChains: () => Promise<void>
+  setBrainTraces: (traces: BrainTraceEvent[]) => void
+  pushBrainTrace: (trace: BrainTraceEvent) => void
+  refreshBrainTraces: () => Promise<void>
+  clearBrainTraces: () => Promise<void>
+  refreshContextPacks: () => Promise<void>
+  toggleContextPack: (packId: string, active?: boolean) => Promise<void>
+  createContextPack: (input: {
+    name: string
+    description?: string
+    categories?: GBrainCategoryId[]
+    entityIds?: string[]
+    active?: boolean
+  }) => Promise<BrainContextPack | null>
+  deleteContextPack: (packId: string) => Promise<void>
+  setSelfHealSessions: (sessions: SelfHealSession[]) => void
+  upsertSelfHealSession: (session: SelfHealSession) => void
+  selectSelfHealSession: (sessionId: string | null) => void
+  refreshSelfHealSessions: () => Promise<void>
+  runBuildVerify: (testFile?: string) => Promise<SelfHealVerification | null>
+  triggerAutoHeal: (input: {
+    errorMessage: string
+    stack?: string
+    viewName?: string
+    targetFileHint?: string
+    trigger?: SelfHealTrigger
+  }) => Promise<{ ok: boolean; error?: string; session?: SelfHealSession }>
+  rollbackSelfHeal: (sessionId: string) => Promise<{ ok: boolean; error?: string }>
+  setRuntimeErrorAlert: (alert: RuntimeErrorAlert | null) => void
+  dismissRuntimeErrorAlert: () => void
 
   refreshPermissions: () => Promise<void>
   respondPermission: (requestId: string, decision: Exclude<PermissionDecision, 'timeout'>) => Promise<void>
@@ -165,6 +240,12 @@ interface EvaControlState {
   provisionIdentity: (opts?: { forceNew?: boolean; preferredLocal?: string }) => Promise<AgentIdentityDTO | null>
   saveCustomIdentity: (address: string, displayName?: string) => Promise<AgentIdentityDTO | null>
   readIdentityMessage: (messageId: string) => Promise<AgentInboxDetailDTO | null>
+  manualEmotion: EvaEmotionId | null
+  setManualEmotion: (emotion: EvaEmotionId | null) => void
+  captionsEnabled: boolean
+  setCaptionsEnabled: (enabled: boolean) => void
+  previewHandAction: HandTrackingAction | null
+  setPreviewHandAction: (action: HandTrackingAction | null) => void
 }
 
 export const useEvaControl = create<EvaControlState>((set, get) => ({
@@ -203,6 +284,23 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
   reasoningChains: [],
   activeReasoningChainId: null,
   reasoningBusy: false,
+  gbrainInitialPanel: 'none',
+  brainTraces: [],
+  contextPacks: [],
+  activePackEntityIds: [],
+  activePackNames: [],
+  contextPacksBusy: false,
+  selfHealSessions: [],
+  activeSelfHealId: null,
+  selfHealBusy: false,
+  selfHealVerifyResult: null,
+  selfHealError: null,
+  runtimeErrorAlert: null,
+  settingsOpen: false,
+  companionResetSeq: 0,
+  autoVoiceFocus: readSavedAutoVoiceFocus(),
+  manualEmotion: null,
+  captionsEnabled: true,
 
   setControlConnected: (connected) => set({ controlConnected: connected }),
 
@@ -224,7 +322,30 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
     get().setSidebarCollapsed(next)
   },
 
-  setGbrainGraphOpen: (open) => set({ gbrainGraphOpen: open }),
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
+
+  resetCompanionPosition: () => set((s) => ({ companionResetSeq: s.companionResetSeq + 1 })),
+
+  setAutoVoiceFocus: (enabled) => {
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('nexus-auto-voice-focus', enabled ? '1' : '0')
+      }
+    } catch {
+      /* ignore */
+    }
+    set({ autoVoiceFocus: enabled })
+  },
+
+  setManualEmotion: (emotion) => set({ manualEmotion: emotion }),
+
+  setCaptionsEnabled: (enabled) => set({ captionsEnabled: enabled }),
+
+  setGbrainGraphOpen: (open, initialPanel) =>
+    set({
+      gbrainGraphOpen: open,
+      gbrainInitialPanel: open ? (initialPanel ?? 'none') : 'none',
+    }),
 
   openSplit: (mode, title) =>
     set({
@@ -626,4 +747,304 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
       set({ reasoningBusy: false })
     }
   },
+
+  setBrainTraces: (traces) => set({ brainTraces: traces.slice(0, 40) }),
+
+  pushBrainTrace: (trace) =>
+    set((s) => ({
+      brainTraces: [trace, ...s.brainTraces.filter((t) => t.id !== trace.id)].slice(0, 40),
+    })),
+
+  refreshBrainTraces: async () => {
+    try {
+      const res = await fetch('/api/brain/trace?limit=25', { cache: 'no-store' })
+      if (!res.ok) return
+      const data = (await res.json()) as { ok?: boolean; traces?: BrainTraceEvent[] }
+      if (data.ok && Array.isArray(data.traces)) {
+        set({ brainTraces: data.traces })
+      }
+    } catch {
+      /* ignore */
+    }
+  },
+
+  clearBrainTraces: async () => {
+    try {
+      await fetch('/api/brain/trace', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'clear' }),
+      })
+      set({ brainTraces: [] })
+    } catch {
+      /* ignore */
+    }
+  },
+
+  refreshContextPacks: async () => {
+    set({ contextPacksBusy: true })
+    try {
+      const res = await fetch('/api/brain/context-packs', { cache: 'no-store' })
+      if (!res.ok) return
+      const data = (await res.json()) as {
+        ok?: boolean
+        packs?: BrainContextPack[]
+        activeSummary?: {
+          activePackNames?: string[]
+          entityIds?: string[]
+        }
+      }
+      if (data.ok && Array.isArray(data.packs)) {
+        set({
+          contextPacks: data.packs,
+          activePackEntityIds: data.activeSummary?.entityIds ?? [],
+          activePackNames: data.activeSummary?.activePackNames ?? [],
+        })
+      }
+    } catch {
+      /* ignore */
+    } finally {
+      set({ contextPacksBusy: false })
+    }
+  },
+
+  toggleContextPack: async (packId, active) => {
+    set({ contextPacksBusy: true })
+    try {
+      const res = await fetch('/api/brain/context-packs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'toggle', packId, active }),
+      })
+      const data = (await res.json()) as {
+        ok?: boolean
+        packs?: BrainContextPack[]
+        activeSummary?: {
+          activePackNames?: string[]
+          entityIds?: string[]
+        }
+      }
+      if (data.ok && Array.isArray(data.packs)) {
+        set({
+          contextPacks: data.packs,
+          activePackEntityIds: data.activeSummary?.entityIds ?? [],
+          activePackNames: data.activeSummary?.activePackNames ?? [],
+        })
+      }
+    } catch {
+      /* ignore */
+    } finally {
+      set({ contextPacksBusy: false })
+    }
+  },
+
+  createContextPack: async (input) => {
+    set({ contextPacksBusy: true })
+    try {
+      const res = await fetch('/api/brain/context-packs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'create', ...input }),
+      })
+      const data = (await res.json()) as {
+        ok?: boolean
+        pack?: BrainContextPack
+        packs?: BrainContextPack[]
+        activeSummary?: {
+          activePackNames?: string[]
+          entityIds?: string[]
+        }
+      }
+      if (data.ok && Array.isArray(data.packs)) {
+        set({
+          contextPacks: data.packs,
+          activePackEntityIds: data.activeSummary?.entityIds ?? [],
+          activePackNames: data.activeSummary?.activePackNames ?? [],
+        })
+        return data.pack ?? null
+      }
+      return null
+    } catch {
+      return null
+    } finally {
+      set({ contextPacksBusy: false })
+    }
+  },
+
+  deleteContextPack: async (packId) => {
+    set({ contextPacksBusy: true })
+    try {
+      const res = await fetch('/api/brain/context-packs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', packId }),
+      })
+      const data = (await res.json()) as {
+        ok?: boolean
+        packs?: BrainContextPack[]
+        activeSummary?: {
+          activePackNames?: string[]
+          entityIds?: string[]
+        }
+      }
+      if (data.ok && Array.isArray(data.packs)) {
+        set({
+          contextPacks: data.packs,
+          activePackEntityIds: data.activeSummary?.entityIds ?? [],
+          activePackNames: data.activeSummary?.activePackNames ?? [],
+        })
+      }
+    } catch {
+      /* ignore */
+    } finally {
+      set({ contextPacksBusy: false })
+    }
+  },
+
+  setSelfHealSessions: (sessions) =>
+    set((s) => ({
+      selfHealSessions: sessions,
+      activeSelfHealId:
+        s.activeSelfHealId && sessions.some((x) => x.id === s.activeSelfHealId)
+          ? s.activeSelfHealId
+          : (sessions[0]?.id ?? null),
+    })),
+
+  upsertSelfHealSession: (session) =>
+    set((s) => {
+      const rest = s.selfHealSessions.filter((x) => x.id !== session.id)
+      const next = [session, ...rest].slice(0, 30)
+      return {
+        selfHealSessions: next,
+        activeSelfHealId:
+          session.status === 'diagnosing' ||
+          session.status === 'patching' ||
+          session.status === 'verifying' ||
+          !s.activeSelfHealId
+            ? session.id
+            : s.activeSelfHealId,
+      }
+    }),
+
+  selectSelfHealSession: (sessionId) => set({ activeSelfHealId: sessionId }),
+
+  refreshSelfHealSessions: async () => {
+    try {
+      const res = await fetch('/api/self-heal?limit=20', { cache: 'no-store' })
+      if (!res.ok) return
+      const data = (await res.json()) as { ok?: boolean; sessions?: SelfHealSession[] }
+      if (data.ok && Array.isArray(data.sessions)) {
+        get().setSelfHealSessions(data.sessions)
+      }
+    } catch {
+      /* ignore */
+    }
+  },
+
+  runBuildVerify: async (testFile) => {
+    set({ selfHealBusy: true, selfHealError: null })
+    try {
+      const res = await fetch('/api/self-heal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'verify', testFile }),
+      })
+      const data = (await res.json()) as {
+        ok?: boolean
+        verification?: SelfHealVerification
+        error?: string
+      }
+      if (data.verification) {
+        set({ selfHealVerifyResult: data.verification, selfHealError: null })
+        return data.verification
+      }
+      set({ selfHealError: data.error ?? 'Build verification failed' })
+      return null
+    } catch (e) {
+      set({ selfHealError: e instanceof Error ? e.message : String(e) })
+      return null
+    } finally {
+      set({ selfHealBusy: false })
+    }
+  },
+
+  triggerAutoHeal: async (input) => {
+    set({
+      selfHealBusy: true,
+      selfHealError: null,
+      splitOpen: true,
+      splitMode: 'self_heal',
+      splitTitle: 'Self-Heal Studio',
+      runtimeErrorAlert: null,
+    })
+    try {
+      const res = await fetch('/api/self-heal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'auto_heal',
+          trigger: input.trigger ?? 'user_request',
+          errorMessage: input.errorMessage,
+          stack: input.stack,
+          viewName: input.viewName,
+          targetFileHint: input.targetFileHint,
+        }),
+      })
+      const data = (await res.json()) as {
+        ok?: boolean
+        error?: string
+        session?: SelfHealSession
+      }
+      if (data.session) {
+        get().upsertSelfHealSession(data.session)
+        set({ activeSelfHealId: data.session.id })
+      }
+      if (!data.ok && data.error) {
+        set({ selfHealError: data.error })
+      }
+      void get().refreshSelfHealSessions()
+      return { ok: Boolean(data.ok), error: data.error, session: data.session }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      set({ selfHealError: msg })
+      return { ok: false, error: msg }
+    } finally {
+      set({ selfHealBusy: false })
+    }
+  },
+
+  rollbackSelfHeal: async (sessionId) => {
+    set({ selfHealBusy: true, selfHealError: null })
+    try {
+      const res = await fetch('/api/self-heal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'rollback', sessionId }),
+      })
+      const data = (await res.json()) as {
+        ok?: boolean
+        error?: string
+        session?: SelfHealSession
+      }
+      if (data.session) {
+        get().upsertSelfHealSession(data.session)
+      }
+      if (!data.ok && data.error) {
+        set({ selfHealError: data.error })
+      }
+      return { ok: Boolean(data.ok), error: data.error }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      set({ selfHealError: msg })
+      return { ok: false, error: msg }
+    } finally {
+      set({ selfHealBusy: false })
+    }
+  },
+
+  setRuntimeErrorAlert: (alert) => set({ runtimeErrorAlert: alert }),
+  dismissRuntimeErrorAlert: () => set({ runtimeErrorAlert: null }),
+  previewHandAction: null,
+  setPreviewHandAction: (action) =>
+    set((s) => ({ previewHandAction: s.previewHandAction === action ? null : action })),
 }))

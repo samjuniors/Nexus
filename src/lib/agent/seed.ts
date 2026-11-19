@@ -536,6 +536,13 @@ export async function ensureSeeded() {
           'List paired Mac/Windows/Linux computers and execute approved host actions (system_info, open_url, open_app, shell) via the Local Companion Bridge. Args: {"action": "list"|"system_info"|"open_url"|"open_app"|"shell", ...}',
         source: 'builtin',
       },
+      {
+        slug: 'self_heal_code',
+        name: 'Self-Healing Code & App Repair',
+        description:
+          'Inspect app source code, surgically patch bugs or add missing capabilities with automatic pre-patch rollback snapshots, verify with TypeScript build checks, or run autonomous error self-healing after one-time approval. Args: {"action": "inspect"|"patch"|"verify"|"rollback"|"auto_heal", ...}',
+        source: 'builtin',
+      },
     ]
 
     for (const t of tools) {

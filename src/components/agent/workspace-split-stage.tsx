@@ -14,12 +14,14 @@ import {
   Maximize2,
   Minimize2,
   Shield,
+  ShieldCheck,
   Users,
   Wrench,
   X,
 } from 'lucide-react'
 import { useEvaControl, type SplitMode } from '@/lib/agent/eva-control-store'
 import { ReasoningPanel } from '@/components/agent/reasoning-panel'
+import { SelfHealPanel } from '@/components/agent/self-heal-panel'
 import { LiveBrowserPanel } from '@/components/agent/live-browser-panel'
 import { AgentIdentityPanel } from '@/components/agent/agent-identity-panel'
 import { PermissionsPanel } from '@/components/agent/permissions-panel'
@@ -52,6 +54,7 @@ const BrainView = dynamic(() => import('@/components/agent/brain-view').then((m)
 
 const SPLIT_TABS: { mode: SplitMode; label: string; icon: typeof Globe }[] = [
   { mode: 'reasoning', label: 'Reasoning', icon: GitBranch },
+  { mode: 'self_heal', label: 'Self-Heal', icon: ShieldCheck },
   { mode: 'browser', label: 'Browser', icon: Globe },
   { mode: 'identity', label: 'Inbox', icon: Mail },
   { mode: 'permissions', label: 'Permissions', icon: Shield },
@@ -152,6 +155,7 @@ export function WorkspaceSplitStage({
         className="flex min-h-0 flex-1 flex-col overflow-hidden"
       >
         {splitMode === 'reasoning' && <ReasoningPanel />}
+        {splitMode === 'self_heal' && <SelfHealPanel />}
         {splitMode === 'browser' && <LiveBrowserPanel />}
         {splitMode === 'identity' && <AgentIdentityPanel />}
         {splitMode === 'permissions' && <PermissionsPanel />}
