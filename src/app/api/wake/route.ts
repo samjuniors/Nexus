@@ -5,9 +5,10 @@ import { DEFAULT_WAKE_PHRASE, matchSleepCommand, matchWakeWord } from '@/lib/age
 export const runtime = 'nodejs'
 
 const MAX_AUDIO_BASE64_LEN = 1_400_000 // ~1MB audio clip max (~30s at 16kHz mono PCM16)
-const WAKE_MODELS = ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'] as const
+// Dedicated Gemini audio transcription model first, with flash-lite fallback
+const WAKE_MODELS = ['gemini-3.5-transcribe', 'gemini-3.1-flash-lite'] as const
 
-const MIN_WAV_RMS_THRESHOLD = 0.004
+const MIN_WAV_RMS_THRESHOLD = 0.003
 
 /**
  * Inspects a RIFF/WAVE 16-bit PCM buffer and returns its normalized RMS level (0..1),
@@ -36,8 +37,8 @@ function measureWavPcm16Rms(bytes: Buffer): number | null {
 
 /**
  * Server-side acoustic wake-word transcription endpoint for Eva's fallback VAD ear.
- * Used automatically whenever browser Web Speech API (`SpeechRecognition`) is unavailable
- * or blocked (e.g. inside iframes, Firefox, Safari, or when Chrome SpeechRecognition throws network errors).
+ * Used automatically whenever browser Web Speech API (`SpeechRecognition`) is unavailable,
+ * silently stalls, or is blocked (e.g. inside iframes, Firefox, Safari, or Android WebViews).
  */
 export async function POST(request: Request) {
   try {
@@ -48,8 +49,12 @@ export async function POST(request: Request) {
     }
 
     const audioBase64 = typeof body.audioBase64 === 'string' ? body.audioBase64.trim() : ''
-    const mimeType = typeof body.mimeType === 'string' && body.mimeType.trim() ? body.mimeType.trim() : 'audio/wav'
-    const wakePhrase = typeof body.wakePhrase === 'string' && body.wakePhrase.trim() ? body.wakePhrase.trim() : DEFAULT_WAKE_PHRASE
+    const mimeType =
+      typeof body.mimeType === 'string' && body.mimeType.trim() ? body.mimeType.trim() : 'audio/wav'
+    const wakePhrase =
+      typeof body.wakePhrase === 'string' && body.wakePhrase.trim()
+        ? body.wakePhrase.trim()
+        : DEFAULT_WAKE_PHRASE
 
     if (!audioBase64 || audioBase64.length > MAX_AUDIO_BASE64_LEN) {
       return NextResponse.json({ ok: false, error: 'Invalid audio payload' }, { status: 400 })
@@ -95,35 +100,28 @@ export async function POST(request: Request) {
       try {
         const resp = await ai.models.generateContent({
           model,
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                {
-                  inlineData: {
-                    mimeType,
-                    data: audioBase64,
-                  },
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType,
+                  data: audioBase64,
                 },
-                {
-                  text: 'Transcribe any clear human speech in this short audio clip verbatim as plain text without commentary or timestamps. Do not guess or invent words. If there is only silence, static, or unclear background noise, output exactly: NONE',
-                },
-              ],
-            },
-          ],
-          config: {
-            temperature: 0,
-            maxOutputTokens: 64,
+              },
+              {
+                text: 'Transcribe ONLY clear human speech in this audio clip verbatim as plain text. Do not guess words from tones, music, clicks, or room noise. If there is no clear human speech, output exactly: NONE',
+              },
+            ],
           },
         })
         const raw = (resp.text ?? '').replace(/^["'\s]+|["'\s]+$/g, '').trim()
-        const cleaned = /^(\[?(none|silence|no speech|inaudible|background noise)\]?|\(?silence\)?)$/i.test(raw)
+        const cleaned = /^(\[?(none|silence|no speech|inaudible|background noise|music|tone|beep)\]?|\(?silence\)?)$/i.test(raw)
           ? ''
           : raw
         transcript = cleaned
         break
       } catch {
-        /* try next fast free-tier model */
+        /* try next transcription model */
       }
     }
 

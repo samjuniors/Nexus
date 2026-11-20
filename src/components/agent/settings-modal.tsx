@@ -15,6 +15,7 @@ import {
   Network,
   PanelLeft,
   RotateCcw,
+  Server,
   Settings,
   Shield,
   ShieldCheck,
@@ -22,6 +23,7 @@ import {
   Sparkles,
   Sun,
   Upload,
+  Vibrate,
   X,
 } from 'lucide-react'
 import { useEva } from '@/components/agent/eva-provider'
@@ -29,9 +31,16 @@ import { AnimatedCaptionText } from '@/components/agent/animated-caption-text'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
 import { useApp } from '@/lib/agent/store'
 import { CAPTION_ANIMATION_OPTIONS } from '@/lib/agent/caption-animation'
+import { VOICE_VISUALIZER_OPTIONS } from '@/lib/agent/voice-visualizer'
 import { VOICES, type VoiceName } from '@/lib/agent/voice-state'
 import { WAKE_PHRASE_PRESETS } from '@/lib/agent/wake-word'
 import { OUTFIT_SELECTIONS, type OutfitSelection } from '@/lib/coucou/wardrobe'
+import {
+  detectPlatformInfo,
+  openAndroidServerPicker,
+  triggerHaptic,
+} from '@/lib/platform/android-bridge'
+import { usePWAInstall } from '@/lib/platform/use-pwa-install'
 import { cn } from '@/lib/utils'
 
 type SettingsSection = 'workspace' | 'voice' | 'companion' | 'brain'
@@ -71,6 +80,8 @@ export function SettingsModal() {
   const setCaptionsEnabled = useEvaControl((s) => s.setCaptionsEnabled)
   const captionAnimationStyle = useEvaControl((s) => s.captionAnimationStyle)
   const setCaptionAnimationStyle = useEvaControl((s) => s.setCaptionAnimationStyle)
+  const voiceVisualizerStyle = useEvaControl((s) => s.voiceVisualizerStyle)
+  const setVoiceVisualizerStyle = useEvaControl((s) => s.setVoiceVisualizerStyle)
   const mobileVoiceFirst = useEvaControl((s) => s.mobileVoiceFirst)
   const setMobileVoiceFirst = useEvaControl((s) => s.setMobileVoiceFirst)
 
@@ -82,7 +93,9 @@ export function SettingsModal() {
   const [captionPreviewSeq, setCaptionPreviewSeq] = useState(0)
   const [brainBusy, setBrainBusy] = useState(false)
   const [brainMessage, setBrainMessage] = useState<string | null>(null)
+  const [hapticAck, setHapticAck] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
+  const { canInstall, isInstalled, isIOS, promptInstall } = usePWAInstall()
 
   const mounted = useSyncExternalStore(
     () => () => {},
@@ -90,6 +103,7 @@ export function SettingsModal() {
     () => false
   )
   const isLight = mounted && resolvedTheme === 'light'
+  const platform = mounted ? detectPlatformInfo() : detectPlatformInfo(undefined)
 
   useEffect(() => {
     if (!open) return
@@ -161,13 +175,21 @@ export function SettingsModal() {
       aria-modal="true"
       aria-label="Workspace and Eva settings"
       data-settings-modal="1"
-      onClick={() => setOpen(false)}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-[2px]"
+      onClick={() => {
+        triggerHaptic('selection')
+        setOpen(false)
+      }}
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/55 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-card text-foreground shadow-2xl"
+        className="flex max-h-[90dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-[28px] border border-border bg-card pb-[env(safe-area-inset-bottom)] text-foreground shadow-2xl sm:max-h-[85vh] sm:rounded-2xl sm:pb-0"
       >
+        {/* Material 3 Drag Handle Pill on Mobile */}
+        <div className="flex shrink-0 justify-center pt-2.5 pb-0.5 sm:hidden" aria-hidden>
+          <div className="h-1 w-9 rounded-full bg-muted-foreground/35" />
+        </div>
+
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
           <div className="flex items-center gap-2.5">
@@ -175,15 +197,18 @@ export function SettingsModal() {
             <div>
               <h2 className="text-sm font-semibold tracking-tight text-foreground">Settings</h2>
               <p className="text-[11px] text-muted-foreground">
-                Workspace appearance, Eva voice &amp; ear, companion character, and brain controls
+                Workspace appearance, Eva voice &amp; ear, companion character, and platform controls
               </p>
             </div>
           </div>
           <button
             type="button"
-            onClick={() => setOpen(false)}
+            onClick={() => {
+              triggerHaptic('selection')
+              setOpen(false)
+            }}
             aria-label="Close settings"
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="flex h-10 w-10 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground sm:h-7 sm:w-7 sm:rounded-md"
           >
             <X className="h-4 w-4" />
           </button>
@@ -354,7 +379,10 @@ export function SettingsModal() {
                         role="switch"
                         data-settings-mobile-voice-first="1"
                         aria-checked={mobileVoiceFirst}
-                        onClick={() => setMobileVoiceFirst(!mobileVoiceFirst)}
+                        onClick={() => {
+                          triggerHaptic('selection')
+                          setMobileVoiceFirst(!mobileVoiceFirst)
+                        }}
                         className={cn(
                           'shrink-0 whitespace-nowrap rounded-lg border px-3 py-1 text-xs font-medium transition-colors',
                           mobileVoiceFirst
@@ -363,6 +391,74 @@ export function SettingsModal() {
                         )}
                       >
                         {mobileVoiceFirst ? 'Voice Agent' : 'Workspace Chat'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Android APK, Desktop & Web PWA Platform Controls */}
+                <div>
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Platform &amp; Android APK
+                  </h3>
+                  <div className="mt-2.5 divide-y divide-border/70 rounded-xl border border-border/80 bg-background/60">
+                    <div className="flex items-center justify-between gap-4 px-3.5 py-3">
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-medium text-foreground">
+                          Active Runtime: {platform.label}
+                        </div>
+                        <div className="truncate text-[11px] text-muted-foreground">
+                          {platform.isAndroidApk
+                            ? `${platform.deviceModel || 'Android Device'} · ${platform.serverUrl || 'Connected'}`
+                            : 'Supports Android APK (/android), Desktop (/electron), and Web PWA'}
+                        </div>
+                      </div>
+                      {platform.isAndroidApk ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOpen(false)
+                            openAndroidServerPicker()
+                          }}
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/12 px-3 py-1.5 text-xs font-medium text-sky-600 transition-colors hover:bg-sky-500/20 dark:text-sky-400"
+                        >
+                          <Server className="h-3.5 w-3.5" />
+                          Switch Server
+                        </button>
+                      ) : !isInstalled && canInstall ? (
+                        <button
+                          type="button"
+                          onClick={() => void promptInstall()}
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/12 px-3 py-1.5 text-xs font-medium text-sky-600 transition-colors hover:bg-sky-500/20 dark:text-sky-400"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          Install App
+                        </button>
+                      ) : (
+                        <span className="shrink-0 rounded-full border border-border bg-muted/50 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+                          {isIOS && !isInstalled ? 'Safari Share → Home' : 'Ready'}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center justify-between gap-4 px-3.5 py-3">
+                      <div>
+                        <div className="text-[13px] font-medium text-foreground">Tactile Haptics</div>
+                        <div className="text-[11px] text-muted-foreground">
+                          Material 3 vibration pulses via native Android bridge or mobile browser
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          triggerHaptic('success')
+                          setHapticAck(true)
+                          window.setTimeout(() => setHapticAck(false), 1200)
+                        }}
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                      >
+                        <Vibrate className="h-3.5 w-3.5 text-sky-500" />
+                        {hapticAck ? 'Pulsed' : 'Test Pulse'}
                       </button>
                     </div>
                   </div>
@@ -510,6 +606,50 @@ export function SettingsModal() {
                           {wake.sleepMode ? 'Wake Eva' : 'Sleep Mode'}
                         </button>
                       </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Voice Visualizer Style
+                  </h3>
+                  <div className="mt-2.5 rounded-xl border border-border/80 bg-background/60 p-3.5">
+                    <div className="mb-2.5">
+                      <div className="text-[13px] font-medium text-foreground">Voice Aura Pattern</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        Select the ambient animation behind Eva in Voice Focus Mode
+                      </div>
+                    </div>
+                    <div
+                      role="group"
+                      aria-label="Voice visualizer style"
+                      data-settings-visualizer-group="1"
+                      className="grid grid-cols-2 gap-1.5 sm:grid-cols-5"
+                    >
+                      {VOICE_VISUALIZER_OPTIONS.map((opt) => {
+                        const active = voiceVisualizerStyle === opt.id
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            data-settings-visualizer-style={opt.id}
+                            aria-pressed={active}
+                            onClick={() => setVoiceVisualizerStyle(opt.id)}
+                            className={cn(
+                              'flex flex-col items-start rounded-lg border px-2.5 py-2 text-left transition-colors',
+                              active
+                                ? 'border-sky-500/45 bg-sky-500/12 text-foreground'
+                                : 'border-border/70 bg-card/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+                            )}
+                          >
+                            <span className="text-xs font-medium">{opt.shortLabel}</span>
+                            <span className="mt-0.5 line-clamp-1 text-[10px] opacity-75">
+                              {opt.label}
+                            </span>
+                          </button>
+                        )
+                      })}
                     </div>
                   </div>
                 </div>

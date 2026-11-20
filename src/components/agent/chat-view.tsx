@@ -234,8 +234,8 @@ export function ChatView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* minimal header */}
-      <header className="flex items-center gap-3 border-b border-border/70 bg-sidebar px-3.5 py-2 lg:px-6 lg:py-2.5">
+      {/* Desktop minimal header (hidden on mobile where OsTopBar provides the single clean top bar) */}
+      <header className="hidden items-center gap-3 border-b border-border/70 bg-sidebar px-3.5 py-2 lg:flex lg:px-6 lg:py-2.5">
         <MochiEyes
           expression={evaExpression}
           archetype="eva"
@@ -365,14 +365,17 @@ export function ChatView() {
                 label={`Eva hero eyes (${evaExpression})`}
               />
               <h2 className="mt-5 text-xl font-semibold tracking-tight">
-                <span className="shimmer-text">Eva</span>{' '}
-                <span className="text-foreground/80">· Lead Agent</span>
+                <span className="shimmer-text">Eva</span>
+                <span className="hidden text-foreground/80 sm:inline"> · Lead Agent</span>
               </h2>
-              <p className="mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
-                {emotion.feelingLine} Say &quot;Hey Eva&quot; anytime to talk live — Eva uses her Eyes,
-                Ears, Mouth, and Hands to run tasks, subagents, and your OS workspace.
+              <p className="mt-2 max-w-xs text-sm leading-relaxed text-muted-foreground sm:max-w-md">
+                <span className="sm:hidden">Say &quot;Hey Eva&quot; to talk, or type below.</span>
+                <span className="hidden sm:inline">
+                  {emotion.feelingLine} Say &quot;Hey Eva&quot; anytime to talk live — Eva uses her Eyes,
+                  Ears, Mouth, and Hands to run tasks, subagents, and your OS workspace.
+                </span>
               </p>
-              <div className="mt-7 grid w-full gap-2 sm:grid-cols-2">
+              <div className="mt-7 hidden w-full gap-2 sm:grid sm:grid-cols-2">
                 {SUGGESTIONS.map((s) => (
                   <button
                     key={s.text}

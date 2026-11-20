@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.NexusEva" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/nexus_primary</item>
+        <item name="colorPrimaryContainer">@color/nexus_primary_container</item>
+        <item name="colorOnPrimary">@color/nexus_on_primary</item>
+        <item name="colorSecondary">@color/nexus_secondary</item>
+        <item name="android:windowBackground">@color/nexus_bg_dark</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

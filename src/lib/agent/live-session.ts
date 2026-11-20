@@ -1069,10 +1069,23 @@ export async function handleLiveSocket(ws: WebSocket, req: IncomingMessage): Pro
     const handleClientMessage = (rawStr: string) => {
       if (closed || !session) return
       try {
-        const msg = JSON.parse(rawStr) as { type?: string; audio?: string; text?: string }
+        const msg = JSON.parse(rawStr) as {
+          type?: string
+          audio?: string
+          image?: string
+          mimeType?: string
+          text?: string
+        }
         if (msg.type === 'audio' && typeof msg.audio === 'string' && msg.audio.length > 0) {
           session.sendRealtimeInput({
             audio: { data: msg.audio, mimeType: 'audio/pcm;rate=16000' },
+          })
+        } else if (msg.type === 'video' && typeof msg.image === 'string' && msg.image.length > 0) {
+          session.sendRealtimeInput({
+            video: {
+              data: msg.image,
+              mimeType: msg.mimeType || 'image/jpeg',
+            },
           })
         } else if (msg.type === 'text' && typeof msg.text === 'string' && msg.text.trim()) {
           const trimmed = msg.text.trim()

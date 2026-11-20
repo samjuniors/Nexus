@@ -127,7 +127,7 @@ export function classifyToolAction(
 
 export interface DeriveHandTrackingInput {
   previewAction?: HandTrackingAction | null
-  activeVoiceTool?: string | null
+  activeVoiceTool?: string | { tool?: string | null; args?: Record<string, unknown> } | null
   isRunning?: boolean
   latestRunEvent?: RunEventDTO | null
   selfHealBusy?: boolean
@@ -162,14 +162,21 @@ export function deriveLiveHandTracking(input: DeriveHandTrackingInput): HandTrac
     }
   }
 
-  if (input.activeVoiceTool) {
-    const action = classifyToolAction(input.activeVoiceTool)
+  const activeVoiceToolName =
+    typeof input.activeVoiceTool === 'string'
+      ? input.activeVoiceTool.trim()
+      : typeof input.activeVoiceTool?.tool === 'string'
+        ? input.activeVoiceTool.tool.trim()
+        : ''
+
+  if (activeVoiceToolName) {
+    const action = classifyToolAction(activeVoiceToolName)
     const meta = HAND_TRACKING_ACTIONS[action]
     return {
       ...meta,
       active: action !== 'idle',
-      toolName: input.activeVoiceTool,
-      targetLabel: input.activeVoiceTool,
+      toolName: activeVoiceToolName,
+      targetLabel: activeVoiceToolName,
       isPreview: false,
     }
   }

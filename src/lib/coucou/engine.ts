@@ -270,6 +270,9 @@ export class BotEngine {
 
   lookX = 0;
   lookY = 0;
+  cameraGazeActive = false;
+  gazeTilt = 0;
+  gazeEyeScale = 1;
 
   lastTime = now();
   private t0 = now() - Math.random() * 5;
@@ -625,12 +628,16 @@ export class BotEngine {
     }
 
     const t = n - this.t0;
-    let ty = this.lookX * 0.62;
-    let tp = this.lookY * 0.5;
+    // Camera eye-contact mode uses richer 3D head yaw/pitch range so Eva visibly turns toward the user
+    const yawGain = this.cameraGazeActive ? 0.78 : 0.62;
+    const pitchGain = this.cameraGazeActive ? 0.58 : 0.5;
+    let ty = this.lookX * yawGain;
+    let tp = this.lookY * pitchGain;
 
     if (this.cfg.look) {
-      ty = ty * 0.35 + this.cfg.look[0] * 0.55;
-      tp = tp * 0.3 + this.cfg.look[1] * 0.5;
+      const gazeWeight = this.cameraGazeActive ? 0.65 : 0.35;
+      ty = ty * gazeWeight + this.cfg.look[0] * (1 - gazeWeight) * 0.85;
+      tp = tp * gazeWeight + this.cfg.look[1] * (1 - gazeWeight) * 0.75;
     }
     if (this.cfg.scans) {
       ty = Math.sin(t * 2.6) * 0.6;
@@ -654,7 +661,15 @@ export class BotEngine {
 
     this.tgYaw = ty;
     this.tgPitch = tp;
-    this.tgTilt = this.cfg.tilt;
+    const activeHeadTilt =
+      this.cameraGazeActive && this.state !== "sleeping" && this.state !== "dizzy"
+        ? this.gazeTilt
+        : 0;
+    this.tgTilt = this.cfg.tilt + activeHeadTilt;
+    this.tgEs =
+      this.cameraGazeActive && this.state !== "sleeping" && this.state !== "dizzy"
+        ? this.gazeEyeScale
+        : 1;
 
     if (n > this.waveStart && n < this.waveUntil) {
       const wt = n - this.waveStart;
@@ -679,7 +694,7 @@ export class BotEngine {
 
     if (this.isMini && n > this.miniNextBehavior) this.doMiniBehaviorLoop();
 
-    const kLook = 1 - Math.pow(0.0025, dt);
+    const kLook = 1 - Math.pow(this.cameraGazeActive ? 0.0009 : 0.0025, dt);
     if (!this.locks.has("yaw")) this.yaw += (this.tgYaw - this.yaw) * kLook;
     if (!this.locks.has("pitch")) this.pitch += (this.tgPitch - this.pitch) * kLook;
     if (!this.locks.has("tilt")) this.tilt += (this.tgTilt - this.tilt) * kGen;

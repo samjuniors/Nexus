@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
-import { Loader2, Menu, MessageSquare, Mic, MicOff, Moon, PhoneOff, Smartphone } from 'lucide-react'
+import { Loader2, Mic, MicOff, Moon, PhoneOff } from 'lucide-react'
 import { EvaProvider, useEva } from '@/components/agent/eva-provider'
 import { Sidebar } from '@/components/agent/sidebar'
 import { ChatView } from '@/components/agent/chat-view'
@@ -21,6 +21,8 @@ import { RuntimeHealBanner } from '@/components/agent/runtime-heal-banner'
 import { SettingsModal } from '@/components/agent/settings-modal'
 import { OsTopBar } from '@/components/agent/os-top-bar'
 import { MobileNavDrawer } from '@/components/agent/mobile-nav-drawer'
+import { MaterialBottomNav } from '@/components/agent/material-bottom-nav'
+import { AndroidRuntimeSync } from '@/components/agent/android-runtime-sync'
 import { useApp } from '@/lib/agent/store'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
 import {
@@ -146,12 +148,9 @@ function EvaLiveDockedBar() {
 function ShellContent() {
   const { activeTab, setTab, bootstrap, brain } = useApp()
   const splitOpen = useEvaControl((s) => s.splitOpen)
-  const splitMode = useEvaControl((s) => s.splitMode)
-  const openSplit = useEvaControl((s) => s.openSplit)
   const layoutMode = useEvaControl((s) => s.layoutMode)
   const setLayoutMode = useEvaControl((s) => s.setLayoutMode)
   const setMobileVoiceFirst = useEvaControl((s) => s.setMobileVoiceFirst)
-  const setMobileDrawerOpen = useEvaControl((s) => s.setMobileDrawerOpen)
   const gbrainGraphOpen = useEvaControl((s) => s.gbrainGraphOpen)
   const setGbrainGraphOpen = useEvaControl((s) => s.setGbrainGraphOpen)
 
@@ -237,7 +236,9 @@ function ShellContent() {
       <main
         className={cn(
           'flex min-h-0 min-w-0 flex-1 flex-col lg:pb-0',
-          layoutMode === 'standard' ? 'pb-14' : 'pb-0'
+          layoutMode === 'standard' && activeTab !== 'agent'
+            ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]'
+            : 'pb-0'
         )}
       >
         <OsTopBar onOpenCommandPalette={() => setPaletteOpen(true)} />
@@ -297,57 +298,11 @@ function ShellContent() {
       <RuntimeHealBanner />
       {brainConnected && <GBrainGraph open={gbrainGraphOpen} onOpenChange={setGbrainGraphOpen} />}
 
-      {/* Minimalistic 4-destination bottom bar on Mobile & Tablet — ONLY in Workspace/Chat mode */}
-      {layoutMode === 'standard' && (
-        <nav
-          aria-label="Mobile workspace navigation"
-          data-mobile-bottom-nav="1"
-          className="fixed inset-x-0 bottom-0 z-30 flex h-14 border-t border-border/80 bg-background/95 backdrop-blur-md lg:hidden"
-        >
-          <button
-            type="button"
-            onClick={() => setLayoutMode('focus')}
-            className="flex min-h-[44px] flex-1 flex-col items-center justify-center gap-0.5 text-[10.5px] font-medium text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <Mic className="h-4 w-4" />
-            <span>Voice</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('agent')}
-            aria-current={activeTab === 'agent' ? 'page' : undefined}
-            className={cn(
-              'flex min-h-[44px] flex-1 flex-col items-center justify-center gap-0.5 text-[10.5px] font-medium transition-colors',
-              activeTab === 'agent' ? 'text-sky-500' : 'text-muted-foreground hover:text-foreground'
-            )}
-          >
-            <MessageSquare className="h-4 w-4" />
-            <span>Chat</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => openSplit('mobile', 'Android & Mobile Control')}
-            aria-pressed={splitOpen && splitMode === 'mobile'}
-            className={cn(
-              'flex min-h-[44px] flex-1 flex-col items-center justify-center gap-0.5 text-[10.5px] font-medium transition-colors',
-              splitOpen && splitMode === 'mobile'
-                ? 'text-emerald-500'
-                : 'text-muted-foreground hover:text-foreground'
-            )}
-          >
-            <Smartphone className="h-4 w-4" />
-            <span>Android</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setMobileDrawerOpen(true)}
-            className="flex min-h-[44px] flex-1 flex-col items-center justify-center gap-0.5 text-[10.5px] font-medium text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <Menu className="h-4 w-4" />
-            <span>Menu</span>
-          </button>
-        </nav>
-      )}
+      {/* Android APK / Web / Desktop Bridge Coordinator (Foreground Voice, Haptics, Back Gesture, Offline Pill) */}
+      <AndroidRuntimeSync paletteOpen={paletteOpen} setPaletteOpen={setPaletteOpen} />
+
+      {/* Material 3 Navigation Bar with tonal pill indicator — ONLY in Mobile/Tablet Workspace mode */}
+      <MaterialBottomNav />
     </div>
   )
 }

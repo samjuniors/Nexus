@@ -21,7 +21,7 @@ export { resolveCompanionAnchor, type CompanionAnchorSlot }
  * - Renders live animated speech mouth, expressive eyes, and persistent animated hands.
  */
 export function EvaCompanionDock() {
-  const { voice, wake, vision, evaExpression, emotion, senses, handTracking, onToggleSleepMode, onArmEar } = useEva()
+  const { voice, wake, vision, evaExpression, emotion, senses, handTracking, cameraGreetSeq, onToggleSleepMode, onArmEar } = useEva()
   const activeConvId = useApp((s) => s.activeConvId)
   const activeTab = useApp((s) => s.activeTab)
   const runningRunId = useApp((s) => s.runningRunId)
@@ -212,7 +212,7 @@ export function EvaCompanionDock() {
           expression={evaExpression}
           archetype="eva"
           outfit={coucouOutfit}
-          greetSeq={greetSeq}
+          greetSeq={greetSeq + cameraGreetSeq}
           dancing={isDancing}
           isSpeaking={voice.isSpeaking}
           speakingLevel={voice.isSpeaking ? Math.max(0.45, voice.micLevel) : 0}
@@ -220,6 +220,7 @@ export function EvaCompanionDock() {
           earListening={senses.ears.status === 'active'}
           handsActive={senses.hands.status === 'active'}
           handTracking={handTracking}
+          gazeOverride={vision.founderGaze}
           emotion={emotion.id}
           size={90}
           interactive={false}

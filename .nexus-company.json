@@ -3,7 +3,7 @@
   "mission": "Operate a zero-human-bottleneck engineering company led by Eva with autonomous specialist agents, governed budgets, heartbeats, and verifiable delivery.",
   "monthlyBudgetUsd": 250,
   "autoHireEnabled": true,
-  "ticketSeq": 21,
+  "ticketSeq": 27,
   "agentConfigs": {
     "aiEmployee_mwne43k9_1h": {
       "agentId": "aiEmployee_mwne43k9_1h",
@@ -212,6 +212,58 @@
       "byoaWebhookUrl": null,
       "byoaProvider": null,
       "byoaSecretHeader": null
+    },
+    "aiEmployee_mwoadgs8_1": {
+      "agentId": "aiEmployee_mwoadgs8_1",
+      "monthlyBudgetUsd": 30,
+      "spentUsd": 0,
+      "tokensUsed": 0,
+      "heartbeatIntervalMin": 30,
+      "heartbeatEnabled": true,
+      "autoThrottle": true,
+      "lastHeartbeatAt": null,
+      "byoaWebhookUrl": null,
+      "byoaProvider": null,
+      "byoaSecretHeader": null
+    },
+    "aiEmployee_mwoadgs9_2": {
+      "agentId": "aiEmployee_mwoadgs9_2",
+      "monthlyBudgetUsd": 35,
+      "spentUsd": 0,
+      "tokensUsed": 0,
+      "heartbeatIntervalMin": 30,
+      "heartbeatEnabled": true,
+      "autoThrottle": true,
+      "lastHeartbeatAt": null,
+      "byoaWebhookUrl": null,
+      "byoaProvider": null,
+      "byoaSecretHeader": null
+    },
+    "aiEmployee_mwof3pii_1": {
+      "agentId": "aiEmployee_mwof3pii_1",
+      "monthlyBudgetUsd": 30,
+      "spentUsd": 0,
+      "tokensUsed": 0,
+      "heartbeatIntervalMin": 30,
+      "heartbeatEnabled": true,
+      "autoThrottle": true,
+      "lastHeartbeatAt": null,
+      "byoaWebhookUrl": null,
+      "byoaProvider": null,
+      "byoaSecretHeader": null
+    },
+    "aiEmployee_mwof3pio_2": {
+      "agentId": "aiEmployee_mwof3pio_2",
+      "monthlyBudgetUsd": 35,
+      "spentUsd": 0,
+      "tokensUsed": 0,
+      "heartbeatIntervalMin": 30,
+      "heartbeatEnabled": true,
+      "autoThrottle": true,
+      "lastHeartbeatAt": null,
+      "byoaWebhookUrl": null,
+      "byoaProvider": null,
+      "byoaSecretHeader": null
     }
   },
   "tickets": [
@@ -253,5 +305,5 @@
     }
   ],
   "heartbeats": [],
-  "updatedAt": "2026-11-19T15:08:08.398Z"
+  "updatedAt": "2026-11-20T03:26:40.371Z"
 }

@@ -6,6 +6,8 @@ import {
   ArrowUp,
   Camera,
   CameraOff,
+  Ear,
+  EarOff,
   Loader2,
   Mic,
   MicOff,
@@ -38,6 +40,7 @@ export function VoiceComposer({
   voice,
   wake,
   vision,
+  onToggleWake,
   input,
   setInput,
   textareaRef,
@@ -77,20 +80,26 @@ export function VoiceComposer({
     isSleeping: wake.sleepMode,
   })
 
-  const showLiveStrip = voice.isActive || effectiveState === 'error'
+  const voiceBlockedOrError =
+    effectiveState === 'error' ||
+    Boolean(voice.lastError) ||
+    wake.status === 'error' ||
+    wake.status === 'unsupported'
+  const showLiveStrip = voice.isActive || voiceBlockedOrError
+  const hasDraft = Boolean(input.trim() || vision.anyActive)
 
   const placeholder = isRunning
     ? 'Eva is executing the current mission…'
     : vision.anyActive
-      ? 'Ask Eva about what she sees through her eyes, or describe an action…'
+      ? 'Ask Eva about what she sees…'
       : voice.isActive
         ? voice.muted
-          ? 'Mic muted — type a message or unmute…'
-          : 'Speak aloud to Eva, or type a follow-up…'
-        : 'Message Eva, attach eyes, or describe a mission…\nShift + Enter for a new line'
+          ? 'Mic muted — type or unmute…'
+          : 'Speak aloud or type…'
+        : 'Message Eva…'
 
   return (
-    <div className="border-t border-border/70 bg-background/95 px-4 py-3 md:px-6">
+    <div className="border-t border-border/60 bg-background/95 px-3 py-2 pb-[max(0.65rem,env(safe-area-inset-bottom))] md:px-6 md:py-3">
       <div className="mx-auto w-full max-w-3xl">
         <div
           data-voice-state={effectiveState}
@@ -99,20 +108,20 @@ export function VoiceComposer({
             'overflow-hidden rounded-2xl border bg-card transition-colors focus-within:border-ring/60',
             voice.isActive || vision.anyActive
               ? 'border-sky-500/45'
-              : effectiveState === 'error'
-                ? 'border-red-500/45'
+              : voiceBlockedOrError
+                ? 'border-amber-500/45'
                 : 'border-border'
           )}
         >
-          {/* Compact inline strip ONLY while live voice is active or errored */}
+          {/* Compact inline strip ONLY while live voice is active or voice is blocked/errored */}
           {showLiveStrip && (
             <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-muted/35 px-3 py-1.5 text-xs">
               <div className="flex min-w-0 items-center gap-2">
-                {effectiveState === 'error' ? (
+                {voiceBlockedOrError && !voice.isActive ? (
                   <>
-                    <AlertCircle className="h-3.5 w-3.5 shrink-0 text-red-500" />
-                    <span className="truncate text-[11.5px] text-red-600 dark:text-red-300">
-                      {voice.lastError || 'Voice connection error'}
+                    <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                    <span className="truncate text-[11.5px] text-muted-foreground">
+                      {voice.lastError || 'Voice unavailable — type below'}
                     </span>
                   </>
                 ) : (
@@ -122,30 +131,34 @@ export function VoiceComposer({
                         'h-2 w-2 shrink-0 rounded-full',
                         voice.isSpeaking
                           ? 'bg-emerald-500 pulse-dot'
-                          : voice.muted
-                            ? 'bg-amber-500'
-                            : 'bg-sky-500 pulse-dot'
+                          : voice.agentState === 'thinking'
+                            ? 'bg-violet-500 pulse-dot'
+                            : voice.muted
+                              ? 'bg-amber-500'
+                              : 'bg-sky-500 pulse-dot'
                       )}
                     />
                     <span className="font-mono text-[11px] font-medium text-foreground">
                       {voice.status === 'connecting'
-                        ? 'Connecting live voice…'
+                        ? 'Connecting…'
                         : voice.isSpeaking
                           ? 'Eva speaking'
-                          : voice.muted
-                            ? 'Mic muted'
-                            : 'Listening'}
+                          : voice.agentState === 'thinking'
+                            ? 'Eva thinking…'
+                            : voice.muted
+                              ? 'Mic muted'
+                              : 'Listening'}
                     </span>
                   </>
                 )}
               </div>
 
               <div className="flex shrink-0 items-center gap-1">
-                {effectiveState === 'error' ? (
+                {voiceBlockedOrError && !voice.isActive ? (
                   <Button
                     size="sm"
-                    variant="outline"
-                    className="h-6 gap-1 px-2 text-[11px]"
+                    variant="ghost"
+                    className="h-7 gap-1 px-2 text-[11.5px] text-sky-500 hover:text-sky-400"
                     onClick={() => void voice.startVoice(activeConvId)}
                   >
                     <RefreshCw className="h-3 w-3" />
@@ -157,7 +170,7 @@ export function VoiceComposer({
                       <Button
                         size="sm"
                         variant="ghost"
-                        className="h-6 gap-1 px-2 text-[11px]"
+                        className="h-7 gap-1 px-2 text-[11px]"
                         onClick={voice.interruptAudio}
                         aria-label="Interrupt speech playback"
                       >
@@ -168,7 +181,7 @@ export function VoiceComposer({
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="h-6 gap-1 px-2 text-[11px]"
+                      className="h-7 gap-1 px-2 text-[11px]"
                       onClick={voice.toggleMute}
                       aria-label={voice.muted ? 'Unmute microphone' : 'Mute microphone'}
                     >
@@ -182,7 +195,7 @@ export function VoiceComposer({
                     <Button
                       size="sm"
                       variant="destructive"
-                      className="h-6 gap-1 px-2 text-[11px]"
+                      className="h-7 gap-1 px-2 text-[11px]"
                       onClick={voice.stopVoice}
                       aria-label="End live voice session"
                     >
@@ -198,8 +211,111 @@ export function VoiceComposer({
           {/* Live Camera / Screen Eye preview strip when toggled on */}
           <VisionPreviewStrip vision={vision} />
 
-          {/* Two-line comfortable input + bottom control row */}
-          <div className="flex flex-col px-2.5 pt-2 pb-1.5">
+          {/* Mobile (< md): ultra-minimal single-row dynamic composer */}
+          <div className="flex items-center gap-1.5 px-2 py-1.5 md:hidden">
+            {!voiceBlockedOrError && (
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                data-vision-toggle="camera"
+                onClick={() => void vision.toggleCamera()}
+                aria-pressed={vision.cameraActive}
+                aria-label={vision.cameraActive ? 'Turn off camera' : 'Turn on camera'}
+                className={cn(
+                  'h-10 w-10 shrink-0 rounded-full',
+                  vision.cameraActive
+                    ? 'bg-sky-500/15 text-sky-500'
+                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                )}
+              >
+                {vision.cameraActive ? <CameraOff className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
+              </Button>
+            )}
+
+            <Textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={onKeyDown}
+              placeholder={placeholder}
+              disabled={isRunning}
+              rows={1}
+              className="max-h-28 min-h-[40px] flex-1 resize-none border-0 bg-transparent px-1.5 py-2 text-[14px] leading-snug text-foreground placeholder:text-muted-foreground/75 focus-visible:ring-0 focus-visible:ring-offset-0 disabled:opacity-50"
+              aria-label="Message input"
+            />
+
+            {!voice.isActive && !voiceBlockedOrError && wake.supported && wake.status === 'awaiting-mic' && (
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                data-eva-ear-control="1"
+                data-wake-status={wake.status}
+                onClick={() => wake.armNow()}
+                aria-label="Tap to unlock Eva wake ear"
+                title="Tap once to unlock Hey Eva ear"
+                className="h-10 w-10 shrink-0 rounded-full bg-amber-500/12 text-amber-500 hover:bg-amber-500/20"
+              >
+                <Ear className="h-4 w-4" />
+              </Button>
+            )}
+
+            {isRunning ? (
+              <Button
+                type="button"
+                size="icon"
+                variant="destructive"
+                className="h-10 w-10 shrink-0 rounded-full"
+                onClick={() => void onStopTask()}
+                aria-label="Stop mission"
+              >
+                <Square className="h-3.5 w-3.5 fill-current" />
+              </Button>
+            ) : hasDraft || voiceBlockedOrError ? (
+              <Button
+                type="button"
+                size="icon"
+                className="h-10 w-10 shrink-0 rounded-full"
+                disabled={!hasDraft || isSending}
+                onClick={() => void onSubmit()}
+                aria-label="Send message"
+              >
+                {isSending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ArrowUp className="h-4 w-4" />
+                )}
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                size="icon"
+                variant={voice.isActive ? 'destructive' : 'default'}
+                className="h-10 w-10 shrink-0 rounded-full"
+                disabled={voice.status === 'connecting' && !voice.isActive}
+                onClick={() => {
+                  if (voice.isActive) {
+                    voice.stopVoice()
+                  } else {
+                    void voice.startVoice(activeConvId)
+                  }
+                }}
+                aria-label={voice.isActive ? 'Stop voice conversation' : 'Start voice conversation'}
+              >
+                {voice.status === 'connecting' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : voice.isActive ? (
+                  <PhoneOff className="h-4 w-4" />
+                ) : (
+                  <Mic className="h-4 w-4" />
+                )}
+              </Button>
+            )}
+          </div>
+
+          {/* Desktop (>= md): full two-line text, vision, ear & voice composer */}
+          <div className="hidden flex-col px-2.5 pt-2 pb-1.5 md:flex">
             <Textarea
               ref={textareaRef}
               value={input}
@@ -213,7 +329,7 @@ export function VoiceComposer({
             />
 
             <div className="mt-1 flex items-center justify-between gap-2 border-t border-border/40 pt-1.5">
-              {/* Left: On-demand Eva Vision Eyes (Camera + Screen) */}
+              {/* Left: On-demand Eva Vision Eyes (Camera + Screen) & Wake Ear */}
               <div className="flex items-center gap-1">
                 <Button
                   type="button"
@@ -232,7 +348,7 @@ export function VoiceComposer({
                   )}
                 >
                   {vision.cameraActive ? <CameraOff className="h-3.5 w-3.5" /> : <Camera className="h-3.5 w-3.5" />}
-                  <span className="hidden sm:inline">Camera</span>
+                  <span>Camera</span>
                 </Button>
 
                 <Button
@@ -252,8 +368,73 @@ export function VoiceComposer({
                   )}
                 >
                   {vision.screenActive ? <MonitorOff className="h-3.5 w-3.5" /> : <Monitor className="h-3.5 w-3.5" />}
-                  <span className="hidden sm:inline">Screen</span>
+                  <span>Screen</span>
                 </Button>
+
+                {!voice.isActive && wake.supported && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    data-eva-ear-control="1"
+                    data-wake-status={wake.status}
+                    onClick={() => {
+                      if (!wake.sleepMode && (wake.status === 'awaiting-mic' || wake.status === 'error')) {
+                        wake.armNow()
+                      } else if (onToggleWake) {
+                        onToggleWake()
+                      } else {
+                        wake.toggleSleepMode()
+                      }
+                    }}
+                    aria-pressed={!wake.sleepMode && wake.status === 'armed'}
+                    aria-label={
+                      wake.sleepMode
+                        ? 'Wake Eva always-on ear'
+                        : wake.status === 'armed'
+                          ? 'Eva ear listening — click to pause'
+                          : 'Enable Eva always-on ear'
+                    }
+                    title={
+                      wake.sleepMode
+                        ? 'Eva ear asleep — click to listen for "Eva" or "Hey Eva"'
+                        : wake.status === 'armed'
+                          ? `Listening (${wake.engine}) — say "Eva" or "${wake.wakePhrase}" anytime`
+                          : wake.error || 'Click once to unlock mic so Eva hears "Eva" or "Hey Eva"'
+                    }
+                    className={cn(
+                      'h-7 gap-1.5 rounded-lg px-2 text-[11.5px] font-medium',
+                      wake.sleepMode
+                        ? 'text-muted-foreground/75 hover:bg-muted hover:text-foreground'
+                        : wake.status === 'armed'
+                          ? 'bg-sky-500/12 text-sky-600 hover:bg-sky-500/20 dark:text-sky-400'
+                          : 'bg-amber-500/12 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400'
+                    )}
+                  >
+                    {wake.sleepMode ? (
+                      <EarOff className="h-3.5 w-3.5" />
+                    ) : (
+                      <span className="relative flex items-center">
+                        <Ear className="h-3.5 w-3.5" />
+                        {wake.status === 'armed' && (
+                          <span
+                            className={cn(
+                              'ml-1 h-1.5 w-1.5 rounded-full bg-sky-500',
+                              wake.earLevel > 0.12 && 'scale-125 bg-emerald-400'
+                            )}
+                          />
+                        )}
+                      </span>
+                    )}
+                    <span>
+                      {wake.sleepMode
+                        ? 'Asleep'
+                        : wake.status === 'armed'
+                          ? 'Eva Ear'
+                          : 'Tap Ear'}
+                    </span>
+                  </Button>
+                )}
               </div>
 
               {/* Right: Voice Focus Mic + Send / Stop */}

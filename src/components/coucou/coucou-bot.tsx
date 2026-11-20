@@ -54,6 +54,15 @@ export interface CoucouBotProps {
   interactive?: boolean
   /** Track global pointer gaze subtly */
   trackGaze?: boolean
+  /** Live camera Founder gaze target (-1..1, -1..1) overriding pointer gaze when present */
+  gazeOverride?: {
+    x: number
+    y: number
+    headTilt?: number
+    eyeScale?: number
+    present?: boolean
+    target?: 'face' | 'hand' | 'idle'
+  } | null
   className?: string
   label?: string
 }
@@ -82,6 +91,7 @@ export function CoucouBot({
   size = 84,
   interactive = true,
   trackGaze = true,
+  gazeOverride = null,
   className,
   label,
 }: CoucouBotProps) {
@@ -220,9 +230,35 @@ export function CoucouBot({
     engine.greet()
   }, [greetSeq])
 
-  // Global pointer gaze tracking via BotEngine's lookX / lookY
+  const cameraGazeActive = Boolean(gazeOverride?.present)
+
+  // Live Camera Eye-Contact Tracking — updates Coucou's 3D head yaw/pitch, subtle tilt, and eye scale
   useEffect(() => {
-    if (!trackGaze || mini) return
+    const engine = engineRef.current
+    if (!engine || mini) return
+    engine.cameraGazeActive = cameraGazeActive
+    if (!cameraGazeActive || !gazeOverride) {
+      engine.gazeTilt = 0
+      engine.gazeEyeScale = 1
+      return
+    }
+    engine.lookX = Math.max(-1, Math.min(1, gazeOverride.x))
+    engine.lookY = Math.max(-1, Math.min(1, gazeOverride.y))
+    engine.gazeTilt = Math.max(-0.16, Math.min(0.16, gazeOverride.headTilt ?? gazeOverride.x * 0.095))
+    engine.gazeEyeScale = Math.max(0.96, Math.min(1.1, gazeOverride.eyeScale ?? 1.03))
+  }, [
+    cameraGazeActive,
+    gazeOverride,
+    gazeOverride?.x,
+    gazeOverride?.y,
+    gazeOverride?.headTilt,
+    gazeOverride?.eyeScale,
+    mini,
+  ])
+
+  // Global pointer gaze tracking via BotEngine's lookX / lookY (fallback when camera gaze is inactive)
+  useEffect(() => {
+    if (!trackGaze || mini || cameraGazeActive) return
     const onPointerMove = (e: PointerEvent) => {
       const canvas = canvasRef.current
       const engine = engineRef.current
@@ -239,7 +275,7 @@ export function CoucouBot({
 
     window.addEventListener('pointermove', onPointerMove, { passive: true })
     return () => window.removeEventListener('pointermove', onPointerMove)
-  }, [trackGaze, mini])
+  }, [trackGaze, mini, cameraGazeActive])
 
   const handleClick = () => {
     if (!interactive) return
@@ -271,6 +307,7 @@ export function CoucouBot({
       data-mochi-expression={expression}
       data-coucou-state={resolvedState}
       data-mochi-archetype={archetype}
+      data-gaze-target={cameraGazeActive ? (gazeOverride?.target ?? 'face') : 'pointer'}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       className={cn(

@@ -33,6 +33,11 @@ import {
   type CaptionAnimationStyle,
 } from '@/lib/agent/caption-animation'
 import {
+  persistVisualizerStyle,
+  readSavedVisualizerStyle,
+  type VoiceVisualizerStyle,
+} from '@/lib/agent/voice-visualizer'
+import {
   persistMobileVoiceFirst,
   readSavedMobileVoiceFirst,
 } from '@/lib/agent/responsive-layout'
@@ -265,6 +270,8 @@ interface EvaControlState {
   setCaptionsEnabled: (enabled: boolean) => void
   captionAnimationStyle: CaptionAnimationStyle
   setCaptionAnimationStyle: (style: CaptionAnimationStyle) => void
+  voiceVisualizerStyle: VoiceVisualizerStyle
+  setVoiceVisualizerStyle: (style: VoiceVisualizerStyle) => void
   previewHandAction: HandTrackingAction | null
   setPreviewHandAction: (action: HandTrackingAction | null) => void
 }
@@ -1110,5 +1117,10 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
   setCaptionAnimationStyle: (style) => {
     persistCaptionStyle(style)
     set({ captionAnimationStyle: style })
+  },
+  voiceVisualizerStyle: readSavedVisualizerStyle(),
+  setVoiceVisualizerStyle: (style) => {
+    persistVisualizerStyle(style)
+    set({ voiceVisualizerStyle: style })
   },
 }))

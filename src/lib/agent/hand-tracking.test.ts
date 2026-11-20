@@ -49,6 +49,14 @@ test('deriveLiveHandTracking prioritizes preview, voice tool, self-heal, browser
   assert.equal(voiceTool.action, 'browser_act')
   assert.equal(voiceTool.isPreview, false)
 
+  const voiceToolObj = deriveLiveHandTracking({
+    activeVoiceTool: { tool: 'browser_open', args: { url: 'https://example.com' } },
+  })
+  assert.equal(voiceToolObj.active, true)
+  assert.equal(voiceToolObj.action, 'browser_act')
+  assert.equal(voiceToolObj.toolName, 'browser_open')
+  assert.equal(voiceToolObj.targetLabel, 'browser_open')
+
   const selfHeal = deriveLiveHandTracking({ selfHealBusy: true, selfHealStage: 'self_heal_patch' })
   assert.equal(selfHeal.active, true)
   assert.equal(selfHeal.action, 'file_write')

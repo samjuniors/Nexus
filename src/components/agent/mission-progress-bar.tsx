@@ -105,12 +105,18 @@ export function MissionProgressBar({
 
     // Idle baseline mode (no subtasks yet)
     if (!snapshot.hasMission || snapshot.subtasks.length === 0) {
+      trackLayer.selectAll('rect.rail-progress').remove()
       segLayer.selectAll('*').remove()
       nodeLayer.selectAll('*').remove()
       return
     }
 
     const subtasks = snapshot.subtasks
+
+    // Reference d3.transition to prevent bundler tree-shaking from dropping Selection.prototype.transition,
+    // and guard defensively in case a runtime strips the prototype augmentation.
+    const hasD3Transition =
+      typeof d3.transition === 'function' && typeof svg.transition === 'function'
 
     // 2. D3 scaleBand for sub-task segments
     const xBand = d3
@@ -124,7 +130,7 @@ export function MissionProgressBar({
 
     // Subtle overall linear progress underlay for smooth continuity
     const xLinear = d3.scaleLinear().domain([0, 100]).range([0, width])
-    trackLayer
+    const railProgress = trackLayer
       .selectAll<SVGRectElement, number>('rect.rail-progress')
       .data([snapshot.percent])
       .join('rect')
@@ -135,9 +141,13 @@ export function MissionProgressBar({
       .attr('rx', 4)
       .attr('fill', snapshot.phase === 'error' ? '#ef4444' : '#10b981')
       .attr('fill-opacity', 0.14)
-      .transition()
-      .duration(260)
-      .attr('width', (d) => xLinear(d))
+      .style('transition', 'width 260ms ease, fill 220ms ease')
+
+    if (hasD3Transition && typeof railProgress.transition === 'function') {
+      railProgress.transition().duration(260).attr('width', (d) => xLinear(d))
+    } else {
+      railProgress.attr('width', (d) => xLinear(d))
+    }
 
     // 3. Individual D3 sub-task completion segments
     segLayer
@@ -152,28 +162,39 @@ export function MissionProgressBar({
             .attr('height', trackH)
             .attr('rx', 3.5)
             .attr('x', (d) => xBand(d.id) ?? 0)
-            .attr('width', 0)
+            .attr('width', hasD3Transition ? 0 : segW)
             .attr('fill', (d) => STATUS_FILL[d.status])
             .attr('fill-opacity', (d) => (d.status === 'pending' ? 0.22 : 0.92))
             .style('cursor', 'pointer')
-            .call((sel) =>
-              sel
-                .transition()
-                .duration(280)
-                .attr('width', segW)
-            ),
+            .style('transition', 'width 260ms ease, x 260ms ease, fill 220ms ease, fill-opacity 220ms ease')
+            .call((sel) => {
+              if (hasD3Transition && typeof sel.transition === 'function') {
+                sel.transition().duration(280).attr('width', segW)
+              } else {
+                sel.attr('width', segW)
+              }
+            }),
         (update) =>
           update
             .style('cursor', 'pointer')
-            .call((sel) =>
-              sel
-                .transition()
-                .duration(260)
-                .attr('x', (d) => xBand(d.id) ?? 0)
-                .attr('width', segW)
-                .attr('fill', (d) => STATUS_FILL[d.status])
-                .attr('fill-opacity', (d) => (d.status === 'pending' ? 0.22 : 0.92))
-            ),
+            .style('transition', 'width 260ms ease, x 260ms ease, fill 220ms ease, fill-opacity 220ms ease')
+            .call((sel) => {
+              if (hasD3Transition && typeof sel.transition === 'function') {
+                sel
+                  .transition()
+                  .duration(260)
+                  .attr('x', (d) => xBand(d.id) ?? 0)
+                  .attr('width', segW)
+                  .attr('fill', (d) => STATUS_FILL[d.status])
+                  .attr('fill-opacity', (d) => (d.status === 'pending' ? 0.22 : 0.92))
+              } else {
+                sel
+                  .attr('x', (d) => xBand(d.id) ?? 0)
+                  .attr('width', segW)
+                  .attr('fill', (d) => STATUS_FILL[d.status])
+                  .attr('fill-opacity', (d) => (d.status === 'pending' ? 0.22 : 0.92))
+              }
+            }),
         (exit) => exit.remove()
       )
       .on('mouseenter', (_event, d) => {
@@ -212,7 +233,10 @@ export function MissionProgressBar({
       aria-label="Mission Progress status bar"
       data-mission-progress-bar="1"
       data-mission-phase={snapshot.phase}
-      className="relative border-b border-border/70 bg-background/85 px-4 py-2 backdrop-blur-sm md:px-6"
+      className={cn(
+        'relative border-b border-border/70 bg-background/85 px-4 py-2 backdrop-blur-sm md:px-6',
+        !snapshot.hasMission && 'hidden lg:block'
+      )}
     >
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
         {/* Left: Status & Mission label */}

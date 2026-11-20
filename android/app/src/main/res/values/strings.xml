@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Nexus Eva</string>
+    <string name="server_picker_title">Connect to Nexus Eva</string>
+    <string name="server_picker_subtitle">Enter your Cloud URL, local Wi-Fi LAN IP, or USB ADB address.</string>
+    <string name="server_url_hint">https://your-eva-server.run.app or http://192.168.1.50:3000</string>
+    <string name="btn_connect">Connect</string>
+    <string name="btn_test_connection">Test Connection</string>
+    <string name="btn_retry">Retry</string>
+    <string name="btn_switch_server">Switch Server</string>
+    <string name="voice_channel_name">Eva Live Voice</string>
+    <string name="voice_channel_desc">Keeps Eva hands-free voice and wake ear active while running in the background.</string>
+    <string name="voice_notification_title">Nexus Eva · Hands-Free Active</string>
+    <string name="voice_notification_armed">Listening for "Hey Eva" · Persistent connection active</string>
+    <string name="voice_notification_listening">Eva is listening live…</string>
+    <string name="voice_notification_stop">Stop Voice</string>
+    <string name="press_back_again">Press back again to exit Nexus Eva</string>
+    <string name="offline_title">Unable to reach Nexus Eva</string>
+    <string name="offline_subtitle">Check your Wi-Fi or server URL and try again.</string>
+</resources>

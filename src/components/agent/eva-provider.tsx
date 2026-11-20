@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useApp } from '@/lib/agent/store'
 import { useLiveVoice } from '@/lib/agent/use-live-voice'
 import { useWakeWord } from '@/lib/agent/use-wake-word'
@@ -33,6 +33,7 @@ interface EvaContextValue {
   emotion: EvaEmotionState
   senses: EvaSensesState
   handTracking: HandTrackingState
+  cameraGreetSeq: number
   toggleSense: (sense: EvaSenseId) => void
   onToggleSleepMode: () => void
   onArmEar: () => void
@@ -61,6 +62,7 @@ export function EvaProvider({ children }: { children: React.ReactNode }) {
   const splitMode = useEvaControl((s) => s.splitMode)
   const openSplit = useEvaControl((s) => s.openSplit)
   const closeSplit = useEvaControl((s) => s.closeSplit)
+  const setTransientMood = useEvaControl((s) => s.setTransientMood)
   const activeConvIdRef = useRef(activeConvId)
   activeConvIdRef.current = activeConvId
 
@@ -69,6 +71,8 @@ export function EvaProvider({ children }: { children: React.ReactNode }) {
   const pendingWakeAckRef = useRef(false)
   const prevVoiceActiveRef = useRef(false)
   const layoutBeforeVoiceRef = useRef<LayoutMode>('standard')
+  const lastGestureTsRef = useRef<number>(0)
+  const [cameraGreetSeq, setCameraGreetSeq] = useState(0)
 
   const vision = useVisionEyes()
 
@@ -130,6 +134,8 @@ export function EvaProvider({ children }: { children: React.ReactNode }) {
           description: clean ? `Forwarding: "${clean}"` : 'Listening live — go ahead!',
         })
         void currentVoice.startVoice(activeConvIdRef.current)
+      } else if (currentVoice.isActive && currentVoice.muted) {
+        currentVoice.toggleMute()
       }
     },
   })
@@ -150,6 +156,58 @@ export function EvaProvider({ children }: { children: React.ReactNode }) {
       voice.sendWakeAck()
     }
   }, [voice.status, voice.sendLiveText, voice.sendWakeAck])
+
+  // Stream periodic JPEG frames into Gemini Live while connected and Camera/Screen Eye is on
+  // so Eva genuinely sees the Founder or screen live while talking.
+  useEffect(() => {
+    if (voice.status !== 'connected' || !vision.anyActive) return
+    let cancelled = false
+    let inflight = false
+
+    const pushFrame = async () => {
+      if (cancelled || inflight) return
+      inflight = true
+      try {
+        const frame = await vision.captureFrame(vision.cameraActive ? 'camera' : 'screen')
+        if (!cancelled && frame?.base64) {
+          voiceRef.current.sendLiveVideoFrame(frame.base64, frame.mimeType)
+        }
+      } finally {
+        inflight = false
+      }
+    }
+
+    void pushFrame()
+    const id = window.setInterval(() => {
+      void pushFrame()
+    }, 1400)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [voice.status, vision.anyActive, vision.cameraActive, vision.captureFrame])
+
+  // React expressively when Founder waves, nods, or leans in toward the camera
+  useEffect(() => {
+    const gesture = vision.lastGesture
+    if (!gesture || gesture.ts === lastGestureTsRef.current) return
+    lastGestureTsRef.current = gesture.ts
+
+    if (gesture.kind === 'wave') {
+      setCameraGreetSeq((n) => n + 1)
+      setTransientMood('happy', 'Hey there — I see you waving!')
+    } else if (gesture.kind === 'nod') {
+      setTransientMood('happy', 'Got it — saw you nod.')
+    } else if (gesture.kind === 'lean_in') {
+      setTransientMood('curious', 'Looking right at you.')
+    }
+
+    const clearTimer = window.setTimeout(() => {
+      setTransientMood(null, null)
+    }, 2800)
+    return () => window.clearTimeout(clearTimer)
+  }, [vision.lastGesture, setTransientMood])
 
   const onArmEar = useCallback(() => {
     wake.armNow()
@@ -309,7 +367,7 @@ export function EvaProvider({ children }: { children: React.ReactNode }) {
     () =>
       deriveLiveHandTracking({
         previewAction: previewHandAction,
-        activeVoiceTool: voice.activeTool,
+        activeVoiceTool: voice.activeTool?.tool ?? null,
         isRunning: Boolean(runningRunId),
         latestRunEvent,
         selfHealBusy,
@@ -334,7 +392,7 @@ export function EvaProvider({ children }: { children: React.ReactNode }) {
         screenActive: vision.screenActive,
         browserSplitActive: splitOpen && splitMode === 'browser',
         sleepMode: wake.sleepMode,
-        wakeListening: wake.status === 'listening',
+        wakeListening: wake.status === 'armed',
         voiceActive: voice.isActive,
         voiceMuted: voice.muted,
         isSpeaking: voice.isSpeaking,
@@ -342,7 +400,7 @@ export function EvaProvider({ children }: { children: React.ReactNode }) {
         activeToolName:
           handTracking.active && handTracking.targetLabel
             ? `${handTracking.label} (${handTracking.targetLabel})`
-            : voice.activeTool,
+            : voice.activeTool?.tool ?? null,
         splitMode,
       }),
     [
@@ -408,6 +466,7 @@ export function EvaProvider({ children }: { children: React.ReactNode }) {
         emotion,
         senses,
         handTracking,
+        cameraGreetSeq,
         toggleSense,
         onToggleSleepMode,
         onArmEar,

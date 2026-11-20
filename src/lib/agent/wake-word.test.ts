@@ -59,9 +59,41 @@ test('matchWakeWordCandidates checks multiple ASR alternatives and rolling split
   assert.equal(noMatch.matched, false)
 })
 
+test('matchWakeWord recognizes direct Eva calls under the default Hey Eva profile', () => {
+  const bare = matchWakeWord('Eva')
+  assert.equal(bare.matched, true)
+  assert.equal(bare.trailingCommand, '')
+
+  const question = matchWakeWord('Eva?')
+  assert.equal(question.matched, true)
+  assert.equal(question.trailingCommand, '')
+
+  const withCmd = matchWakeWord('Eva, check my tasks')
+  assert.equal(withCmd.matched, true)
+  assert.equal(withCmd.trailingCommand, 'check my tasks')
+
+  const phonetic = matchWakeWord('Ava open the live browser')
+  assert.equal(phonetic.matched, true)
+  assert.equal(phonetic.trailingCommand, 'open the live browser')
+
+  const tailCall = matchWakeWord('Excuse me Eva')
+  assert.equal(tailCall.matched, true)
+  assert.equal(tailCall.trailingCommand, '')
+
+  const evayDirect = matchWakeWord('Evay')
+  assert.equal(evayDirect.matched, true)
+  assert.equal(evayDirect.trailingCommand, '')
+
+  const heyEvay = matchWakeWord('Hey Evay open live mode')
+  assert.equal(heyEvay.matched, true)
+  assert.equal(heyEvay.trailingCommand, 'open live mode')
+})
+
 test('matchWakeWord avoids substring false positives and supports custom phrases', () => {
   assert.equal(matchWakeWord('whatever happened yesterday').matched, false)
   assert.equal(matchWakeWord('medieval history summary').matched, false)
+  assert.equal(matchWakeWord('evaluate the performance metrics').matched, false)
+  assert.equal(matchWakeWord('take the elevator upstairs').matched, false)
   assert.equal(matchWakeWord('   ').matched, false)
 
   const custom = matchWakeWord('Hey Jarvis run diagnostics', 'Hey Jarvis')

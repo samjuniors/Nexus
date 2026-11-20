@@ -1,15 +1,15 @@
 'use client'
 
-import { AnimatePresence, motion } from 'motion/react'
+import { useState } from 'react'
 import {
   Bot,
   Brain,
   CalendarClock,
+  Download,
   Focus,
   FolderOpen,
   GitBranch,
   Globe,
-  Hexagon,
   Laptop,
   Mail,
   Network,
@@ -23,11 +23,17 @@ import {
   Store,
   Users,
   Wrench,
-  X,
 } from 'lucide-react'
+import { MaterialBottomSheet } from '@/components/agent/material-bottom-sheet'
 import { useApp } from '@/lib/agent/store'
 import { useEvaControl, type SplitMode } from '@/lib/agent/eva-control-store'
 import type { Tab } from '@/lib/agent/client'
+import {
+  detectPlatformInfo,
+  openAndroidServerPicker,
+  triggerHaptic,
+} from '@/lib/platform/android-bridge'
+import { usePWAInstall } from '@/lib/platform/use-pwa-install'
 import { cn } from '@/lib/utils'
 
 const WORKSPACE_DESTINATIONS: { tab: Tab; label: string; icon: typeof Bot }[] = [
@@ -45,19 +51,19 @@ const WORKSPACE_DESTINATIONS: { tab: Tab; label: string; icon: typeof Bot }[] = 
 ]
 
 const TAKEOVER_PANELS: { mode: SplitMode; label: string; title: string; icon: typeof Globe }[] = [
-  { mode: 'mobile', label: 'Android Takeover', title: 'Android & Mobile Control', icon: Smartphone },
+  { mode: 'mobile', label: 'Android Control', title: 'Android & Mobile Control', icon: Smartphone },
   { mode: 'browser', label: 'Live Browser', title: 'Live Browser', icon: Globe },
-  { mode: 'devices', label: 'Connected Devices', title: 'Connected Computers & Phones', icon: Laptop },
-  { mode: 'self_heal', label: 'Self-Heal Studio', title: 'Self-Heal Studio', icon: ShieldCheck },
-  { mode: 'reasoning', label: 'Reasoning Chain', title: 'Reasoning Chain', icon: GitBranch },
-  { mode: 'permissions', label: 'Permissions Vault', title: 'Permissions Vault', icon: Shield },
+  { mode: 'devices', label: 'Devices', title: 'Connected Computers & Phones', icon: Laptop },
+  { mode: 'self_heal', label: 'Self-Heal', title: 'Self-Heal Studio', icon: ShieldCheck },
+  { mode: 'reasoning', label: 'Reasoning', title: 'Reasoning Chain', icon: GitBranch },
+  { mode: 'permissions', label: 'Permissions', title: 'Permissions Vault', icon: Shield },
   { mode: 'identity', label: 'Eva Inbox', title: 'Eva Email & Identity', icon: Mail },
 ]
 
 /**
- * Minimalistic touch-ergonomic slide-over navigation drawer for Mobile & Tablet (< 1024px).
- * Keeps the primary Voice Agent and Chat screens serene and clutter-free while retaining
- * 1-tap access to every OS view, Android Takeover, Live Browser, GBrain, and Settings.
+ * Material 3 Swipeable More / Workspace Bottom Sheet for Android, Mobile & Tablet (< lg).
+ * Replaces the rigid side drawer with ergonomic thumb-zone cards, 48dp+ touch targets,
+ * haptic feedback, native Android Server Picker shortcut, and PWA Install CTA.
  */
 export function MobileNavDrawer() {
   const { activeTab, setTab, brain } = useApp()
@@ -70,15 +76,21 @@ export function MobileNavDrawer() {
   const setSettingsOpen = useEvaControl((s) => s.setSettingsOpen)
   const setGbrainGraphOpen = useEvaControl((s) => s.setGbrainGraphOpen)
 
+  const { canInstall, isInstalled, isIOS, promptInstall } = usePWAInstall()
+  const [iosGuideOpen, setIosGuideOpen] = useState(false)
+
+  const platform = detectPlatformInfo()
   const brainConnected = brain?.connected ?? true
 
   const goVoiceAgent = () => {
+    triggerHaptic('light')
     closeSplit()
     setLayoutMode('focus')
     setOpen(false)
   }
 
   const goTab = (tab: Tab) => {
+    triggerHaptic('selection')
     closeSplit()
     setLayoutMode('standard')
     setTab(tab)
@@ -86,159 +98,184 @@ export function MobileNavDrawer() {
   }
 
   const goPanel = (mode: SplitMode, title: string) => {
+    triggerHaptic('selection')
     openSplit(mode, title)
     setOpen(false)
   }
 
-  return (
-    <AnimatePresence>
-      {open && (
-        <div
-          data-mobile-nav-drawer="1"
-          className="fixed inset-0 z-50 flex lg:hidden"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Nexus workspace menu"
-        >
-          {/* Scrim */}
-          <motion.button
-            type="button"
-            aria-label="Close navigation menu"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.16 }}
-            onClick={() => setOpen(false)}
-            className="fixed inset-0 bg-black/55 backdrop-blur-[2px]"
-          />
+  const handleInstallClick = async () => {
+    triggerHaptic('light')
+    if (canInstall) {
+      await promptInstall()
+      setOpen(false)
+    } else if (isIOS) {
+      setIosGuideOpen((v) => !v)
+    }
+  }
 
-          {/* Slide-over drawer */}
-          <motion.aside
-            initial={{ x: '-100%' }}
-            animate={{ x: 0 }}
-            exit={{ x: '-100%' }}
-            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-            className="relative z-10 flex h-full w-[296px] max-w-[84vw] flex-col border-r border-border bg-sidebar text-foreground shadow-2xl"
+  return (
+    <MaterialBottomSheet
+      open={open}
+      onOpenChange={setOpen}
+      title="Nexus Eva"
+      subtitle={`${platform.label} · Workspace & Device Tools`}
+      dataAttr="mobile-nav"
+    >
+      <div data-mobile-nav-drawer="1" className="space-y-5 px-4 pt-3 pb-2">
+        {/* Primary Thumb-Zone Quick Actions */}
+        <div className="grid grid-cols-2 gap-2.5">
+          <button
+            type="button"
+            onClick={goVoiceAgent}
+            className={cn(
+              'flex min-h-[52px] items-center gap-3 rounded-2xl border px-3.5 text-left text-[13.5px] font-medium transition-colors active:scale-[0.98]',
+              layoutMode === 'focus'
+                ? 'border-sky-500/45 bg-sky-500/14 text-sky-600 dark:text-sky-400'
+                : 'border-border/75 bg-background/65 text-foreground hover:bg-muted'
+            )}
           >
-            {/* Header */}
-            <div className="flex h-14 shrink-0 items-center justify-between border-b border-border/70 px-4">
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-background">
-                  <Hexagon className="h-4 w-4 text-foreground" />
+            <Focus className="h-5 w-5 shrink-0" />
+            <span className="truncate">Voice Agent</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              triggerHaptic('selection')
+              setOpen(false)
+              setSettingsOpen(true)
+            }}
+            className="flex min-h-[52px] items-center gap-3 rounded-2xl border border-border/75 bg-background/65 px-3.5 text-left text-[13.5px] font-medium text-foreground transition-colors hover:bg-muted active:scale-[0.98]"
+          >
+            <Settings className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <span className="truncate">Settings</span>
+          </button>
+        </div>
+
+        {/* Native Android APK Server Picker OR Web PWA Install CTA */}
+        {platform.isAndroidApk ? (
+          <button
+            type="button"
+            data-android-server-picker-btn="1"
+            onClick={() => {
+              setOpen(false)
+              openAndroidServerPicker()
+            }}
+            className="flex min-h-[52px] w-full items-center justify-between gap-3 rounded-2xl border border-sky-500/35 bg-sky-500/10 px-4 text-left transition-colors hover:bg-sky-500/15 active:scale-[0.99]"
+          >
+            <div className="flex min-w-0 items-center gap-3">
+              <Server className="h-5 w-5 shrink-0 text-sky-500" />
+              <div className="min-w-0">
+                <div className="text-[13.5px] font-semibold text-foreground">Switch Server URL</div>
+                <div className="truncate text-[11.5px] text-muted-foreground">
+                  {platform.serverUrl || 'Cloud, Wi-Fi LAN, or USB ADB'}
                 </div>
-                <span className="text-sm font-semibold tracking-tight">Nexus</span>
               </div>
+            </div>
+            <span className="shrink-0 rounded-full bg-sky-500/18 px-2.5 py-1 text-[11px] font-medium text-sky-500">
+              APK
+            </span>
+          </button>
+        ) : (
+          !isInstalled &&
+          (canInstall || isIOS) && (
+            <div className="space-y-2">
               <button
                 type="button"
-                onClick={() => setOpen(false)}
-                aria-label="Close menu"
-                className="flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+                data-pwa-install-btn="1"
+                onClick={() => void handleInstallClick()}
+                className="flex min-h-[52px] w-full items-center justify-between gap-3 rounded-2xl border border-sky-500/35 bg-sky-500/10 px-4 text-left transition-colors hover:bg-sky-500/15 active:scale-[0.99]"
               >
-                <X className="h-4 w-4" />
+                <div className="flex min-w-0 items-center gap-3">
+                  <Download className="h-5 w-5 shrink-0 text-sky-500" />
+                  <div className="min-w-0">
+                    <div className="text-[13.5px] font-semibold text-foreground">Install Nexus Eva App</div>
+                    <div className="truncate text-[11.5px] text-muted-foreground">
+                      Add to home screen for full-screen mobile experience
+                    </div>
+                  </div>
+                </div>
               </button>
+              {iosGuideOpen && (
+                <p className="rounded-xl border border-border/70 bg-muted/40 px-3.5 py-2.5 text-[12px] text-muted-foreground">
+                  In Safari, tap the <strong>Share</strong> button and choose{' '}
+                  <strong>Add to Home Screen</strong>.
+                </p>
+              )}
             </div>
+          )
+        )}
 
-            {/* Scrollable navigation groups */}
-            <div className="nice-scroll flex-1 space-y-5 overflow-y-auto px-3 py-4">
-              {/* Primary Voice Mode shortcut */}
-              <div className="space-y-1">
-                <button
-                  type="button"
-                  onClick={goVoiceAgent}
-                  className={cn(
-                    'flex min-h-[44px] w-full items-center gap-3 rounded-xl border px-3 text-sm font-medium transition-colors',
-                    layoutMode === 'focus'
-                      ? 'border-sky-500/40 bg-sky-500/12 text-sky-600 dark:text-sky-400'
-                      : 'border-border/70 bg-background/60 text-foreground hover:bg-muted'
-                  )}
-                >
-                  <Focus className="h-4 w-4 shrink-0" />
-                  <span>Eva Voice Agent</span>
-                </button>
-              </div>
-
-              {/* Device & Browser Takeover */}
-              <div>
-                <div className="mb-1.5 px-2.5 text-[11px] font-medium text-muted-foreground">
-                  Takeover &amp; Live Tools
-                </div>
-                <div className="space-y-0.5">
-                  {TAKEOVER_PANELS.map(({ mode, label, title, icon: Icon }) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => goPanel(mode, title)}
-                      className="flex min-h-[44px] w-full items-center gap-3 rounded-xl px-3 text-[13.5px] text-foreground/90 transition-colors hover:bg-muted"
-                    >
-                      <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      <span className="truncate">{label}</span>
-                    </button>
-                  ))}
-                  {brainConnected && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setOpen(false)
-                        setGbrainGraphOpen(true)
-                      }}
-                      className="flex min-h-[44px] w-full items-center gap-3 rounded-xl px-3 text-[13.5px] text-foreground/90 transition-colors hover:bg-muted"
-                    >
-                      <Network className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      <span>GBrain Graph</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Workspace Views */}
-              <div>
-                <div className="mb-1.5 px-2.5 text-[11px] font-medium text-muted-foreground">
-                  Workspace
-                </div>
-                <div className="space-y-0.5">
-                  {WORKSPACE_DESTINATIONS.filter(
-                    (item) => brainConnected || (item.tab !== 'brain' && item.tab !== 'memory')
-                  ).map(({ tab, label, icon: Icon }) => {
-                    const active = layoutMode === 'standard' && activeTab === tab
-                    return (
-                      <button
-                        key={tab}
-                        type="button"
-                        onClick={() => goTab(tab)}
-                        aria-current={active ? 'page' : undefined}
-                        className={cn(
-                          'flex min-h-[44px] w-full items-center gap-3 rounded-xl px-3 text-[13.5px] transition-colors',
-                          active
-                            ? 'bg-primary/10 font-medium text-foreground'
-                            : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                        )}
-                      >
-                        <Icon className={cn('h-4 w-4 shrink-0', active && 'text-primary')} />
-                        <span className="truncate">{label}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            </div>
-
-            {/* Settings Footer */}
-            <div className="border-t border-border/70 p-3">
+        {/* Takeover & Live Tools — 2-column Material 3 cards */}
+        <div>
+          <div className="mb-2 px-1 text-[11.5px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Takeover &amp; Live Tools
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {TAKEOVER_PANELS.map(({ mode, label, title, icon: Icon }) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => goPanel(mode, title)}
+                className="flex min-h-[48px] items-center gap-2.5 rounded-2xl border border-border/65 bg-background/55 px-3 text-left text-[13px] font-medium text-foreground/95 transition-colors hover:bg-muted active:scale-[0.98]"
+              >
+                <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="truncate">{label}</span>
+              </button>
+            ))}
+            {brainConnected && (
               <button
                 type="button"
                 onClick={() => {
+                  triggerHaptic('selection')
                   setOpen(false)
-                  setSettingsOpen(true)
+                  setGbrainGraphOpen(true)
                 }}
-                className="flex min-h-[44px] w-full items-center gap-3 rounded-xl border border-border/80 bg-background/60 px-3 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+                className="flex min-h-[48px] items-center gap-2.5 rounded-2xl border border-border/65 bg-background/55 px-3 text-left text-[13px] font-medium text-foreground/95 transition-colors hover:bg-muted active:scale-[0.98]"
               >
-                <Settings className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span>Settings</span>
+                <Network className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="truncate">GBrain Graph</span>
               </button>
-            </div>
-          </motion.aside>
+            )}
+          </div>
         </div>
-      )}
-    </AnimatePresence>
+
+        {/* Workspace Views — Material 3 list rows */}
+        <div>
+          <div className="mb-2 px-1 text-[11.5px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Workspace
+          </div>
+          <div className="divide-y divide-border/50 overflow-hidden rounded-2xl border border-border/70 bg-background/55">
+            {WORKSPACE_DESTINATIONS.filter(
+              (item) => brainConnected || (item.tab !== 'brain' && item.tab !== 'memory')
+            ).map(({ tab, label, icon: Icon }) => {
+              const active = layoutMode === 'standard' && activeTab === tab
+              return (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => goTab(tab)}
+                  aria-current={active ? 'page' : undefined}
+                  className={cn(
+                    'flex min-h-[50px] w-full items-center gap-3.5 px-4 text-left text-[14px] transition-colors active:bg-muted/80',
+                    active
+                      ? 'bg-sky-500/12 font-semibold text-foreground'
+                      : 'text-foreground/85 hover:bg-muted/60'
+                  )}
+                >
+                  <Icon
+                    className={cn(
+                      'h-[18px] w-[18px] shrink-0',
+                      active ? 'text-sky-500' : 'text-muted-foreground'
+                    )}
+                  />
+                  <span className="truncate">{label}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    </MaterialBottomSheet>
   )
 }

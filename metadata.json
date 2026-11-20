@@ -1,7 +1,7 @@
 {
   "name": "Nexus Agent",
   "description": "Autonomous AI Agent OS that plans missions, loads skills, uses tools, plugins, MCP servers and subagents with graph memory.",
-  "requestFramePermissions": ["microphone"],
+  "requestFramePermissions": ["microphone", "camera"],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]

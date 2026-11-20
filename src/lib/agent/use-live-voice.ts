@@ -99,6 +99,8 @@ export function useLiveVoice(options?: {
   const [activeTool, setActiveTool] = useState<ActiveVoiceTool | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
 
+  const statusRef = useRef<VoiceStatus>('idle')
+  statusRef.current = status
   const wsRef = useRef<WebSocket | null>(null)
   const inputCtxRef = useRef<AudioContext | null>(null)
   const outputCtxRef = useRef<AudioContext | null>(null)
@@ -111,6 +113,13 @@ export function useLiveVoice(options?: {
   const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
   const closingIntentRef = useRef(false)
   const lastLevelTickRef = useRef(0)
+  const smoothedMicRef = useRef(0)
+  const lastEmittedMicRef = useRef(0)
+  const loudFramesRef = useRef(0)
+  const isSpeakingRef = useRef(false)
+  isSpeakingRef.current = isSpeaking
+  const isThinkingRef = useRef(false)
+  isThinkingRef.current = isThinking
   const speechIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hasInputTranscriptRef = useRef(false)
   const onErrorRef = useRef(options?.onError)
@@ -130,10 +139,12 @@ export function useLiveVoice(options?: {
       if (hasTranscript) hasInputTranscriptRef.current = true
       setIsUserSpeaking(true)
       setIsThinking(false)
+      isThinkingRef.current = false
       clearSpeechTimer()
       speechIdleTimerRef.current = setTimeout(() => {
         setIsUserSpeaking(false)
-        if (hasInputTranscriptRef.current) {
+        if (hasInputTranscriptRef.current && !isSpeakingRef.current) {
+          isThinkingRef.current = true
           setIsThinking(true)
         }
       }, 950)
@@ -206,6 +217,11 @@ export function useLiveVoice(options?: {
       } catch { /* ignore */ }
     }
 
+    smoothedMicRef.current = 0
+    lastEmittedMicRef.current = 0
+    loudFramesRef.current = 0
+    isSpeakingRef.current = false
+    isThinkingRef.current = false
     setMicLevel(0)
     setActiveTool(null)
     setLiveInputTranscript('')
@@ -280,7 +296,8 @@ export function useLiveVoice(options?: {
   }, [])
 
   const startVoice = useCallback(async (overrideConvId?: string | null, overrideVoice?: VoiceName) => {
-    if (status === 'connecting' || status === 'connected') return
+    if (statusRef.current === 'connecting' || statusRef.current === 'connected') return
+    statusRef.current = 'connecting'
     closingIntentRef.current = false
     hasInputTranscriptRef.current = false
     setLastError(null)
@@ -292,6 +309,14 @@ export function useLiveVoice(options?: {
 
     const activeConvId = overrideConvId !== undefined ? overrideConvId : useApp.getState().activeConvId
     const chosenVoice = overrideVoice ?? voiceName
+
+    const tryResumeAudioCtx = async (ctx: AudioContext) => {
+      if (ctx.state !== 'suspended') return
+      await Promise.race([
+        ctx.resume().catch(() => {}),
+        new Promise<void>((resolve) => setTimeout(resolve, 250)),
+      ])
+    }
 
     try {
       if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
@@ -313,8 +338,9 @@ export function useLiveVoice(options?: {
       const outputCtx = new AudioCtx({ sampleRate: 24000 })
       inputCtxRef.current = inputCtx
       outputCtxRef.current = outputCtx
-      if (inputCtx.state === 'suspended') await inputCtx.resume()
-      if (outputCtx.state === 'suspended') await outputCtx.resume()
+      // Never block hands-free wake startup forever if browser suspends AudioContext outside a click gesture
+      await tryResumeAudioCtx(inputCtx)
+      await tryResumeAudioCtx(outputCtx)
 
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const wsUrl = `${proto}//${window.location.host}/api/live?conversationId=${encodeURIComponent(activeConvId ?? '')}&voice=${encodeURIComponent(chosenVoice)}`
@@ -347,7 +373,9 @@ export function useLiveVoice(options?: {
           clearSpeechTimer()
           hasInputTranscriptRef.current = false
           setIsUserSpeaking(false)
+          isThinkingRef.current = false
           setIsThinking(false)
+          setLiveInputTranscript('')
           setLiveOutputTranscript(msg.text ?? '')
           return
         }
@@ -356,6 +384,9 @@ export function useLiveVoice(options?: {
           clearSpeechTimer()
           hasInputTranscriptRef.current = false
           setIsUserSpeaking(false)
+          isSpeakingRef.current = true
+          isThinkingRef.current = false
+          setLiveInputTranscript('')
           enqueueAudio(msg.audio)
           return
         }
@@ -470,9 +501,14 @@ export function useLiveVoice(options?: {
           const inputData = audioEvent.inputBuffer.getChannelData(0)
           if (mutedRef.current) {
             const nowMs = performance.now()
-            if (nowMs - lastLevelTickRef.current > 80) {
+            if (nowMs - lastLevelTickRef.current > 110) {
               lastLevelTickRef.current = nowMs
-              setMicLevel(0)
+              smoothedMicRef.current = 0
+              loudFramesRef.current = 0
+              if (lastEmittedMicRef.current !== 0) {
+                lastEmittedMicRef.current = 0
+                setMicLevel(0)
+              }
               setIsUserSpeaking(false)
             }
             return
@@ -483,13 +519,33 @@ export function useLiveVoice(options?: {
             sumSq += inputData[i] * inputData[i]
           }
           const rms = Math.sqrt(sumSq / inputData.length)
-          const normalized = Math.min(1, rms * 5.5)
+          const normalized = Math.min(1, rms * 5.2)
           const nowMs = performance.now()
-          if (nowMs - lastLevelTickRef.current > 70) {
+          if (nowMs - lastLevelTickRef.current > 100) {
             lastLevelTickRef.current = nowMs
-            setMicLevel(normalized)
-            if (normalized > 0.09) {
-              bumpUserSpeech(false)
+            // EMA smooth + deadband quantization to prevent rapid React re-renders on mobile
+            const smoothed = smoothedMicRef.current * 0.6 + normalized * 0.4
+            smoothedMicRef.current = smoothed < 0.02 ? 0 : smoothed
+            const quantized = Math.round(smoothedMicRef.current * 25) / 25
+            if (Math.abs(quantized - lastEmittedMicRef.current) >= 0.04 || (quantized === 0 && lastEmittedMicRef.current !== 0)) {
+              lastEmittedMicRef.current = quantized
+              setMicLevel(quantized)
+            }
+
+            // Avoid speaker-bleed echo while Eva is speaking, and require sustained voice
+            // energy so mobile ambient noise never flickers Eva out of thinking/listening.
+            if (!isSpeakingRef.current) {
+              const onsetThreshold = isThinkingRef.current ? 0.34 : 0.16
+              if (normalized > onsetThreshold) {
+                loudFramesRef.current += 1
+                if (loudFramesRef.current >= 2) {
+                  bumpUserSpeech(false)
+                }
+              } else {
+                loudFramesRef.current = 0
+              }
+            } else {
+              loudFramesRef.current = 0
             }
           }
 
@@ -557,6 +613,16 @@ export function useLiveVoice(options?: {
     return true
   }, [clearSpeechTimer])
 
+  const sendLiveVideoFrame = useCallback(
+    (base64: string, mimeType = 'image/jpeg'): boolean => {
+      const ws = wsRef.current
+      if (!base64 || !ws || ws.readyState !== WebSocket.OPEN) return false
+      ws.send(JSON.stringify({ type: 'video', image: base64, mimeType }))
+      return true
+    },
+    []
+  )
+
   useEffect(() => {
     return () => {
       closingIntentRef.current = true
@@ -594,5 +660,6 @@ export function useLiveVoice(options?: {
     interruptAudio,
     sendLiveText,
     sendWakeAck,
+    sendLiveVideoFrame,
   }
 }

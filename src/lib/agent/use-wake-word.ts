@@ -15,6 +15,14 @@ import {
   shouldSuspendWakeWord,
 } from '@/lib/agent/wake-word'
 import type { VoiceStatus, WakeWordStatus } from '@/lib/agent/voice-state'
+import {
+  getNativeServiceState,
+  hasNativeWakeListener,
+  onAndroidServiceStateChange,
+  onAndroidWakeDetected,
+  startNativeWakeListener,
+  stopNativeWakeListener,
+} from '@/lib/platform/android-bridge'
 
 interface SpeechRecognitionAlternativeLike {
   transcript?: string
@@ -53,7 +61,7 @@ interface SpeechRecognitionInstance {
 }
 
 type SpeechRecognitionCtor = new () => SpeechRecognitionInstance
-export type WakeEngine = 'speech' | 'vad' | 'none'
+export type WakeEngine = 'speech' | 'vad' | 'native-android' | 'none'
 
 function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
   if (typeof window === 'undefined') return null
@@ -68,23 +76,45 @@ function hasMediaMicSupport(): boolean {
   return typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia)
 }
 
+/**
+ * Inside cross-origin preview iframes, mobile browsers, and Android WebViews,
+ * browser SpeechRecognition frequently fires `onstart` but silently drops speech or loops empty restarts.
+ * Acoustic VAD + `/api/wake` uses the same `getUserMedia` mic path as Live Voice and works reliably everywhere.
+ */
+function shouldPreferVadEngine(): boolean {
+  if (typeof window === 'undefined' || !hasMediaMicSupport()) return false
+  try {
+    if (window.self !== window.top) return true
+  } catch {
+    return true
+  }
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+  if (/Android|iPhone|iPad|iPod|Mobile/i.test(ua)) return true
+  if (Boolean((window as unknown as { NexusAndroid?: unknown }).NexusAndroid)) return true
+  return false
+}
+
 const STORAGE_KEY_SLEEP = 'nexus-eva-sleep-mode'
 const STORAGE_KEY_PHRASE = 'nexus-wake-word-phrase'
 
-// Acoustic VAD tuning constants
-const VAD_RMS_THRESHOLD = 0.017
-const VAD_SILENCE_MS = 560
-const VAD_MIN_SPEECH_MS = 260
-const VAD_MAX_BURST_MS = 2700
-const VAD_PREROLL_CHUNKS = 3
+// Acoustic VAD tuning constants — sensitive enough for crisp "Eva" / "Hey Eva" at desk distance
+const VAD_RMS_THRESHOLD = 0.01
+const VAD_SILENCE_MS = 420
+const VAD_MIN_SPEECH_MS = 140
+const VAD_MAX_BURST_MS = 2600
+const VAD_PREROLL_CHUNKS = 5
+
+// Heartbeat interval to recycle silently stalled Chromium SpeechRecognition sessions
+const SPEECH_STALL_RECYCLE_MS = 42_000
 
 /**
  * Dual-Engine Always-On Ear for Eva:
- * 1. Primary: Browser Web Speech API (`SpeechRecognition`) with multi-alternative & rolling-chunk matching.
- * 2. Automatic Fallback: Real-time Web Audio VAD + `/api/wake` Gemini audio wake detector
- *    (automatically engages if Web Speech API is missing, blocked in an iframe, or throws network/service errors).
+ * 1. Primary: Browser Web Speech API (`SpeechRecognition`) with multi-alternative, rolling-chunk matching,
+ *    stall detection, and rapid-restart loop fallback.
+ * 2. Automatic Fallback: Real-time Web Audio VAD + `/api/wake` Gemini (`gemini-3.5-transcribe`) wake detector
+ *    with suspended-AudioContext gesture resume and latest-burst queueing.
  *
- * Stays ALWAYS ON across all views and conditions until explicitly placed into Sleep Mode
+ * Stays ALWAYS ON across all views (including Text Workspace) until explicitly placed into Sleep Mode
  * (or temporarily suspended while Live Voice is connected so there is zero mic contention).
  */
 export function useWakeWord(options: {
@@ -105,6 +135,8 @@ export function useWakeWord(options: {
 
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null)
   const speechStartedRef = useRef(false)
+  const speechLastActivityAtRef = useRef(0)
+  const rapidEmptyEndsRef = useRef<number[]>([])
   const startWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const handoffTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -113,6 +145,7 @@ export function useWakeWord(options: {
   const hasUserGestureRef = useRef(false)
   const lastTriggerAtRef = useRef(0)
   const prevChunkRef = useRef('')
+  const prevVadChunkRef = useRef<{ text: string; ts: number } | null>(null)
 
   // Acoustic VAD refs
   const vadStreamRef = useRef<MediaStream | null>(null)
@@ -121,6 +154,7 @@ export function useWakeWord(options: {
   const vadProcRef = useRef<ScriptProcessorNode | null>(null)
   const vadGainRef = useRef<GainNode | null>(null)
   const vadInFlightRef = useRef(false)
+  const vadPendingBurstRef = useRef<{ chunks: Float32Array[]; sampleRate: number } | null>(null)
   const vadActiveRef = useRef(false)
 
   const onWakeRef = useRef(options.onWake)
@@ -183,6 +217,7 @@ export function useWakeWord(options: {
 
   const stopVad = useCallback(() => {
     vadActiveRef.current = false
+    vadPendingBurstRef.current = null
     try {
       vadProcRef.current?.disconnect()
     } catch {
@@ -212,6 +247,7 @@ export function useWakeWord(options: {
       vadStreamRef.current = null
     }
     if (vadCtxRef.current) {
+      vadCtxRef.current.onstatechange = null
       void vadCtxRef.current.close().catch(() => {})
       vadCtxRef.current = null
     }
@@ -270,6 +306,7 @@ export function useWakeWord(options: {
     setSleepMode(false)
     setError(null)
     backoffAttemptRef.current = 0
+    rapidEmptyEndsRef.current = []
     try {
       window.localStorage.setItem(STORAGE_KEY_SLEEP, '0')
     } catch {
@@ -293,7 +330,12 @@ export function useWakeWord(options: {
       }
     }
     setError(null)
-    forceVadRef.current = false
+    // If VAD AudioContext is already open but suspended, resume it directly inside the user gesture!
+    if (vadCtxRef.current && vadCtxRef.current.state === 'suspended') {
+      void vadCtxRef.current.resume().catch(() => {})
+    }
+    forceVadRef.current = shouldPreferVadEngine()
+    rapidEmptyEndsRef.current = []
     backoffAttemptRef.current = 0
     setArmNonce((n) => n + 1)
   }, [])
@@ -310,19 +352,20 @@ export function useWakeWord(options: {
     (matchedPhrase: string, trailingCommand: string) => {
       if (sleepModeRef.current) return
       const now = Date.now()
-      if (now - lastTriggerAtRef.current < 1800) return
+      if (now - lastTriggerAtRef.current < 1600) return
       lastTriggerAtRef.current = now
       prevChunkRef.current = ''
+      prevVadChunkRef.current = null
       stopAllListening()
       setLastTriggeredPhrase(matchedPhrase || wakePhraseRef.current)
       playEvaWakeChime()
-      // Give browser/OS 180ms to release the wake mic before Live Voice claims getUserMedia
+      // Give browser/OS 160ms to release the wake mic before Live Voice claims getUserMedia
       handoffTimerRef.current = setTimeout(() => {
         handoffTimerRef.current = null
         if (!sleepModeRef.current) {
           onWakeRef.current(trailingCommand)
         }
-      }, 180)
+      }, 160)
     },
     [stopAllListening]
   )
@@ -358,15 +401,21 @@ export function useWakeWord(options: {
     [processTranscripts]
   )
 
-  // Always-on dual-engine loop (SpeechRecognition -> automatic Acoustic VAD + /api/wake fallback)
+  // Always-on wake engine:
+  // 1. Inside Android APK: delegates persistent mic listening to EvaVoiceForegroundService via JS bridge
+  // 2. Web / Desktop: dual-engine SpeechRecognition -> automatic Acoustic VAD + /api/wake fallback
   useEffect(() => {
+    const nativeAndroidWake = hasNativeWakeListener()
     const speechCtor = getSpeechRecognitionCtor()
     const canMic = hasMediaMicSupport()
-    const canListen = Boolean(speechCtor) || canMic
+    const canListen = nativeAndroidWake || Boolean(speechCtor) || canMic
     setSupported(canListen)
 
     if (sleepMode) {
       stopAllListening()
+      if (nativeAndroidWake) {
+        stopNativeWakeListener()
+      }
       setStatus('sleeping')
       return
     }
@@ -381,6 +430,54 @@ export function useWakeWord(options: {
       sleepMode,
       voiceStatus: options.voiceStatus,
     })
+
+    // Native Android Foreground Service path: zero WebView mic contention & instant bridge handoff
+    if (nativeAndroidWake) {
+      stopAllListening()
+      setEngine('native-android')
+      setError(null)
+
+      const applyNativeState = (
+        state: ReturnType<typeof getNativeServiceState>
+      ) => {
+        if (!state) return
+        setEarLevel(Math.max(0, Math.min(1, state.audioLevel || 0)))
+        if (suspended || state.listenerState === 'listening') {
+          setStatus('off')
+        } else if (state.listenerState === 'awaiting-permission') {
+          setStatus('awaiting-mic')
+        } else if (state.listenerState === 'armed') {
+          setStatus('armed')
+        }
+      }
+
+      const unsubState = onAndroidServiceStateChange((state) => {
+        applyNativeState(state)
+      })
+
+      const unsubWake = onAndroidWakeDetected((event) => {
+        if (sleepModeRef.current) return
+        const heard = event.transcript || event.matchedPhrase
+        if (heard) setLastHeard(heard.slice(-80))
+        triggerWake(event.matchedPhrase, event.trailingCommand)
+      })
+
+      if (suspended) {
+        setStatus('off')
+      } else {
+        setStatus('armed')
+        startNativeWakeListener(
+          wakePhraseRef.current,
+          typeof window !== 'undefined' ? window.location.origin : ''
+        )
+        applyNativeState(getNativeServiceState())
+      }
+
+      return () => {
+        unsubWake()
+        unsubState()
+      }
+    }
 
     if (suspended) {
       stopAllListening()
@@ -418,11 +515,10 @@ export function useWakeWord(options: {
           (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
         const ctx = new AudioCtx()
         if (ctx.state === 'suspended') {
-          try {
-            await ctx.resume()
-          } catch {
-            /* will resume on first gesture */
-          }
+          await Promise.race([
+            ctx.resume().catch(() => {}),
+            new Promise<void>((resolve) => setTimeout(resolve, 250)),
+          ])
         }
         if (cancelled || sleepModeRef.current) {
           for (const t of stream.getTracks()) t.stop()
@@ -442,6 +538,20 @@ export function useWakeWord(options: {
         vadGainRef.current = silentGain
         vadActiveRef.current = true
 
+        // Keep UI status strictly truthful to AudioContext running state
+        const syncVadState = () => {
+          if (cancelled || sleepModeRef.current || !vadActiveRef.current) return
+          if (ctx.state === 'running') {
+            setEngine('vad')
+            setError(null)
+            setStatus('armed')
+          } else if (ctx.state === 'suspended') {
+            setEngine('vad')
+            setStatus('awaiting-mic')
+          }
+        }
+        ctx.onstatechange = syncVadState
+
         const preroll: Float32Array[] = []
         let recordingChunks: Float32Array[] = []
         let isSpeaking = false
@@ -450,7 +560,12 @@ export function useWakeWord(options: {
         let lastLevelTick = 0
 
         const flushBurst = async (chunks: Float32Array[], sampleRate: number) => {
-          if (vadInFlightRef.current || cancelled || sleepModeRef.current) return
+          if (cancelled || sleepModeRef.current) return
+          if (vadInFlightRef.current) {
+            // Queue the newest burst instead of dropping it so rapid "Hey Eva" retries always land
+            vadPendingBurstRef.current = { chunks, sampleRate }
+            return
+          }
           let totalLen = 0
           for (const c of chunks) totalLen += c.length
           if (totalLen === 0) return
@@ -483,8 +598,9 @@ export function useWakeWord(options: {
               trailingCommand?: string
               sleepRequested?: boolean
             }
-            if (data.transcript) {
-              setLastHeard(data.transcript.slice(-80))
+            const text = (data.transcript ?? '').trim()
+            if (text) {
+              setLastHeard(text.slice(-80))
             }
             if (data.sleepRequested) {
               enterSleepMode()
@@ -492,11 +608,27 @@ export function useWakeWord(options: {
             }
             if (data.matched) {
               triggerWake(data.matchedPhrase || wakePhraseRef.current, data.trailingCommand || '')
+              return
+            }
+            // Also evaluate rolling VAD window (previous short burst + current burst within 4s)
+            if (text) {
+              const nowMs = Date.now()
+              const candidates = [text]
+              if (prevVadChunkRef.current && nowMs - prevVadChunkRef.current.ts < 4000) {
+                candidates.push(`${prevVadChunkRef.current.text} ${text}`)
+              }
+              prevVadChunkRef.current = { text: text.slice(-60), ts: nowMs }
+              processTranscripts(candidates)
             }
           } catch {
             /* transient network error — keep ear armed */
           } finally {
             vadInFlightRef.current = false
+            const pending = vadPendingBurstRef.current
+            vadPendingBurstRef.current = null
+            if (pending && !cancelled && !sleepModeRef.current && vadActiveRef.current) {
+              void flushBurst(pending.chunks, pending.sampleRate)
+            }
           }
         }
 
@@ -510,7 +642,7 @@ export function useWakeWord(options: {
           const now = performance.now()
           if (now - lastLevelTick > 85) {
             lastLevelTick = now
-            setEarLevel(Math.min(1, rms * 8))
+            setEarLevel(Math.min(1, rms * 10))
           }
 
           if (rms >= VAD_RMS_THRESHOLD) {
@@ -549,9 +681,7 @@ export function useWakeWord(options: {
         proc.connect(silentGain)
         silentGain.connect(ctx.destination)
 
-        setEngine('vad')
-        setError(null)
-        setStatus('armed')
+        syncVadState()
       } catch (err) {
         stopVad()
         const name = err instanceof DOMException ? err.name : ''
@@ -573,7 +703,7 @@ export function useWakeWord(options: {
       if (cancelled || sleepModeRef.current || permissionBlocked || forceVadRef.current) return
       if (restartTimerRef.current) clearTimeout(restartTimerRef.current)
       const attempt = backoffAttemptRef.current
-      const delay = baseDelay ?? Math.min(3000, 260 * Math.pow(1.6, attempt))
+      const delay = baseDelay ?? Math.min(2500, 220 * Math.pow(1.5, attempt))
       restartTimerRef.current = setTimeout(() => {
         restartTimerRef.current = null
         if (!cancelled) startSpeechLoop()
@@ -596,6 +726,8 @@ export function useWakeWord(options: {
         rec.lang = 'en-US'
         recognitionRef.current = rec
         speechStartedRef.current = false
+        let sessionStartedAt = 0
+        let sessionHadResult = false
 
         rec.onstart = () => {
           if (cancelled || sleepModeRef.current) return
@@ -603,7 +735,9 @@ export function useWakeWord(options: {
             clearTimeout(startWatchdogRef.current)
             startWatchdogRef.current = null
           }
+          sessionStartedAt = Date.now()
           speechStartedRef.current = true
+          speechLastActivityAtRef.current = sessionStartedAt
           backoffAttemptRef.current = 0
           setEngine('speech')
           setError(null)
@@ -611,7 +745,10 @@ export function useWakeWord(options: {
         }
 
         rec.onspeechstart = () => {
-          if (!cancelled) setEarLevel(0.6)
+          if (!cancelled) {
+            speechLastActivityAtRef.current = Date.now()
+            setEarLevel(0.6)
+          }
         }
 
         rec.onspeechend = () => {
@@ -620,6 +757,9 @@ export function useWakeWord(options: {
 
         rec.onresult = (ev) => {
           if (cancelled || sleepModeRef.current) return
+          sessionHadResult = true
+          speechLastActivityAtRef.current = Date.now()
+          rapidEmptyEndsRef.current = []
           backoffAttemptRef.current = 0
           const startIdx = Math.max(0, ev.resultIndex ?? 0)
           for (let i = startIdx; i < ev.results.length; i++) {
@@ -678,7 +818,7 @@ export function useWakeWord(options: {
 
           if (code !== 'no-speech' && code !== 'aborted') {
             backoffAttemptRef.current = Math.min(backoffAttemptRef.current + 1, 4)
-            if (backoffAttemptRef.current >= 3 && canMic) {
+            if (backoffAttemptRef.current >= 2 && canMic) {
               forceVadRef.current = true
               stopSpeech()
               void startVadLoop()
@@ -691,12 +831,27 @@ export function useWakeWord(options: {
           speechStartedRef.current = false
           setEarLevel(0)
           if (cancelled || sleepModeRef.current || permissionBlocked || forceVadRef.current) return
+
+          // Detect rapid empty restart loops (common in Chromium iframes/mobile WebViews) -> fall back to VAD
+          const nowMs = Date.now()
+          if (!sessionHadResult && sessionStartedAt > 0 && nowMs - sessionStartedAt < 2200) {
+            rapidEmptyEndsRef.current = [
+              ...rapidEmptyEndsRef.current.filter((t) => nowMs - t < 6000),
+              nowMs,
+            ]
+            if (rapidEmptyEndsRef.current.length >= 3 && canMic) {
+              forceVadRef.current = true
+              void startVadLoop()
+              return
+            }
+          }
+
           scheduleSpeechRestart()
         }
 
         rec.start()
 
-        // If onstart never fires within 2.5s (common in restricted iframes / Chromium builds), switch to VAD
+        // If onstart never fires within 2.2s (common in restricted iframes / Chromium builds), switch to VAD
         if (startWatchdogRef.current) clearTimeout(startWatchdogRef.current)
         startWatchdogRef.current = setTimeout(() => {
           startWatchdogRef.current = null
@@ -709,7 +864,7 @@ export function useWakeWord(options: {
               setStatus('awaiting-mic')
             }
           }
-        }, 2500)
+        }, 2200)
       } catch {
         recognitionRef.current = null
         if (!hasUserGestureRef.current) {
@@ -726,24 +881,29 @@ export function useWakeWord(options: {
 
     const startEngine = () => {
       if (cancelled || sleepModeRef.current) return
-      if (forceVadRef.current || !speechCtor) {
+      if (forceVadRef.current || shouldPreferVadEngine() || !speechCtor) {
+        forceVadRef.current = true
         void startVadLoop()
       } else {
         startSpeechLoop()
       }
     }
 
-    const handleVisibilityOrFocus = () => {
+    const resumeOrRestart = () => {
       if (cancelled || sleepModeRef.current) return
-      if (document.visibilityState === 'visible' && !recognitionRef.current && !vadActiveRef.current) {
-        permissionBlocked = false
-        backoffAttemptRef.current = 0
-        startEngine()
+      // 1. If VAD AudioContext is suspended (e.g. started before user gesture), resume it right away!
+      if (vadActiveRef.current && vadCtxRef.current) {
+        if (vadCtxRef.current.state === 'suspended') {
+          void vadCtxRef.current.resume().catch(() => {})
+        }
+        // Check if OS killed the mic track
+        const liveTracks = vadStreamRef.current?.getAudioTracks().some((t) => t.readyState === 'live')
+        if (!liveTracks) {
+          stopVad()
+          void startVadLoop()
+        }
+        return
       }
-    }
-
-    const handleOnline = () => {
-      if (cancelled || sleepModeRef.current) return
       if (!recognitionRef.current && !vadActiveRef.current) {
         permissionBlocked = false
         backoffAttemptRef.current = 0
@@ -751,51 +911,85 @@ export function useWakeWord(options: {
       }
     }
 
-    // Unlock mic synchronously on the very first user click or keydown anywhere in the app
+    const handleVisibilityOrFocus = () => {
+      if (cancelled || sleepModeRef.current) return
+      if (document.visibilityState === 'visible') {
+        resumeOrRestart()
+      }
+    }
+
+    const handleOnline = () => {
+      if (cancelled || sleepModeRef.current) return
+      resumeOrRestart()
+    }
+
+    // Unlock mic & resume any suspended AudioContext synchronously on any user click/tap/keypress/input focus
     const handleFirstGesture = (ev: Event) => {
       hasUserGestureRef.current = true
       const target = ev.target as HTMLElement | null
       if (target?.closest?.('[data-eva-ear-control]')) return
-      if (!cancelled && !sleepModeRef.current && !recognitionRef.current && !vadActiveRef.current) {
-        permissionBlocked = false
-        backoffAttemptRef.current = 0
-        startEngine()
-      }
+      resumeOrRestart()
     }
 
-    // Attempt immediate auto-arm (works if mic permission was already granted for this origin)
-    startEngine()
+    // Small settle delay so a just-ended Live Voice session finishes releasing the OS mic cleanly
+    const initialStartTimer = setTimeout(() => {
+      if (!cancelled) startEngine()
+    }, 260)
 
-    // Watchdog keeps ear alive even if Chrome silently drops onend across OS sleep/wake
+    // Watchdog keeps ear alive across silent Chromium SpeechRecognition stalls, OS sleep/wake, or killed tracks
     const watchdog = setInterval(() => {
+      if (cancelled || sleepModeRef.current || permissionBlocked || document.visibilityState !== 'visible') {
+        return
+      }
+      // Recycle silent zombie SpeechRecognition sessions every ~42s while user works in text workspace
       if (
-        !cancelled &&
-        !sleepModeRef.current &&
-        !permissionBlocked &&
-        !recognitionRef.current &&
-        !vadActiveRef.current &&
-        !restartTimerRef.current &&
-        document.visibilityState === 'visible' &&
-        hasUserGestureRef.current
+        recognitionRef.current &&
+        speechStartedRef.current &&
+        speechLastActivityAtRef.current > 0 &&
+        Date.now() - speechLastActivityAtRef.current >= SPEECH_STALL_RECYCLE_MS
       ) {
+        stopSpeech()
+        scheduleSpeechRestart(180)
+        return
+      }
+      // Resume suspended VAD AudioContext or restart dead audio track
+      if (vadActiveRef.current && vadCtxRef.current) {
+        if (vadCtxRef.current.state === 'suspended' && hasUserGestureRef.current) {
+          void vadCtxRef.current.resume().catch(() => {})
+        }
+        const hasLiveTrack = vadStreamRef.current?.getAudioTracks().some((t) => t.readyState === 'live')
+        if (!hasLiveTrack) {
+          stopVad()
+          void startVadLoop()
+        }
+        return
+      }
+      if (!recognitionRef.current && !vadActiveRef.current && !restartTimerRef.current && hasUserGestureRef.current) {
         startEngine()
       }
-    }, 12_000)
+    }, 5000)
 
     document.addEventListener('visibilitychange', handleVisibilityOrFocus)
     window.addEventListener('focus', handleVisibilityOrFocus)
     window.addEventListener('online', handleOnline)
     window.addEventListener('pointerdown', handleFirstGesture, { passive: true, capture: true })
+    window.addEventListener('click', handleFirstGesture, { passive: true, capture: true })
+    window.addEventListener('touchstart', handleFirstGesture, { passive: true, capture: true })
     window.addEventListener('keydown', handleFirstGesture, { passive: true, capture: true })
+    window.addEventListener('focusin', handleFirstGesture, { passive: true, capture: true })
 
     return () => {
       cancelled = true
+      clearTimeout(initialStartTimer)
       clearInterval(watchdog)
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus)
       window.removeEventListener('focus', handleVisibilityOrFocus)
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('pointerdown', handleFirstGesture, { capture: true })
+      window.removeEventListener('click', handleFirstGesture, { capture: true })
+      window.removeEventListener('touchstart', handleFirstGesture, { capture: true })
       window.removeEventListener('keydown', handleFirstGesture, { capture: true })
+      window.removeEventListener('focusin', handleFirstGesture, { capture: true })
       stopAllListening()
     }
   }, [

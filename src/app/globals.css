@@ -518,4 +518,16 @@ html:not(.dark) svg text {
   animation: voice-bar-bounce 0.9s ease-in-out infinite;
 }
 
+/* ---- Android & Material 3 touch ergonomics ---- */
+button,
+[role="button"] {
+  -webkit-tap-highlight-color: transparent;
+}
 
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
