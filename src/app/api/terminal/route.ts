@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { terminalManager } from '@/lib/agent/terminal-manager'
 import { requireCapabilityPermission } from '@/lib/agent/permissions'
 import { getTrustedNexusOrigin } from '@/lib/agent/trusted-origin'
+import { verifyActionHash } from '@/lib/agent/action-binding'
 import {
   buildPowerShellPairCommand,
   createPairedDevice,
@@ -67,8 +68,9 @@ export async function POST(request: Request) {
     }
 
     if (action === 'pair_windows') {
-      const permission = await requireCapabilityPermission({ capability: 'desktop_bridge', actionSummary: 'Pair a Windows computer for terminal access', actor: 'Nexus owner' })
-      if (!permission.allowed) return NextResponse.json({ ok: false, error: permission.reason || 'Desktop pairing was denied' }, { status: 403 })
+      const pairBinding = { actionName: 'terminal.pair_windows', target: 'desktop_bridge', payload: body }
+      const permission = await requireCapabilityPermission({ capability: 'desktop_bridge', actionSummary: 'Pair a Windows computer for terminal access', actor: 'Nexus owner', ...pairBinding })
+      if (!permission.allowed || !verifyActionHash(permission.actionHash, pairBinding)) return NextResponse.json({ ok: false, error: permission.reason || 'Desktop pairing was denied' }, { status: 403 })
       const origin = getTrustedNexusOrigin(request)
       const name = (body.deviceName ?? 'Windows PC').trim() || 'Windows PC'
       const platform = body.platform === 'macos' || body.platform === 'linux' ? body.platform : 'windows'
@@ -87,11 +89,12 @@ export async function POST(request: Request) {
     }
 
     if (action === 'exec') {
-      const approval = await requireCapabilityPermission({ capability: 'workspace_shell', actionSummary: 'Execute a terminal command', actor: 'Nexus owner' })
-      if (!approval.allowed) return NextResponse.json({ ok: false, error: approval.reason || 'Terminal command denied' }, { status: 403 })
+      const execBinding = { actionName: 'terminal.exec', target: body.target ?? 'auto', payload: body }
+      const approval = await requireCapabilityPermission({ capability: 'workspace_shell', actionSummary: 'Execute a terminal command', actor: 'Nexus owner', ...execBinding })
+      if (!approval.allowed || !verifyActionHash(approval.actionHash, execBinding)) return NextResponse.json({ ok: false, error: approval.reason || 'Terminal command denied' }, { status: 403 })
       if (body.target === 'windows_pc') {
-        const remote = await requireCapabilityPermission({ capability: 'desktop_bridge', actionSummary: 'Execute a command on a paired desktop', actor: 'Nexus owner' })
-        if (!remote.allowed) return NextResponse.json({ ok: false, error: remote.reason || 'Remote desktop command denied' }, { status: 403 })
+        const remote = await requireCapabilityPermission({ capability: 'desktop_bridge', actionSummary: 'Execute a command on a paired desktop', actor: 'Nexus owner', ...execBinding })
+        if (!remote.allowed || !verifyActionHash(remote.actionHash, execBinding)) return NextResponse.json({ ok: false, error: remote.reason || 'Remote desktop command denied' }, { status: 403 })
       }
       const command = String(body.command ?? '').trim()
       if (!command) {
