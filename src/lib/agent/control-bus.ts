@@ -503,6 +503,10 @@ class NexusControlBus {
       })
     }
 
+    if (action === 'batch_rename' || !sock.capabilities.includes(action)) {
+      return Promise.resolve({ ok: false, output: '', error: 'Command not authorized for this paired device capability set.' })
+    }
+
     const commandId = `devcmd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
     return new Promise<DeviceCommandResult>((resolve) => {
       const timer = setTimeout(() => {
