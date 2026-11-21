@@ -38,6 +38,9 @@ jobs:
       - name: Owner and Electron permission boundary tests
         run: npm run test:security
 
+      - name: Offline SQLite backup and manifest tests
+        run: npm run test:recovery
+
       - name: TypeScript validation
         run: npm run typecheck
 
