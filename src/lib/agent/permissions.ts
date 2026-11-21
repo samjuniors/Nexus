@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto'
 import { db } from '@/lib/db'
+import { computeActionHash } from '@/lib/agent/action-binding'
 import { controlBus, type PermissionDecision } from '@/lib/agent/control-bus'
 
 export type CapabilityKey =
@@ -178,9 +180,10 @@ export async function recordPermissionAudit(opts: {
 
 export async function resolvePermissionDecision(
   requestId: string,
-  decision: PermissionDecision
+  decision: PermissionDecision,
+  actionHash: string
 ): Promise<{ ok: boolean; capability?: string; decision: PermissionDecision }> {
-  const req = controlBus.resolvePermission(requestId, decision)
+  const req = controlBus.resolvePermission(requestId, decision, actionHash)
   if (!req) return { ok: false, decision }
 
   if (decision === 'always' && isValidCapability(req.capability)) {
@@ -212,8 +215,16 @@ export async function requireCapabilityPermission(opts: {
   actor?: string
   details?: string
   timeoutMs?: number
-}): Promise<{ allowed: boolean; decision: PermissionDecision; reason?: string }> {
+  actionName?: string
+  target?: unknown
+  payload?: unknown
+}): Promise<{ allowed: boolean; decision: PermissionDecision; reason?: string; actionHash: string }> {
   const actor = opts.actor || 'Eva'
+  const actionHash = computeActionHash({
+    actionName: opts.actionName ?? opts.capability + ':' + opts.actionSummary,
+    target: opts.target ?? null,
+    payload: opts.payload ?? null,
+  })
   const spec = SPEC_BY_KEY.get(opts.capability)!
   const row = await db.permissionGrant.findUnique({ where: { capability: opts.capability } })
   const policy: PermissionPolicy = row && isValidPolicy(row.policy) ? row.policy : 'ask'
@@ -231,7 +242,7 @@ export async function requireCapabilityPermission(opts: {
       decision: 'always',
       actor,
     })
-    return { allowed: true, decision: 'always' }
+    return { allowed: true, decision: 'always', actionHash }
   }
 
   if (policy === 'deny') {
@@ -245,6 +256,7 @@ export async function requireCapabilityPermission(opts: {
       allowed: false,
       decision: 'deny',
       reason: `Permission "${spec.title}" is set to Deny. Change it in the Permissions panel to allow Eva to run this action.`,
+      actionHash,
     }
   }
 
@@ -254,14 +266,16 @@ export async function requireCapabilityPermission(opts: {
       allowed: false,
       decision: 'timeout',
       reason: `Permission "${spec.title}" requires approval in the open Nexus workspace UI (no active browser client connected).`,
+      actionHash,
     }
   }
 
-  const requestId = `perm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+  const requestId = 'perm_' + randomUUID()
   controlBus.broadcastEvaMood('curious', `Waiting for approval: ${spec.title}`, 45_000)
   const decision = await controlBus.waitForPermission(
     {
       requestId,
+      actionHash,
       capability: opts.capability,
       title: spec.title,
       description: spec.description,
@@ -283,7 +297,7 @@ export async function requireCapabilityPermission(opts: {
         })
         .catch(() => {})
     }
-    return { allowed: true, decision }
+    return { allowed: true, decision, actionHash }
   }
 
   if (decision === 'timeout') {
@@ -297,6 +311,7 @@ export async function requireCapabilityPermission(opts: {
       allowed: false,
       decision: 'timeout',
       reason: `Permission prompt for "${spec.title}" timed out without a response.`,
+      actionHash,
     }
   }
 
@@ -304,5 +319,6 @@ export async function requireCapabilityPermission(opts: {
     allowed: false,
     decision: 'deny',
     reason: `User declined permission "${spec.title}" for: ${opts.actionSummary}`,
+    actionHash,
   }
 }
