@@ -73,6 +73,15 @@ export const CAPABILITY_SPECS: CapabilitySpec[] = [
   },
 ]
 
+const SINGLE_USE_CAPABILITIES = new Set<CapabilityKey>([
+  'self_install', 'mobile_control', 'workspace_shell', 'desktop_bridge', 'self_code_edit',
+])
+
+/** Consequential capabilities must not silently inherit an unlimited old Always grant. */
+export function requiresSingleUseApproval(capability: string): boolean {
+  return SINGLE_USE_CAPABILITIES.has(capability as CapabilityKey)
+}
+
 const SPEC_BY_KEY = new Map<CapabilityKey, CapabilitySpec>(
   CAPABILITY_SPECS.map((s) => [s.capability, s])
 )
@@ -109,8 +118,11 @@ export async function listPermissionGrants(): Promise<PermissionGrantDTO[]> {
   const byKey = new Map(rows.map((r) => [r.capability, r]))
   return CAPABILITY_SPECS.map((spec) => {
     const row = byKey.get(spec.capability)
-    const policy: PermissionPolicy =
+    const configuredPolicy: PermissionPolicy =
       row && isValidPolicy(row.policy) ? row.policy : 'ask'
+    const policy: PermissionPolicy = requiresSingleUseApproval(spec.capability) && configuredPolicy === 'always'
+      ? 'ask'
+      : configuredPolicy
     return {
       ...spec,
       policy,
@@ -139,6 +151,9 @@ export async function setPermissionPolicy(
   capability: CapabilityKey,
   policy: PermissionPolicy
 ): Promise<PermissionGrantDTO> {
+  if (policy === 'always' && requiresSingleUseApproval(capability)) {
+    throw new Error('This sensitive capability requires per-action approval and cannot be set to Always')
+  }
   const row = await db.permissionGrant.upsert({
     where: { capability },
     create: { capability, policy },
@@ -183,6 +198,23 @@ export async function resolvePermissionDecision(
   decision: PermissionDecision,
   actionHash: string
 ): Promise<{ ok: boolean; capability?: string; decision: PermissionDecision }> {
+  const pending = controlBus.getPendingPermission(requestId)
+  if (!pending || pending.actionHash !== actionHash ||
+      !['always', 'once', 'deny'].includes(decision)) return { ok: false, decision }
+  if (decision === 'always' && requiresSingleUseApproval(pending.capability)) {
+    return { ok: false, decision: 'deny' }
+  }
+  // A granted action is never released when the durable audit cannot be written.
+  if (decision === 'always' || decision === 'once') {
+    await db.permissionAuditLog.create({
+      data: {
+        capability: pending.capability,
+        actionSummary: pending.actionSummary.slice(0, 150) + ' [sha256:' + actionHash + ']',
+        decision,
+        actor: pending.actor || 'Nexus owner',
+      },
+    })
+  }
   const req = controlBus.resolvePermission(requestId, decision, actionHash)
   if (!req) return { ok: false, decision }
 
@@ -194,12 +226,14 @@ export async function resolvePermissionDecision(
   } else {
     controlBus.broadcastEvaMood('idle', `Permission declined: ${req.title}`, 1200)
   }
-  await recordPermissionAudit({
-    capability: req.capability,
-    actionSummary: req.actionSummary,
-    decision,
-    actor: req.actor,
-  })
+  if (decision === 'deny') {
+    await recordPermissionAudit({
+      capability: req.capability,
+      actionSummary: req.actionSummary,
+      decision,
+      actor: req.actor,
+    })
+  }
   return { ok: true, capability: req.capability, decision }
 }
 
@@ -227,7 +261,10 @@ export async function requireCapabilityPermission(opts: {
   })
   const spec = SPEC_BY_KEY.get(opts.capability)!
   const row = await db.permissionGrant.findUnique({ where: { capability: opts.capability } })
-  const policy: PermissionPolicy = row && isValidPolicy(row.policy) ? row.policy : 'ask'
+  const configuredPolicy: PermissionPolicy = row && isValidPolicy(row.policy) ? row.policy : 'ask'
+  const policy: PermissionPolicy = requiresSingleUseApproval(opts.capability) && configuredPolicy === 'always'
+    ? 'ask'
+    : configuredPolicy
 
   if (policy === 'always') {
     await db.permissionGrant
