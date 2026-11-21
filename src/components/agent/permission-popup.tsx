@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { Check, CheckCheck, ShieldAlert, X } from 'lucide-react'
 import { MochiEyes } from '@/components/agent/mochi-eyes'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
+import { requiresSingleUseApproval } from '@/lib/agent/permissions'
 import { cn } from '@/lib/utils'
 
 /**
@@ -83,10 +84,11 @@ export function PermissionPopup() {
         <div className="mt-0.5 break-words font-mono text-xs text-foreground">
           {current.actionSummary}
         </div>
+        <div className="mt-1 font-mono text-[10px] text-muted-foreground" title={current.actionHash}>Action SHA-256: {current.actionHash?.slice(0, 16)}</div>
       </div>
 
-      <div className="mt-3.5 grid grid-cols-3 gap-2">
-        <button
+      <div className={cn('mt-3.5 grid gap-2', requiresSingleUseApproval(current.capability) ? 'grid-cols-2' : 'grid-cols-3')}>
+        {!requiresSingleUseApproval(current.capability) && <button
           type="button"
           disabled={submitting}
           onClick={() => void decide('always')}
@@ -97,7 +99,7 @@ export function PermissionPopup() {
         >
           <CheckCheck className="h-3.5 w-3.5 shrink-0" />
           Allow Always
-        </button>
+        </button>}
         <button
           type="button"
           disabled={submitting}
