@@ -1,7 +1,12 @@
 import { createServer } from 'http'
 import next from 'next'
+import { loadEnvConfig } from '@next/env'
 import { WebSocketServer } from 'ws'
 import { createOwnerGateway } from './security/owner-gateway.cjs'
+
+// Load .env and .env.local before owner authentication reads process.env.
+// This follows Next.js's documented out-of-runtime environment initialization.
+loadEnvConfig(process.cwd(), process.env.NODE_ENV !== 'production')
 
 const dev = process.env.NODE_ENV !== 'production'
 const rawPort = Number(process.env.PORT ?? 3000)
