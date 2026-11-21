@@ -516,9 +516,10 @@ class NexusControlBus {
     })
   }
 
-  resolveDeviceCommand(commandId: string, result: DeviceCommandResult) {
+  resolveDeviceCommand(commandId: string, result: DeviceCommandResult, deviceId: string, socket: WebSocket) {
     const entry = this.pendingDeviceCommands.get(commandId)
-    if (!entry) return
+    // A paired device must not claim another device's command ID, including after reconnect.
+    if (!entry || entry.deviceId !== deviceId || this.deviceSockets.get(deviceId)?.ws !== socket) return
     clearTimeout(entry.timer)
     this.pendingDeviceCommands.delete(commandId)
     entry.resolve(result)
