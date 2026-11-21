@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Check, Copy, Download, Laptop, MonitorSmartphone, Pin, Plus, Smartphone, Terminal, Trash2 } from 'lucide-react'
+import { Check, Copy, Download, FolderCheck, Laptop, Monitor, MonitorSmartphone, Pin, Plus, Shield, Smartphone, Terminal, Trash2 } from 'lucide-react'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
 import { cn } from '@/lib/utils'
 
@@ -19,13 +19,18 @@ interface NexusDesktopBridge {
  */
 export function DevicesPanel() {
   const devices = useEvaControl((s) => s.devices)
+  const connectedFolders = useEvaControl((s) => s.connectedFolders)
+  const allowedApps = useEvaControl((s) => s.allowedApps)
+  const computerBusy = useEvaControl((s) => s.computerControlBusy)
   const refreshDevices = useEvaControl((s) => s.refreshDevices)
+  const refreshComputerControl = useEvaControl((s) => s.refreshComputerControl)
   const pairDevice = useEvaControl((s) => s.pairDevice)
   const revokeDevice = useEvaControl((s) => s.revokeDevice)
   const openSplit = useEvaControl((s) => s.openSplit)
+  const captureWindowsScreen = useEvaControl((s) => s.captureWindowsScreen)
 
   const [name, setName] = useState('')
-  const [platform, setPlatform] = useState<'macos' | 'windows' | 'linux' | 'android' | 'ios'>('macos')
+  const [platform, setPlatform] = useState<'macos' | 'windows' | 'linux' | 'android' | 'ios'>('windows')
   const [pairing, setPairing] = useState(false)
   const [freshToken, setFreshToken] = useState<{
     deviceName: string
@@ -37,7 +42,8 @@ export function DevicesPanel() {
 
   useEffect(() => {
     void refreshDevices()
-  }, [refreshDevices])
+    void refreshComputerControl()
+  }, [refreshDevices, refreshComputerControl])
 
   const desktopBridge =
     typeof window !== 'undefined'
@@ -72,10 +78,14 @@ export function DevicesPanel() {
   }
 
   const isFreshMobile = freshToken?.platform === 'android' || freshToken?.platform === 'ios'
+  const isFreshWindows = freshToken?.platform === 'windows'
   const oneLineCommand = freshToken
     ? isFreshMobile
       ? `curl -fsSL "${origin}/api/devices/mobile-runner" -o nexus-android-bridge.mjs && NEXUS_WS_URL="${wsOrigin}/api/device-bridge" NEXUS_DEVICE_TOKEN="${freshToken.token}" node nexus-android-bridge.mjs`
       : `curl -fsSL "${origin}/api/devices/runner" -o nexus-companion.mjs && NEXUS_WS_URL="${wsOrigin}/api/device-bridge" NEXUS_DEVICE_TOKEN="${freshToken.token}" node nexus-companion.mjs`
+    : ''
+  const windowsPsCommand = freshToken
+    ? `Invoke-WebRequest "${origin}/api/devices/runner" -OutFile nexus-companion.mjs; $env:NEXUS_WS_URL="${wsOrigin}/api/device-bridge"; $env:NEXUS_DEVICE_TOKEN="${freshToken.token}"; node nexus-companion.mjs`
     : ''
 
   const electronCommand = `cd electron && npm install && NEXUS_APP_URL="${origin}" npm start`
@@ -143,7 +153,7 @@ export function DevicesPanel() {
               )}
             </div>
             <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
-              Launch Nexus as a native macOS, Windows, or Linux desktop app pointing at this Web deployment, with global hotkey (<kbd className="font-mono">⌘⇧E</kbd>), always-on-top Eva companion, and screen/camera eyes.
+              Launch Nexus as a native Windows, macOS, or Linux overlay with global hotkeys (<kbd className="font-mono">Alt+Space</kbd> Screen Awareness, <kbd className="font-mono">Alt+Shift+D</kbd> Quick Dictation, <kbd className="font-mono">Ctrl+Shift+E</kbd> Eva Focus).
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
@@ -205,7 +215,15 @@ export function DevicesPanel() {
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder={platform === 'android' ? 'e.g. Pixel 9 Pro' : platform === 'ios' ? 'e.g. iPhone 16' : 'e.g. MacBook Pro'}
+            placeholder={
+              platform === 'android'
+                ? 'e.g. Pixel 9 Pro'
+                : platform === 'ios'
+                  ? 'e.g. iPhone 16'
+                  : platform === 'windows'
+                    ? 'e.g. Windows Workstation'
+                    : 'e.g. MacBook Pro'
+            }
             aria-label="Device name"
             className="h-8 min-w-36 flex-1 rounded-md border border-border bg-background px-2.5 text-xs text-foreground outline-none focus:border-emerald-400/60"
           />
@@ -255,13 +273,65 @@ export function DevicesPanel() {
           <p className="text-[11px] text-muted-foreground">
             {isFreshMobile
               ? 'Run this on a host with ADB + USB or Wireless Debugging enabled (requires Node 22+ and adb). Save this token now — it is hashed on the server.'
-              : "Run this once in your computer's terminal (requires Node 22+). Save this token now — it is hashed on the server."}
+              : isFreshWindows
+                ? 'Run in Windows PowerShell (requires Node 22+). Your Connected Folders and Allowed Apps policies sync automatically on connect.'
+                : "Run this once in your computer's terminal (requires Node 22+). Save this token now — it is hashed on the server."}
           </p>
-          <pre className="nice-scroll overflow-x-auto rounded-md border border-border bg-background p-2 font-mono text-[10.5px] leading-relaxed text-foreground">
-            {oneLineCommand}
-          </pre>
+          {isFreshWindows && (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                  Windows PowerShell
+                </span>
+                <button
+                  type="button"
+                  onClick={() => copyText('ps', windowsPsCommand)}
+                  className="inline-flex items-center gap-1 rounded border border-border bg-background px-2 py-0.5 font-mono text-[10px] hover:bg-accent"
+                >
+                  {copiedKey === 'ps' ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                  {copiedKey === 'ps' ? 'Copied' : 'Copy PowerShell'}
+                </button>
+              </div>
+              <pre className="nice-scroll overflow-x-auto rounded-md border border-border bg-background p-2 font-mono text-[10.5px] leading-relaxed text-foreground">
+                {windowsPsCommand}
+              </pre>
+            </div>
+          )}
+          <div className="space-y-1">
+            {isFreshWindows && (
+              <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                Bash / Git Bash / macOS / Linux
+              </span>
+            )}
+            <pre className="nice-scroll overflow-x-auto rounded-md border border-border bg-background p-2 font-mono text-[10.5px] leading-relaxed text-foreground">
+              {oneLineCommand}
+            </pre>
+          </div>
         </div>
       )}
+
+      {/* Synced Connected Folders & Allowed Apps Summary Strip */}
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card/30 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+          <FolderCheck className="h-3.5 w-3.5 text-emerald-500" />
+          <span className="font-mono tabular-nums text-foreground">
+            {connectedFolders.filter((f) => f.enabled).length} folders
+          </span>
+          <span>·</span>
+          <span className="font-mono tabular-nums text-foreground">
+            {allowedApps.filter((a) => a.policy === 'always').length} auto-allowed apps
+          </span>
+          <span>synced to Windows bridges</span>
+        </div>
+        <button
+          type="button"
+          onClick={() => openSplit('permissions', 'Permissions & Access Controls')}
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-[11px] font-medium text-foreground hover:bg-muted"
+        >
+          <Shield className="h-3 w-3" />
+          Manage Allowlists
+        </button>
+      </div>
 
       {/* Paired devices list */}
       <div className="mt-4">
@@ -293,15 +363,31 @@ export function DevicesPanel() {
                     {dev.lastSeenAt && ` · seen ${new Date(dev.lastSeenAt).toLocaleTimeString()}`}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void revokeDevice(dev.id)}
-                  aria-label={`Revoke ${dev.name}`}
-                  title="Revoke device token"
-                  className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                <div className="flex shrink-0 items-center gap-1">
+                  {dev.status === 'online' && dev.platform !== 'android' && dev.platform !== 'ios' && (
+                    <button
+                      type="button"
+                      disabled={computerBusy}
+                      onClick={async () => {
+                        await captureWindowsScreen(dev.id)
+                        openSplit('browser', `${dev.name} Live Workspace`)
+                      }}
+                      className="inline-flex h-7 items-center gap-1 rounded-md border border-emerald-500/35 bg-emerald-500/10 px-2 font-mono text-[10.5px] text-emerald-700 hover:bg-emerald-500/20 disabled:opacity-40 dark:text-emerald-300"
+                    >
+                      <Monitor className="h-3 w-3" />
+                      Capture Screen
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void revokeDevice(dev.id)}
+                    aria-label={`Revoke ${dev.name}`}
+                    title="Revoke device token"
+                    className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               </div>
             ))}
           </div>

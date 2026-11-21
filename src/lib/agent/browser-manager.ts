@@ -5,6 +5,7 @@ import type { Browser, BrowserContext, Page } from 'playwright-core'
 import { controlBus, type BrowserElementHint, type BrowserFramePayload } from '@/lib/agent/control-bus'
 import { provisionAgentEmail, waitForVerificationCode } from '@/lib/agent/agent-identity'
 import { reasoningChain } from '@/lib/agent/reasoning-chain'
+import { automationSession } from '@/lib/agent/computer-control'
 
 const VIEWPORT_W = 1280
 const VIEWPORT_H = 800
@@ -851,8 +852,39 @@ class LiveBrowserManager {
     }
 
     let lastActionSignature = ''
+    automationSession.startSession({
+      target: 'browser',
+      goal: cleanGoal,
+      totalSteps: stepsLimit,
+    })
+    automationSession.recordStep(0, `Opened ${current.title || current.url || 'isolated browser'}`, current.summary, 'done')
+
+    const isSensitiveBrowserStep = (dec: AutopilotDecision): boolean => {
+      const targetText = `${dec.selector ?? ''} ${dec.text ?? ''} ${dec.reason ?? ''}`.toLowerCase()
+      if (dec.action === 'click' && /\b(buy|checkout|purchase|pay|place order|delete|remove|send|publish|submit|confirm|post listing|sign up|create account)\b/i.test(targetText)) {
+        return true
+      }
+      if (dec.action === 'type' && dec.submit && /\b(password|card|cvv|payment|checkout|publish|send)\b/i.test(targetText)) {
+        return true
+      }
+      return false
+    }
 
     for (let step = 1; step <= stepsLimit; step++) {
+      const canContinue = await automationSession.waitIfPausedOrTakeover()
+      if (!canContinue) {
+        const stoppedSummary = `Stopped by user after ${trace.length} steps on ${current.title || current.url}`
+        trace.push(`Step ${step}: stopped by user`)
+        reasoningChain.completeChain(chain.id, {
+          ok: true,
+          verificationDetail: stoppedSummary,
+          url: current.url,
+        })
+        return { ...current, ok: true, summary: stoppedSummary, steps: trace }
+      }
+
+      automationSession.recordStep(step, `Analyzing page (step ${step}/${stepsLimit})`, current.url, 'running')
+
       const elementsBlock = current.elements
         .slice(0, 20)
         .map((e) => `[${e.index}] <${e.tag}> "${e.text}" selector="${e.selector}"`)
@@ -935,6 +967,7 @@ Rules:
       if (decision.action === 'done') {
         const finalSummary = decision.summary || `Completed goal: ${cleanGoal}`
         trace.push(`Step ${step}: done — ${finalSummary}`)
+        automationSession.complete(finalSummary)
         controlBus.broadcastEvaMood('happy', finalSummary.slice(0, 60), 2500)
         reasoningChain.completeChain(chain.id, {
           ok: true,
@@ -996,6 +1029,46 @@ Rules:
       })
 
       const prevUrl = current.url
+
+      // Sensitive-step approval gate: pause and request explicit user approval before high-impact clicks/submissions
+      if (isSensitiveBrowserStep(decision) && controlBus.hasUiClients()) {
+        const actionDesc = `${decision.action} ${decision.text || decision.selector || ''} on ${current.url}`.trim()
+        automationSession.setAwaitingApproval(actionDesc)
+        const reqId = `step_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+        const approval = await controlBus.waitForPermission(
+          {
+            requestId: reqId,
+            capability: 'browser_control',
+            title: 'Approve Sensitive Browser Action',
+            description: 'Eva paused before executing a sensitive step in the isolated workspace.',
+            actionSummary: actionDesc,
+            actor: 'Eva',
+            details: decision.reason || `Goal: ${cleanGoal}`,
+            createdAt: new Date().toISOString(),
+          },
+          60_000
+        )
+        if (approval !== 'once' && approval !== 'always') {
+          automationSession.recordStep(step, `Skipped sensitive step (${approval})`, actionDesc, 'blocked')
+          automationSession.complete(`Paused/declined sensitive step: ${actionDesc}`)
+          trace.push(`Step ${step}: sensitive step declined (${approval})`)
+          break
+        }
+        automationSession.clearAwaitingApproval(`Approved: ${actionDesc}`)
+      }
+
+      const stillAllowed = await automationSession.waitIfPausedOrTakeover()
+      if (!stillAllowed) {
+        trace.push(`Step ${step}: stopped before executing ${decision.action}`)
+        break
+      }
+
+      automationSession.recordStep(
+        step,
+        `${decision.action}: ${decision.text || decision.selector || decision.url || decision.key || 'action'}`,
+        decision.reason,
+        'running'
+      )
 
       if (decision.action === 'navigate' && decision.url) {
         current = await this.navigate(decision.url)
@@ -1093,6 +1166,9 @@ Rules:
     }
 
     const summary = `Autopilot finished ${trace.length} steps on ${current.title} (${current.url})`
+    if (!automationSession.isStopped()) {
+      automationSession.complete(summary)
+    }
     reasoningChain.completeChain(chain.id, {
       ok: current.ok,
       verificationDetail: summary,

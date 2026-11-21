@@ -83,6 +83,55 @@ function base64Pcm16ToFloat32(base64: string): Float32Array {
   return float32
 }
 
+/**
+ * Scans a 24kHz PCM buffer in 20ms windows to find the first and last
+ * audible vocal frame (RMS > 0.012), trimming dead leading/trailing silence.
+ */
+function detectPcmSpeechBounds(
+  samples: Float32Array,
+  sampleRate = 24000
+): { firstSec: number | null; lastSec: number | null } {
+  const frameSize = Math.max(1, Math.round(sampleRate * 0.02)) // 20ms frames
+  const thresholdSq = 0.012 * 0.012
+  let firstFrame = -1
+  let lastFrame = -1
+
+  for (let offset = 0, frameIdx = 0; offset < samples.length; offset += frameSize, frameIdx++) {
+    const end = Math.min(samples.length, offset + frameSize)
+    let sumSq = 0
+    for (let i = offset; i < end; i++) {
+      const s = samples[i]
+      sumSq += s * s
+    }
+    const meanSq = sumSq / Math.max(1, end - offset)
+    if (meanSq >= thresholdSq) {
+      if (firstFrame === -1) firstFrame = frameIdx
+      lastFrame = frameIdx
+    }
+  }
+
+  if (firstFrame === -1) {
+    return { firstSec: null, lastSec: null }
+  }
+  const totalSec = samples.length / sampleRate
+  return {
+    firstSec: (firstFrame * frameSize) / sampleRate,
+    lastSec: Math.min(totalSec, ((lastFrame + 1) * frameSize) / sampleRate),
+  }
+}
+
+function stopAndDetachAudioNodes(nodes: Iterable<AudioBufferSourceNode>): void {
+  for (const node of nodes) {
+    try {
+      node.onended = null
+      node.stop()
+      node.disconnect()
+    } catch {
+      /* already ended */
+    }
+  }
+}
+
 export function useLiveVoice(options?: {
   onError?: (message: string) => void
   onSleepRequested?: () => void
@@ -96,6 +145,12 @@ export function useLiveVoice(options?: {
   const [micLevel, setMicLevel] = useState(0)
   const [liveInputTranscript, setLiveInputTranscript] = useState('')
   const [liveOutputTranscript, setLiveOutputTranscript] = useState('')
+  const [outputAudioElapsedSec, setOutputAudioElapsedSec] = useState(0)
+  const [outputAudioTotalSec, setOutputAudioTotalSec] = useState(0)
+  const [outputSpeechStartSec, setOutputSpeechStartSec] = useState(0)
+  const [outputSpeechEndSec, setOutputSpeechEndSec] = useState(0)
+  const [outputTurnComplete, setOutputTurnComplete] = useState(false)
+  const [outputTurnSeq, setOutputTurnSeq] = useState(0)
   const [activeTool, setActiveTool] = useState<ActiveVoiceTool | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
 
@@ -111,6 +166,14 @@ export function useLiveVoice(options?: {
   const mutedRef = useRef(false)
   const nextStartTimeRef = useRef(0)
   const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
+  const turnAudioStartCtxRef = useRef<number | null>(null)
+  const turnScheduledSecRef = useRef(0)
+  const turnSpeechStartRef = useRef<number | null>(null)
+  const turnSpeechEndRef = useRef(0)
+  const pendingClearOutputRef = useRef(false)
+  const deferredClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const outputClockRafRef = useRef<number | null>(null)
+  const lastClockEmitMsRef = useRef(0)
   const closingIntentRef = useRef(false)
   const lastLevelTickRef = useRef(0)
   const smoothedMicRef = useRef(0)
@@ -152,19 +215,69 @@ export function useLiveVoice(options?: {
     [clearSpeechTimer]
   )
 
-  const stopOutputPlayback = useCallback(() => {
-    for (const node of activeSourcesRef.current) {
-      try {
-        node.stop()
-        node.disconnect()
-      } catch {
-        /* already ended */
-      }
+  const stopOutputClock = useCallback(() => {
+    if (outputClockRafRef.current !== null) {
+      cancelAnimationFrame(outputClockRafRef.current)
+      outputClockRafRef.current = null
     }
+    if (deferredClearTimerRef.current) {
+      clearTimeout(deferredClearTimerRef.current)
+      deferredClearTimerRef.current = null
+    }
+  }, [])
+
+  const resetOutputTurnClock = useCallback(() => {
+    stopOutputClock()
+    turnAudioStartCtxRef.current = null
+    turnScheduledSecRef.current = 0
+    turnSpeechStartRef.current = null
+    turnSpeechEndRef.current = 0
+    pendingClearOutputRef.current = false
+    setOutputAudioElapsedSec(0)
+    setOutputAudioTotalSec(0)
+    setOutputSpeechStartSec(0)
+    setOutputSpeechEndSec(0)
+    setOutputTurnComplete(false)
+  }, [stopOutputClock])
+
+  const startOutputClock = useCallback(() => {
+    if (outputClockRafRef.current !== null) return
+    lastClockEmitMsRef.current = 0
+
+    const tick = (nowMs: number) => {
+      const outCtx = outputCtxRef.current
+      const startCtx = turnAudioStartCtxRef.current
+      if (!outCtx || startCtx === null || activeSourcesRef.current.size === 0) {
+        outputClockRafRef.current = null
+        return
+      }
+      if (nowMs - lastClockEmitMsRef.current >= 24) {
+        lastClockEmitMsRef.current = nowMs
+        const ctxWithLatency = outCtx as AudioContext & { outputLatency?: number }
+        const hwLatency = Math.max(
+          0,
+          Math.min(0.25, (outCtx.baseLatency ?? 0) + (ctxWithLatency.outputLatency ?? 0))
+        )
+        const elapsed = Math.max(
+          0,
+          Math.min(turnScheduledSecRef.current, outCtx.currentTime - startCtx - hwLatency)
+        )
+        setOutputAudioElapsedSec(elapsed)
+      }
+      outputClockRafRef.current = requestAnimationFrame(tick)
+    }
+
+    outputClockRafRef.current = requestAnimationFrame(tick)
+  }, [])
+
+  const stopOutputPlayback = useCallback(() => {
+    stopAndDetachAudioNodes(Array.from(activeSourcesRef.current))
     activeSourcesRef.current.clear()
     nextStartTimeRef.current = 0
+    isSpeakingRef.current = false
     setIsSpeaking(false)
-  }, [])
+    resetOutputTurnClock()
+  }, [resetOutputTurnClock])
 
   const teardown = useCallback(() => {
     clearSpeechTimer()
@@ -231,39 +344,114 @@ export function useLiveVoice(options?: {
     setIsThinking(false)
   }, [clearSpeechTimer, stopOutputPlayback])
 
-  const enqueueAudio = useCallback((base64Pcm: string) => {
-    const outCtx = outputCtxRef.current
-    if (!outCtx) return
-    if (outCtx.state === 'suspended') {
-      void outCtx.resume().catch(() => {})
-    }
-    const samples = base64Pcm16ToFloat32(base64Pcm)
-    if (samples.length === 0) return
-
-    const audioBuffer = outCtx.createBuffer(1, samples.length, 24000)
-    audioBuffer.getChannelData(0).set(samples)
-
-    const source = outCtx.createBufferSource()
-    source.buffer = audioBuffer
-    source.connect(outCtx.destination)
-
-    const now = outCtx.currentTime
-    const startAt = Math.max(nextStartTimeRef.current, now)
-    nextStartTimeRef.current = startAt + audioBuffer.duration
-
-    activeSourcesRef.current.add(source)
-    setIsSpeaking(true)
-    setIsThinking(false)
-
-    source.onended = () => {
-      activeSourcesRef.current.delete(source)
-      if (activeSourcesRef.current.size === 0) {
-        setIsSpeaking(false)
+  const enqueueAudio = useCallback(
+    (base64Pcm: string) => {
+      const outCtx = outputCtxRef.current
+      if (!outCtx) return
+      if (outCtx.state === 'suspended') {
+        void outCtx.resume().catch(() => {})
       }
-    }
+      const samples = base64Pcm16ToFloat32(base64Pcm)
+      if (samples.length === 0) return
 
-    source.start(startAt)
-  }, [])
+      const audioBuffer = outCtx.createBuffer(1, samples.length, 24000)
+      audioBuffer.getChannelData(0).set(samples)
+
+      const source = outCtx.createBufferSource()
+      source.buffer = audioBuffer
+      source.connect(outCtx.destination)
+
+      const now = outCtx.currentTime
+      const prevNextStart = nextStartTimeRef.current
+      const startAt = Math.max(prevNextStart, now)
+      nextStartTimeRef.current = startAt + audioBuffer.duration
+
+      // Anchor a brand-new turn playback clock when the first buffer of a turn arrives
+      const startingFreshTurn =
+        turnAudioStartCtxRef.current === null || pendingClearOutputRef.current
+      if (startingFreshTurn) {
+        if (deferredClearTimerRef.current) {
+          clearTimeout(deferredClearTimerRef.current)
+          deferredClearTimerRef.current = null
+        }
+        turnAudioStartCtxRef.current = startAt
+        turnScheduledSecRef.current = 0
+        turnSpeechStartRef.current = null
+        turnSpeechEndRef.current = 0
+        pendingClearOutputRef.current = false
+        setOutputTurnComplete(false)
+        setOutputAudioElapsedSec(0)
+        setOutputSpeechStartSec(0)
+        setOutputSpeechEndSec(0)
+        setOutputTurnSeq((n) => n + 1)
+      } else if (prevNextStart > 0 && now > prevNextStart + 0.02 && turnAudioStartCtxRef.current !== null) {
+        // Compensate for any silent network jitter gap between PCM chunks so
+        // `outCtx.currentTime - turnAudioStartCtxRef.current` stays locked to played audio seconds.
+        turnAudioStartCtxRef.current += now - prevNextStart
+      }
+
+      const chunkOffsetSec = turnScheduledSecRef.current
+      const speechBounds = detectPcmSpeechBounds(samples, 24000)
+      if (speechBounds.firstSec !== null && turnSpeechStartRef.current === null) {
+        const firstVoice = chunkOffsetSec + speechBounds.firstSec
+        turnSpeechStartRef.current = firstVoice
+        setOutputSpeechStartSec(firstVoice)
+      }
+      if (speechBounds.lastSec !== null) {
+        const lastVoice = chunkOffsetSec + speechBounds.lastSec
+        if (lastVoice > turnSpeechEndRef.current) {
+          turnSpeechEndRef.current = lastVoice
+          setOutputSpeechEndSec(lastVoice)
+        }
+      }
+
+      turnScheduledSecRef.current += audioBuffer.duration
+      setOutputAudioTotalSec(turnScheduledSecRef.current)
+
+      activeSourcesRef.current.add(source)
+      isSpeakingRef.current = true
+      setIsSpeaking(true)
+      setIsThinking(false)
+      startOutputClock()
+
+      source.onended = () => {
+        activeSourcesRef.current.delete(source)
+        if (activeSourcesRef.current.size === 0) {
+          const finalTotal = turnScheduledSecRef.current
+          if (outputClockRafRef.current !== null) {
+            cancelAnimationFrame(outputClockRafRef.current)
+            outputClockRafRef.current = null
+          }
+          setOutputAudioElapsedSec(finalTotal)
+          isSpeakingRef.current = false
+          setIsSpeaking(false)
+
+          if (pendingClearOutputRef.current) {
+            pendingClearOutputRef.current = false
+            // Brief 90ms settle so UI paints the final synced phrase before transitioning cleanly to heldSubtitle
+            deferredClearTimerRef.current = setTimeout(() => {
+              deferredClearTimerRef.current = null
+              if (activeSourcesRef.current.size === 0) {
+                setLiveOutputTranscript('')
+                turnAudioStartCtxRef.current = null
+                turnScheduledSecRef.current = 0
+                turnSpeechStartRef.current = null
+                turnSpeechEndRef.current = 0
+                setOutputAudioElapsedSec(0)
+                setOutputAudioTotalSec(0)
+                setOutputSpeechStartSec(0)
+                setOutputSpeechEndSec(0)
+                setOutputTurnComplete(false)
+              }
+            }, 90)
+          }
+        }
+      }
+
+      source.start(startAt)
+    },
+    [startOutputClock]
+  )
 
   const syncCapabilities = useCallback((target?: string) => {
     const store = useApp.getState()
@@ -376,7 +564,32 @@ export function useLiveVoice(options?: {
           isThinkingRef.current = false
           setIsThinking(false)
           setLiveInputTranscript('')
+          if (deferredClearTimerRef.current) {
+            clearTimeout(deferredClearTimerRef.current)
+            deferredClearTimerRef.current = null
+          }
+          // If transcript arrives for a fresh turn before audio starts, reset stale turn clock cleanly
+          if (pendingClearOutputRef.current && activeSourcesRef.current.size === 0) {
+            resetOutputTurnClock()
+            setOutputTurnSeq((n) => n + 1)
+          }
           setLiveOutputTranscript(msg.text ?? '')
+          return
+        }
+
+        if (msg.type === 'output_generation_complete') {
+          setOutputTurnComplete(true)
+          return
+        }
+
+        if (msg.type === 'output_segment_reset') {
+          if (activeSourcesRef.current.size === 0) {
+            setLiveOutputTranscript('')
+            resetOutputTurnClock()
+            setOutputTurnSeq((n) => n + 1)
+          } else {
+            pendingClearOutputRef.current = true
+          }
           return
         }
 
@@ -393,6 +606,7 @@ export function useLiveVoice(options?: {
 
         if (msg.type === 'interrupted') {
           stopOutputPlayback()
+          setLiveOutputTranscript('')
           setIsThinking(false)
           return
         }
@@ -427,7 +641,15 @@ export function useLiveVoice(options?: {
           setIsUserSpeaking(false)
           setIsThinking(false)
           setLiveInputTranscript('')
-          setLiveOutputTranscript('')
+          setOutputTurnComplete(true)
+          if (activeSourcesRef.current.size > 0) {
+            // Audio buffers are still playing out through WebAudio!
+            // Keep liveOutputTranscript visible and audio-synced until playback drains.
+            pendingClearOutputRef.current = true
+          } else {
+            setLiveOutputTranscript('')
+            resetOutputTurnClock()
+          }
           if (msg.conversationId) {
             const uMsg = msg.userMessage && typeof msg.userMessage === 'object' ? msg.userMessage : null
             const aMsg = msg.assistantMessage ?? null
@@ -565,7 +787,7 @@ export function useLiveVoice(options?: {
       onErrorRef.current?.(msg)
       teardown()
     }
-  }, [bumpUserSpeech, clearSpeechTimer, enqueueAudio, status, stopOutputPlayback, syncCapabilities, teardown, voiceName])
+  }, [bumpUserSpeech, clearSpeechTimer, enqueueAudio, resetOutputTurnClock, stopOutputPlayback, syncCapabilities, teardown, voiceName])
 
   const stopVoice = useCallback(() => {
     closingIntentRef.current = true
@@ -652,6 +874,12 @@ export function useLiveVoice(options?: {
     micLevel,
     liveInputTranscript,
     liveOutputTranscript,
+    outputAudioElapsedSec,
+    outputAudioTotalSec,
+    outputSpeechStartSec,
+    outputSpeechEndSec,
+    outputTurnComplete,
+    outputTurnSeq,
     activeTool,
     lastError,
     startVoice,

@@ -2,12 +2,20 @@
 
 import { create } from 'zustand'
 import type {
+  AutomationSessionSnapshot,
   BrowserFramePayload,
   CursorEventPayload,
+  DesktopFramePayload,
   MobileFramePayload,
   PermissionDecision,
   PermissionRequestPayload,
 } from '@/lib/agent/control-bus'
+import type {
+  AllowedDesktopAppDTO,
+  AppAllowPolicy,
+  ConnectedFolderDTO,
+  FolderAccessMode,
+} from '@/lib/agent/computer-control-types'
 import type {
   CapabilityKey,
   PermissionAuditDTO,
@@ -15,6 +23,12 @@ import type {
   PermissionPolicy,
 } from '@/lib/agent/permissions'
 import type { ConnectedDeviceDTO } from '@/lib/agent/device-bridge'
+import type {
+  TerminalSessionSnapshot,
+  TerminalShellKind,
+  TerminalTarget,
+} from '@/lib/agent/terminal-types'
+import type { VoiceStageCard } from '@/lib/agent/voice-stage-types'
 import type { OutfitSelection } from '@/lib/coucou/wardrobe'
 import type { ReasoningChain } from '@/lib/agent/reasoning-chain'
 import type { BrainTraceEvent } from '@/lib/agent/brain-trace'
@@ -81,6 +95,7 @@ export type SplitMode =
   | 'reasoning'
   | 'self_heal'
   | 'browser'
+  | 'terminal'
   | 'mobile'
   | 'identity'
   | 'permissions'
@@ -90,6 +105,14 @@ export type SplitMode =
   | 'tools'
   | 'automations'
   | 'brain'
+  | 'google_workspace'
+
+export interface ScreenHudCapturedFrame {
+  dataUrl: string
+  base64: string
+  mimeType: string
+  name?: string
+}
 
 export interface EvaDynamicPopupItem {
   id: string
@@ -151,6 +174,16 @@ interface EvaControlState {
   splitTitle: string | null
   browserFrame: BrowserFramePayload | null
   browserBusy: boolean
+  desktopFrame: DesktopFramePayload | null
+  automationSession: AutomationSessionSnapshot | null
+  terminalSnapshot: TerminalSessionSnapshot | null
+  terminalBusy: boolean
+  connectedFolders: ConnectedFolderDTO[]
+  allowedApps: AllowedDesktopAppDTO[]
+  computerControlBusy: boolean
+  screenHudOpen: boolean
+  screenHudTab: 'screen' | 'dictation'
+  screenHudCapturedFrame: ScreenHudCapturedFrame | null
   mobileFrame: MobileFramePayload | null
   mobileBusy: boolean
   cursor: LiveCursorState
@@ -160,6 +193,7 @@ interface EvaControlState {
   devices: ConnectedDeviceDTO[]
   onlineDeviceIds: string[]
   popups: EvaDynamicPopupItem[]
+  voiceStageCard: VoiceStageCard | null
   transientMood: string | null
   transientMoodNote: string | null
   dockMinimized: boolean
@@ -203,7 +237,68 @@ interface EvaControlState {
   openSplit: (mode: SplitMode, title?: string) => void
   closeSplit: () => void
   setBrowserFrame: (frame: BrowserFramePayload | null) => void
+  setDesktopFrame: (frame: DesktopFramePayload | null) => void
+  setAutomationSession: (session: AutomationSessionSnapshot | null) => void
+  setTerminalSnapshot: (snapshot: TerminalSessionSnapshot | null) => void
+  refreshTerminal: () => Promise<void>
+  runTerminalCommand: (input: {
+    command: string
+    target?: TerminalTarget | 'auto'
+    deviceId?: string | null
+    shell?: TerminalShellKind
+    cwd?: string
+  }) => Promise<{ ok: boolean; exitCode?: number; output?: string; error?: string }>
+  setTerminalTarget: (input: {
+    target: TerminalTarget
+    deviceId?: string | null
+    shell?: TerminalShellKind
+  }) => Promise<void>
+  interruptTerminal: () => Promise<void>
+  clearTerminal: () => Promise<void>
+  pairWindowsFromTerminal: (deviceName?: string, platform?: 'windows' | 'macos' | 'linux') => Promise<{
+    ok: boolean
+    device?: ConnectedDeviceDTO
+    pairingToken?: string
+    powershellCommand?: string
+    error?: string
+  }>
   setMobileFrame: (frame: MobileFramePayload | null) => void
+  openScreenHud: (tab: 'screen' | 'dictation', capturedFrame?: ScreenHudCapturedFrame | null) => void
+  closeScreenHud: () => void
+  refreshComputerControl: () => Promise<void>
+  addConnectedFolder: (input: {
+    label: string
+    path: string
+    platform?: 'windows' | 'macos' | 'linux'
+    accessMode?: FolderAccessMode
+  }) => Promise<{ ok: boolean; error?: string }>
+  updateConnectedFolder: (
+    id: string,
+    patch: { label?: string; accessMode?: FolderAccessMode; enabled?: boolean }
+  ) => Promise<void>
+  deleteConnectedFolder: (id: string) => Promise<void>
+  addAllowedApp: (input: {
+    name: string
+    executable: string
+    platform?: 'windows' | 'macos' | 'linux'
+    policy?: AppAllowPolicy
+    category?: AllowedDesktopAppDTO['category']
+  }) => Promise<{ ok: boolean; error?: string }>
+  updateAllowedApp: (id: string, patch: { policy?: AppAllowPolicy; name?: string }) => Promise<void>
+  deleteAllowedApp: (id: string) => Promise<void>
+  controlAutomationSession: (
+    action: 'pause' | 'resume' | 'takeover' | 'release_takeover' | 'stop'
+  ) => Promise<void>
+  captureWindowsScreen: (deviceId?: string) => Promise<{
+    ok: boolean
+    error?: string
+    desktopFrame?: DesktopFramePayload | null
+  }>
+  windowsBridgeAction: (
+    bridgeAction: string,
+    bridgeArgs?: Record<string, unknown>,
+    deviceId?: string
+  ) => Promise<{ ok: boolean; output?: string; error?: string }>
   updateCursor: (payload: CursorEventPayload) => void
   hideCursor: () => void
   pushPendingPermission: (req: PermissionRequestPayload) => void
@@ -211,6 +306,9 @@ interface EvaControlState {
   removePendingPermission: (requestId: string) => void
   pushPopup: (popup: Omit<EvaDynamicPopupItem, 'createdAt'>) => void
   dismissPopup: (id?: string) => void
+  setVoiceStageCard: (card: VoiceStageCard | null) => void
+  dismissVoiceStageCard: (id?: string) => void
+  toggleVoiceStageCardPinned: () => void
   setTransientMood: (mood: string | null, note?: string | null) => void
   setOnlineDeviceIds: (ids: string[]) => void
   setDockMinimized: (minimized: boolean) => void
@@ -286,6 +384,16 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
   splitTitle: null,
   browserFrame: null,
   browserBusy: false,
+  desktopFrame: null,
+  automationSession: null,
+  terminalSnapshot: null,
+  terminalBusy: false,
+  connectedFolders: [],
+  allowedApps: [],
+  computerControlBusy: false,
+  screenHudOpen: false,
+  screenHudTab: 'screen',
+  screenHudCapturedFrame: null,
   mobileFrame: null,
   mobileBusy: false,
   cursor: {
@@ -302,6 +410,7 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
   devices: [],
   onlineDeviceIds: [],
   popups: [],
+  voiceStageCard: null,
   transientMood: null,
   transientMoodNote: null,
   dockMinimized: false,
@@ -397,7 +506,356 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
 
   setBrowserFrame: (frame) => set({ browserFrame: frame && frame.active ? frame : null }),
 
+  setDesktopFrame: (frame) => set({ desktopFrame: frame && frame.active ? frame : null }),
+
+  setAutomationSession: (session) => set({ automationSession: session }),
+
+  setTerminalSnapshot: (snapshot) => set({ terminalSnapshot: snapshot }),
+
+  refreshTerminal: async () => {
+    try {
+      const res = await fetch('/api/terminal', { cache: 'no-store' })
+      if (!res.ok) return
+      const data = (await res.json()) as { ok?: boolean; snapshot?: TerminalSessionSnapshot }
+      if (data.ok && data.snapshot) {
+        set({ terminalSnapshot: data.snapshot })
+      }
+    } catch {
+      /* ignore transient fetch errors */
+    }
+  },
+
+  runTerminalCommand: async (input) => {
+    set({ terminalBusy: true })
+    try {
+      const res = await fetch('/api/terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'exec', ...input }),
+      })
+      const data = (await res.json()) as {
+        ok?: boolean
+        exitCode?: number
+        output?: string
+        error?: string
+        snapshot?: TerminalSessionSnapshot
+      }
+      if (data.snapshot) {
+        set({ terminalSnapshot: data.snapshot })
+      }
+      return {
+        ok: Boolean(data.ok),
+        exitCode: data.exitCode,
+        output: data.output,
+        error: data.error,
+      }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    } finally {
+      set({ terminalBusy: false })
+    }
+  },
+
+  setTerminalTarget: async (input) => {
+    try {
+      const res = await fetch('/api/terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'set_target', ...input }),
+      })
+      const data = (await res.json()) as { ok?: boolean; snapshot?: TerminalSessionSnapshot }
+      if (data.snapshot) {
+        set({ terminalSnapshot: data.snapshot })
+      }
+    } catch {
+      /* ignore */
+    }
+  },
+
+  interruptTerminal: async () => {
+    try {
+      const res = await fetch('/api/terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'interrupt' }),
+      })
+      const data = (await res.json()) as { snapshot?: TerminalSessionSnapshot }
+      if (data.snapshot) {
+        set({ terminalSnapshot: data.snapshot })
+      }
+    } catch {
+      /* ignore */
+    }
+  },
+
+  clearTerminal: async () => {
+    try {
+      const res = await fetch('/api/terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'clear' }),
+      })
+      const data = (await res.json()) as { snapshot?: TerminalSessionSnapshot }
+      if (data.snapshot) {
+        set({ terminalSnapshot: data.snapshot })
+      }
+    } catch {
+      /* ignore */
+    }
+  },
+
+  pairWindowsFromTerminal: async (deviceName = 'Windows PC', platform = 'windows') => {
+    try {
+      const res = await fetch('/api/terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'pair_windows', deviceName, platform }),
+      })
+      const data = (await res.json()) as {
+        ok?: boolean
+        device?: ConnectedDeviceDTO
+        pairingToken?: string
+        powershellCommand?: string
+        snapshot?: TerminalSessionSnapshot
+        error?: string
+      }
+      if (data.snapshot) {
+        set({ terminalSnapshot: data.snapshot })
+      }
+      if (data.ok) {
+        void get().refreshDevices()
+      }
+      return {
+        ok: Boolean(data.ok),
+        device: data.device,
+        pairingToken: data.pairingToken,
+        powershellCommand: data.powershellCommand,
+        error: data.error,
+      }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  },
+
   setMobileFrame: (frame) => set({ mobileFrame: frame && frame.active ? frame : null }),
+
+  openScreenHud: (tab, capturedFrame) =>
+    set((s) => ({
+      screenHudOpen: true,
+      screenHudTab: tab,
+      screenHudCapturedFrame: capturedFrame !== undefined ? capturedFrame : s.screenHudCapturedFrame,
+    })),
+
+  closeScreenHud: () => set({ screenHudOpen: false }),
+
+  refreshComputerControl: async () => {
+    try {
+      const res = await fetch('/api/computer-control', { cache: 'no-store' })
+      if (!res.ok) return
+      const data = (await res.json()) as {
+        folders?: ConnectedFolderDTO[]
+        apps?: AllowedDesktopAppDTO[]
+        session?: AutomationSessionSnapshot | null
+        desktopFrame?: DesktopFramePayload | null
+        browserFrame?: BrowserFramePayload | null
+      }
+      set((s) => ({
+        connectedFolders: Array.isArray(data.folders) ? data.folders : s.connectedFolders,
+        allowedApps: Array.isArray(data.apps) ? data.apps : s.allowedApps,
+        automationSession: data.session ?? s.automationSession,
+        desktopFrame: data.desktopFrame && data.desktopFrame.active ? data.desktopFrame : s.desktopFrame,
+        browserFrame: data.browserFrame && data.browserFrame.active ? data.browserFrame : s.browserFrame,
+      }))
+    } catch {
+      /* ignore transient fetch errors */
+    }
+  },
+
+  addConnectedFolder: async (input) => {
+    set({ computerControlBusy: true })
+    try {
+      const res = await fetch('/api/computer-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'add_folder', ...input }),
+      })
+      const data = (await res.json()) as { ok?: boolean; folders?: ConnectedFolderDTO[]; error?: string }
+      if (data.ok && Array.isArray(data.folders)) {
+        set({ connectedFolders: data.folders })
+        return { ok: true }
+      }
+      return { ok: false, error: data.error || 'Failed to add folder' }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    } finally {
+      set({ computerControlBusy: false })
+    }
+  },
+
+  updateConnectedFolder: async (id, patch) => {
+    set((s) => ({
+      connectedFolders: s.connectedFolders.map((f) => (f.id === id ? { ...f, ...patch } : f)),
+    }))
+    try {
+      const res = await fetch('/api/computer-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update_folder', id, ...patch }),
+      })
+      const data = (await res.json()) as { ok?: boolean; folders?: ConnectedFolderDTO[] }
+      if (data.ok && Array.isArray(data.folders)) {
+        set({ connectedFolders: data.folders })
+      }
+    } catch {
+      void get().refreshComputerControl()
+    }
+  },
+
+  deleteConnectedFolder: async (id) => {
+    set((s) => ({
+      connectedFolders: s.connectedFolders.filter((f) => f.id !== id),
+    }))
+    try {
+      const res = await fetch('/api/computer-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete_folder', id }),
+      })
+      const data = (await res.json()) as { ok?: boolean; folders?: ConnectedFolderDTO[] }
+      if (data.ok && Array.isArray(data.folders)) {
+        set({ connectedFolders: data.folders })
+      }
+    } catch {
+      void get().refreshComputerControl()
+    }
+  },
+
+  addAllowedApp: async (input) => {
+    set({ computerControlBusy: true })
+    try {
+      const res = await fetch('/api/computer-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'add_app', ...input }),
+      })
+      const data = (await res.json()) as { ok?: boolean; apps?: AllowedDesktopAppDTO[]; error?: string }
+      if (data.ok && Array.isArray(data.apps)) {
+        set({ allowedApps: data.apps })
+        return { ok: true }
+      }
+      return { ok: false, error: data.error || 'Failed to add app' }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    } finally {
+      set({ computerControlBusy: false })
+    }
+  },
+
+  updateAllowedApp: async (id, patch) => {
+    set((s) => ({
+      allowedApps: s.allowedApps.map((a) => (a.id === id ? { ...a, ...patch } : a)),
+    }))
+    try {
+      const res = await fetch('/api/computer-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update_app', id, ...patch }),
+      })
+      const data = (await res.json()) as { ok?: boolean; apps?: AllowedDesktopAppDTO[] }
+      if (data.ok && Array.isArray(data.apps)) {
+        set({ allowedApps: data.apps })
+      }
+    } catch {
+      void get().refreshComputerControl()
+    }
+  },
+
+  deleteAllowedApp: async (id) => {
+    set((s) => ({
+      allowedApps: s.allowedApps.filter((a) => a.id !== id),
+    }))
+    try {
+      const res = await fetch('/api/computer-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete_app', id }),
+      })
+      const data = (await res.json()) as { ok?: boolean; apps?: AllowedDesktopAppDTO[] }
+      if (data.ok && Array.isArray(data.apps)) {
+        set({ allowedApps: data.apps })
+      }
+    } catch {
+      void get().refreshComputerControl()
+    }
+  },
+
+  controlAutomationSession: async (action) => {
+    set({ computerControlBusy: true })
+    try {
+      const res = await fetch('/api/computer-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      })
+      const data = (await res.json()) as { ok?: boolean; session?: AutomationSessionSnapshot }
+      if (data.ok && data.session) {
+        set({ automationSession: data.session })
+      }
+    } catch {
+      /* ignore */
+    } finally {
+      set({ computerControlBusy: false })
+    }
+  },
+
+  captureWindowsScreen: async (deviceId) => {
+    set({ computerControlBusy: true })
+    try {
+      const res = await fetch('/api/computer-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'capture_windows_screen', deviceId }),
+      })
+      const data = (await res.json()) as {
+        ok?: boolean
+        error?: string
+        desktopFrame?: DesktopFramePayload | null
+      }
+      if (data.desktopFrame && data.desktopFrame.active) {
+        set({ desktopFrame: data.desktopFrame })
+      }
+      return { ok: Boolean(data.ok), error: data.error, desktopFrame: data.desktopFrame }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    } finally {
+      set({ computerControlBusy: false })
+    }
+  },
+
+  windowsBridgeAction: async (bridgeAction, bridgeArgs = {}, deviceId) => {
+    set({ computerControlBusy: true })
+    try {
+      const res = await fetch('/api/computer-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'windows_action', bridgeAction, bridgeArgs, deviceId }),
+      })
+      const data = (await res.json()) as {
+        ok?: boolean
+        output?: string
+        error?: string
+        desktopFrame?: DesktopFramePayload | null
+      }
+      if (data.desktopFrame && data.desktopFrame.active) {
+        set({ desktopFrame: data.desktopFrame })
+      }
+      return { ok: Boolean(data.ok), output: data.output, error: data.error }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    } finally {
+      set({ computerControlBusy: false })
+    }
+  },
 
   updateCursor: (payload) =>
     set((s) => ({
@@ -444,6 +902,26 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
     set((s) => ({
       popups: id ? s.popups.filter((p) => p.id !== id) : [],
     })),
+
+  setVoiceStageCard: (card) => set({ voiceStageCard: card }),
+
+  dismissVoiceStageCard: (id) =>
+    set((s) => {
+      if (!s.voiceStageCard) return s
+      if (id && s.voiceStageCard.id !== id) return s
+      return { voiceStageCard: null }
+    }),
+
+  toggleVoiceStageCardPinned: () =>
+    set((s) => {
+      if (!s.voiceStageCard) return s
+      return {
+        voiceStageCard: {
+          ...s.voiceStageCard,
+          pinned: !s.voiceStageCard.pinned,
+        },
+      }
+    }),
 
   setTransientMood: (mood, note) =>
     set({

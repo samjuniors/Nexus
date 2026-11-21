@@ -7,7 +7,13 @@ import { chatText, getZAI } from '@/lib/agent/zai'
 import { controlBus } from '@/lib/agent/control-bus'
 import { liveBrowser } from '@/lib/agent/browser-manager'
 import { requireCapabilityPermission } from '@/lib/agent/permissions'
-import { listConnectedDevices } from '@/lib/agent/device-bridge'
+import {
+  buildPowerShellPairCommand,
+  createPairedDevice,
+  listConnectedDevices,
+} from '@/lib/agent/device-bridge'
+import { terminalManager } from '@/lib/agent/terminal-manager'
+import type { TerminalShellKind, TerminalTarget } from '@/lib/agent/terminal-types'
 import {
   getAgentIdentity,
   listAgentInbox,
@@ -177,9 +183,9 @@ const BUILTIN_TOOL_SPECS: Record<string, { name: string; description: string; ar
     app_control: {
       name: 'App UI Self-Control',
       description:
-        'Control the Nexus Agent OS interface visually with an animated live cursor: switch tabs, open or close split-screen panels (reasoning, self_heal, browser, mobile, identity, permissions, devices, org, artifacts, tools, automations, brain), switch between standard and Voice Focus layout modes, collapse/expand the sidebar rail, open the interactive GBrain graph, show popups, click buttons/targets, or toggle light/dark theme.',
+        'Control the Nexus Agent OS interface visually with an animated live cursor: switch tabs, open or close split-screen panels (reasoning, self_heal, browser, terminal, google_workspace, mobile, identity, permissions, devices, org, artifacts, tools, automations, brain), switch between standard and Voice Focus layout modes, collapse/expand the sidebar rail, open the interactive GBrain graph, show popups, click buttons/targets, or toggle light/dark theme.',
       argSpec:
-        '{"action": "navigate_tab"|"open_split"|"close_split"|"set_layout_mode"|"toggle_sidebar"|"open_gbrain_graph"|"open_popup"|"close_popup"|"click_target"|"set_theme", "tab"?: string, "mode"?: "reasoning"|"self_heal"|"browser"|"mobile"|"identity"|"permissions"|"devices"|"org"|"artifacts"|"tools"|"automations"|"brain"|"standard"|"focus", "collapsed"?: boolean, "title"?: string, "body"?: string, "selector"?: string, "label"?: string, "theme"?: "light"|"dark", "url"?: string}',
+        '{"action": "navigate_tab"|"open_split"|"close_split"|"set_layout_mode"|"toggle_sidebar"|"open_gbrain_graph"|"open_popup"|"close_popup"|"click_target"|"set_theme", "tab"?: string, "mode"?: "reasoning"|"self_heal"|"browser"|"terminal"|"google_workspace"|"mobile"|"identity"|"permissions"|"devices"|"org"|"artifacts"|"tools"|"automations"|"brain"|"standard"|"focus", "collapsed"?: boolean, "title"?: string, "body"?: string, "selector"?: string, "label"?: string, "theme"?: "light"|"dark", "url"?: string}',
     },
     mobile_control: {
       name: 'Android & Mobile Device Takeover',
@@ -196,11 +202,18 @@ const BUILTIN_TOOL_SPECS: Record<string, { name: string; description: string; ar
         '{"action": "list"|"install_plugin"|"uninstall_plugin"|"toggle_plugin"|"toggle_skill"|"toggle_tool"|"connect_mcp"|"disconnect_mcp", "slug"?: string, "enabled"?: boolean}',
     },
     device_control: {
-      name: 'Connected Device Control',
+      name: 'Windows PC & Connected Device Control',
       description:
-        'List paired local Mac/Windows/Linux computers and Android/iOS devices and execute approved actions (system_info, open_url, open_app, shell) on an online device via the Nexus Companion Bridge.',
+        'Control paired local Windows/macOS/Linux PCs via the Nexus Companion Bridge with Connected Folders and Per-App Allowlist enforcement: capture live Windows screen, list/focus windows, launch allowlisted apps, click/type/hotkey/paste text, manage files inside Connected Folders (list_folder, read_file, write_file, move_file), batch-analyze local folder images with Gemini Vision (analyze_folder_images), open URLs, or run shell commands.',
       argSpec:
-        '{"action": "list"|"system_info"|"open_url"|"open_app"|"shell", "deviceId"?: string, "url"?: string, "app"?: string, "command"?: string}',
+        '{"action": "list"|"system_info"|"screen_capture"|"window_list"|"focus_window"|"open_url"|"open_app"|"ui_click"|"ui_type"|"ui_hotkey"|"paste_text"|"list_folder"|"read_file"|"write_file"|"move_file"|"analyze_folder_images"|"shell", "deviceId"?: string, "url"?: string, "app"?: string, "title"?: string, "x"?: number, "y"?: number, "text"?: string, "keys"?: string, "path"?: string, "from"?: string, "to"?: string, "content"?: string, "prompt"?: string, "command"?: string}',
+    },
+    terminal_exec: {
+      name: 'Real Terminal & PowerShell',
+      description:
+        'Execute REAL OS shell commands (Windows PowerShell on a paired Windows PC via Companion Bridge, or real host bash/pwsh/sh) streamed live into the Terminal split panel. Never fakes or simulates output. Also supports "pair_windows" to mint a pairing token and 1-line Windows PowerShell bootstrap command to pair a Windows PC or run pairing workflows, "status" to inspect available real shells/devices, "set_target" to switch shells, "interrupt" (^C), and "clear".',
+      argSpec:
+        '{"action": "exec"|"status"|"pair_windows"|"set_target"|"interrupt"|"clear", "command"?: string, "target"?: "auto"|"windows_pc"|"host", "shell"?: "powershell"|"pwsh"|"bash"|"sh", "deviceId"?: string, "deviceName"?: string, "cwd"?: string, "timeoutMs"?: number}',
     },
     self_heal_code: {
       name: 'Self-Healing Code & App Repair',
@@ -2239,6 +2252,8 @@ export async function executeTool(
             'reasoning',
             'self_heal',
             'browser',
+            'terminal',
+            'google_workspace',
             'mobile',
             'identity',
             'permissions',
@@ -2310,6 +2325,7 @@ export async function executeTool(
           const id = `pop_${Date.now().toString(36)}`
           const title = str(args.title, 'Eva Workspace Card')
           const body = str(args.body, '')
+          const imageUrl = str(args.imageUrl) || str(args.image_url) || ''
           const actions = Array.isArray(args.actions)
             ? (args.actions as { label: string; tab?: string; splitMode?: string; url?: string }[])
             : undefined
@@ -2321,6 +2337,17 @@ export async function executeTool(
             kind: 'action',
             actions,
           })
+          if (imageUrl) {
+            controlBus.broadcastVoiceStagePresent({
+              id,
+              kind: 'image',
+              title,
+              url: imageUrl,
+              caption: body || undefined,
+              sourceTool: 'app_control',
+              createdAt: new Date().toISOString(),
+            })
+          }
           return {
             ok: true,
             summary: `Opened popup: ${title}`,
@@ -2329,7 +2356,9 @@ export async function executeTool(
           }
         }
         if (action === 'close_popup') {
-          controlBus.broadcastUiCommand({ command: 'close_popup', id: str(args.id) || undefined })
+          const popupId = str(args.id) || undefined
+          controlBus.broadcastUiCommand({ command: 'close_popup', id: popupId })
+          controlBus.broadcastVoiceStageDismiss(popupId)
           return { ok: true, summary: 'Closed popup', raw: 'Dismissed workspace popup.' }
         }
         if (action === 'click_target') {
@@ -2479,6 +2508,14 @@ export async function executeTool(
       }
 
       case 'device_control': {
+        const {
+          automationSession,
+          evaluateAppPolicy,
+          evaluateFolderAccess,
+          listAllowedDesktopApps,
+          listConnectedFolders,
+        } = await import('@/lib/agent/computer-control')
+
         const action = str(args.action, 'list').toLowerCase()
         const devices = await listConnectedDevices()
         if (action === 'list') {
@@ -2487,7 +2524,7 @@ export async function executeTool(
             return {
               ok: true,
               summary: 'No local devices paired yet',
-              raw: 'No connected desktop computers are paired yet. I opened the Connected Devices panel so the user can pair a Mac/Windows/Linux machine with one command.',
+              raw: 'No connected desktop computers are paired yet. I opened the Connected Devices panel so the user can pair a Windows/macOS/Linux PC with one command.',
               display: { kind: 'text', text: 'Opened Connected Devices panel for one-time pairing.' },
             }
           }
@@ -2499,6 +2536,7 @@ export async function executeTool(
 
         const target =
           (str(args.deviceId) ? devices.find((d) => d.id === str(args.deviceId)) : null) ??
+          devices.find((d) => d.status === 'online' && d.platform !== 'android' && d.platform !== 'ios') ??
           devices.find((d) => d.status === 'online')
         if (!target || target.status !== 'online') {
           controlBus.broadcastUiCommand({ command: 'open_split', mode: 'devices', title: 'Connected Devices' })
@@ -2510,17 +2548,178 @@ export async function executeTool(
           }
         }
 
-        const perm = await requireCapabilityPermission({
-          capability: 'desktop_bridge',
-          actionSummary: `${action} on ${target.name} (${target.platform})`,
-          details: JSON.stringify(args).slice(0, 180),
-        })
-        if (!perm.allowed) {
+        // Pause / Takeover execution barrier
+        const canProceed = await automationSession.waitIfPausedOrTakeover()
+        if (!canProceed) {
           return {
             ok: false,
-            summary: 'Desktop bridge permission declined',
-            raw: perm.reason ?? 'Permission declined for device_control.',
-            display: { kind: 'text', text: perm.reason ?? 'Permission declined.' },
+            summary: 'Desktop automation stopped by user',
+            raw: 'Automation session was stopped by the user.',
+            display: { kind: 'text', text: 'Stopped by user.' },
+          }
+        }
+
+        // Connected Folders strict guard
+        if (['list_folder', 'read_file', 'write_file', 'move_file', 'analyze_folder_images'].includes(action)) {
+          const folders = await listConnectedFolders()
+          const checkPaths =
+            action === 'move_file'
+              ? [str(args.from), str(args.to)]
+              : [str(args.path)]
+          const op = action === 'write_file' || action === 'move_file' ? 'write' : 'read'
+          for (const p of checkPaths) {
+            const guard = evaluateFolderAccess(p, op, folders)
+            if (!guard.allowed) {
+              controlBus.broadcastUiCommand({
+                command: 'open_split',
+                mode: 'permissions',
+                title: 'Permissions & Connected Folders',
+              })
+              return {
+                ok: false,
+                summary: 'Blocked by Connected Folders allowlist',
+                raw: guard.reason,
+                display: { kind: 'text', text: guard.reason },
+              }
+            }
+          }
+        }
+
+        // Per-App Allowlist strict guard
+        if (action === 'open_app') {
+          const apps = await listAllowedDesktopApps()
+          const appName = str(args.app)
+          const evalRes = evaluateAppPolicy(appName, apps)
+          if (evalRes.policy === 'deny') {
+            return {
+              ok: false,
+              summary: `App blocked by policy: ${appName}`,
+              raw: `Blocked: "${appName}" is set to Deny in Permissions > Allowed Apps.`,
+              display: { kind: 'text', text: `Blocked by Allowed Apps policy: ${appName}` },
+            }
+          }
+          if (evalRes.policy === 'ask') {
+            automationSession.setAwaitingApproval(`Launch ${appName} on ${target.name}`)
+            const appPerm = await requireCapabilityPermission({
+              capability: 'desktop_bridge',
+              actionSummary: `Launch app "${appName}" on ${target.name}`,
+              details: JSON.stringify(args).slice(0, 180),
+            })
+            automationSession.clearAwaitingApproval()
+            if (!appPerm.allowed) {
+              return {
+                ok: false,
+                summary: `Launch declined for ${appName}`,
+                raw: appPerm.reason ?? `User declined launching ${appName}.`,
+                display: { kind: 'text', text: appPerm.reason ?? 'App launch declined.' },
+              }
+            }
+          }
+        } else {
+          const perm = await requireCapabilityPermission({
+            capability: 'desktop_bridge',
+            actionSummary: `${action} on ${target.name} (${target.platform})`,
+            details: JSON.stringify(args).slice(0, 180),
+          })
+          if (!perm.allowed) {
+            return {
+              ok: false,
+              summary: 'Desktop bridge permission declined',
+              raw: perm.reason ?? 'Permission declined for device_control.',
+              display: { kind: 'text', text: perm.reason ?? 'Permission declined.' },
+            }
+          }
+        }
+
+        // Batch-analyze local images inside a Connected Folder using Gemini Vision
+        if (action === 'analyze_folder_images') {
+          const folderPath = str(args.path)
+          const analysisPrompt =
+            str(args.prompt) ||
+            'Analyze these local images. For each item, write a crisp title, key visual attributes, and a ready-to-publish description.'
+          const listRes = await controlBus.sendDeviceCommand(target.id, 'list_folder', { path: folderPath })
+          if (!listRes.ok) {
+            return {
+              ok: false,
+              summary: 'Failed to list connected folder',
+              raw: listRes.error ?? listRes.output,
+              display: { kind: 'text', text: `Error: ${listRes.error ?? listRes.output}` },
+            }
+          }
+
+          let entries: { name: string; path?: string; isDir?: boolean }[] = []
+          try {
+            const parsed = JSON.parse(listRes.output) as { entries?: typeof entries }
+            entries = Array.isArray(parsed.entries) ? parsed.entries : []
+          } catch {
+            entries = []
+          }
+
+          const imageFiles = entries
+            .filter((e) => !e.isDir && /\.(png|jpe?g|webp)$/i.test(e.name))
+            .slice(0, 5)
+
+          if (imageFiles.length === 0) {
+            return {
+              ok: true,
+              summary: 'No images found in folder',
+              raw: `No .png, .jpg, or .webp images found in ${folderPath}.`,
+              display: { kind: 'text', text: `No image files found in ${folderPath}.` },
+            }
+          }
+
+          const apiKey = process.env.GEMINI_API_KEY?.trim()
+          if (!apiKey) {
+            return {
+              ok: false,
+              summary: 'GEMINI_API_KEY missing for image analysis',
+              raw: 'GEMINI_API_KEY is not configured on the server.',
+            }
+          }
+
+          const { GoogleGenAI, ThinkingLevel } = await import('@google/genai')
+          const ai = new GoogleGenAI({
+            apiKey,
+            httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+          })
+
+          const parts: Array<{ inlineData: { mimeType: string; data: string } } | { text: string }> = []
+          const loadedNames: string[] = []
+          for (const file of imageFiles) {
+            const fullPath = file.path || `${folderPath}\\${file.name}`
+            const readRes = await controlBus.sendDeviceCommand(target.id, 'read_file', {
+              path: fullPath,
+              encoding: 'base64',
+            })
+            if (readRes.ok && readRes.output) {
+              const ext = file.name.split('.').pop()?.toLowerCase()
+              const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+              parts.push({ text: `File: ${file.name}` })
+              parts.push({ inlineData: { mimeType, data: readRes.output.trim() } })
+              loadedNames.push(file.name)
+            }
+          }
+
+          if (loadedNames.length === 0) {
+            return {
+              ok: false,
+              summary: 'Could not read image bytes from connected folder',
+              raw: 'None of the detected image files could be read from the bridge.',
+            }
+          }
+
+          parts.push({ text: analysisPrompt })
+          const visionRes = await ai.models.generateContent({
+            model: 'gemini-4-hydrogen',
+            contents: { parts },
+            config: { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
+          })
+          const analysis = (visionRes.text ?? '').trim()
+          return {
+            ok: true,
+            summary: `Analyzed ${loadedNames.length} image(s) from ${folderPath}`,
+            raw: analysis,
+            display: { kind: 'text', text: analysis },
           }
         }
 
@@ -2728,6 +2927,147 @@ export async function executeTool(
         }
 
         return { ok: false, summary: `Unknown self_heal_code action: ${action}`, raw: `Unsupported action "${action}".` }
+      }
+
+      case 'terminal_exec': {
+        const action = str(args.action, args.command ? 'exec' : 'status').toLowerCase()
+        // Always open the real live Terminal split panel so the user watches real commands & output
+        controlBus.broadcastUiCommand({
+          command: 'open_split',
+          mode: 'terminal',
+          title: 'Terminal · PowerShell',
+        })
+
+        if (action === 'status') {
+          const snap = terminalManager.getSnapshot()
+          const devices = await listConnectedDevices()
+          const desktops = devices.filter((d) => d.platform !== 'android' && d.platform !== 'ios')
+          const onlineDesktops = desktops.filter((d) => d.status === 'online')
+          const summary = `Terminal active: ${snap.target === 'windows_pc' ? `${snap.deviceName} (Windows PowerShell)` : `${snap.shell} on ${snap.hostPlatform}`}`
+          const raw = [
+            `Active Target: ${snap.target} (${snap.shell} via ${snap.shellBinary})`,
+            `Current Directory: ${snap.cwd}`,
+            `Host Platform: ${snap.hostPlatform}`,
+            `Available Host Shells: ${snap.availableHostShells.join(', ') || 'none'}`,
+            `Online Desktop Bridges (${onlineDesktops.length}): ${onlineDesktops.map((d) => `${d.name} [${d.platform}, id=${d.id}]`).join(', ') || 'none — use action "pair_windows" to pair a Windows PC for native Windows PowerShell'}`,
+          ].join('\n')
+          return { ok: true, summary, raw, display: { kind: 'text', text: raw } }
+        }
+
+        if (action === 'clear') {
+          terminalManager.clear()
+          return { ok: true, summary: 'Cleared terminal console', raw: 'Cleared terminal output buffer.' }
+        }
+
+        if (action === 'interrupt') {
+          const res = terminalManager.interrupt()
+          return { ok: res.ok, summary: res.message, raw: res.message }
+        }
+
+        if (action === 'set_target') {
+          const target: TerminalTarget = str(args.target) === 'windows_pc' ? 'windows_pc' : 'host'
+          const shellArg = str(args.shell) as TerminalShellKind | ''
+          const snap = await terminalManager.setTarget({
+            target,
+            deviceId: str(args.deviceId) || null,
+            shell: shellArg || undefined,
+          })
+          return {
+            ok: true,
+            summary: `Switched terminal to ${snap.target === 'windows_pc' ? `${snap.deviceName} PowerShell` : snap.shell}`,
+            raw: `Terminal target is now ${snap.target} (${snap.shell}, cwd=${snap.cwd}).`,
+          }
+        }
+
+        if (action === 'pair_windows') {
+          const deviceName = str(args.deviceName, 'Windows PC').trim() || 'Windows PC'
+          const platform = str(args.platform, 'windows').trim() || 'windows'
+          const origin =
+            process.env.NEXT_PUBLIC_APP_URL ||
+            process.env.APP_URL ||
+            `http://localhost:${process.env.PORT || 3000}`
+          const { device, pairingToken } = await createPairedDevice(deviceName, platform)
+          const psCmd = buildPowerShellPairCommand(origin, pairingToken)
+          terminalManager.pushSystemNotice(
+            `Eva generated a real Windows PowerShell pairing command for "${device.name}":\n${psCmd}`
+          )
+          controlBus.broadcastUiCommand({ command: 'refresh_state', scopes: ['devices'] })
+          const raw = [
+            `Paired device entry created: ${device.name} (id=${device.id}, platform=${device.platform})`,
+            `One-line Windows PowerShell command (run on your Windows PC to connect live):`,
+            psCmd,
+            `Once running, your Windows PC appears online and Eva can run real Windows PowerShell directly on it.`,
+          ].join('\n')
+          return {
+            ok: true,
+            summary: `Generated PowerShell pairing command for ${device.name}`,
+            raw,
+            display: { kind: 'code', code: psCmd, output: `Pairing token issued for ${device.name}. Run in Windows PowerShell to connect.`, ok: true },
+          }
+        }
+
+        // Default: exec a real OS shell / PowerShell command
+        const command = str(args.command || args.script).trim()
+        if (!command) {
+          return { ok: false, summary: 'Missing command', raw: 'Error: provide "command" (the real PowerShell or shell command to execute).' }
+        }
+
+        const requestedTarget = (str(args.target, 'auto') as TerminalTarget | 'auto') || 'auto'
+        const requestedShell = (str(args.shell) as TerminalShellKind | '') || undefined
+        const devices = await listConnectedDevices()
+        const onlineDesktop =
+          (str(args.deviceId)
+            ? devices.find((d) => d.id === str(args.deviceId) && d.status === 'online')
+            : null) ??
+          devices.find((d) => d.status === 'online' && d.platform === 'windows') ??
+          devices.find((d) => d.status === 'online' && d.platform !== 'android' && d.platform !== 'ios')
+
+        const willUseRemoteDesktop =
+          requestedTarget === 'windows_pc' ||
+          (requestedTarget === 'auto' &&
+            Boolean(onlineDesktop) &&
+            (requestedShell === 'powershell' ||
+              requestedShell === 'pwsh' ||
+              terminalManager.getSnapshot().target === 'windows_pc'))
+
+        const perm = await requireCapabilityPermission({
+          capability: willUseRemoteDesktop ? 'desktop_bridge' : 'workspace_shell',
+          actionSummary: `Run ${willUseRemoteDesktop ? 'Windows PowerShell' : 'Terminal'} command: ${truncate(command, 90)}`,
+          details: willUseRemoteDesktop
+            ? `Real Windows PowerShell execution on ${onlineDesktop?.name ?? 'paired Windows PC'}`
+            : `Real host shell command in ${terminalManager.getSnapshot().cwd}`,
+        })
+        if (!perm.allowed) {
+          return {
+            ok: false,
+            summary: `Permission declined for terminal command`,
+            raw: perm.reason ?? 'User declined terminal execution permission.',
+            display: { kind: 'text', text: perm.reason ?? 'Permission declined.' },
+          }
+        }
+
+        const execRes = await terminalManager.execute({
+          command,
+          actor: 'eva',
+          target: requestedTarget,
+          deviceId: str(args.deviceId) || null,
+          shell: requestedShell || undefined,
+          cwd: str(args.cwd) || undefined,
+          timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
+        })
+
+        const outText = truncate(execRes.output || '(no output)', 5000)
+        return {
+          ok: execRes.ok,
+          summary: `${execRes.targetLabel}: exit ${execRes.exitCode} (${execRes.durationMs}ms)`,
+          raw: `[${execRes.targetLabel}] ${execRes.cwd}\n$ ${command}\nexit=${execRes.exitCode} (${execRes.durationMs}ms)\n${outText}`,
+          display: {
+            kind: 'code',
+            code: command,
+            output: truncate(outText, 1600),
+            ok: execRes.ok,
+          },
+        }
       }
 
       default: {

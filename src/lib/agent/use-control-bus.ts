@@ -6,14 +6,18 @@ import { useApp } from '@/lib/agent/store'
 import { useEvaControl, type SplitMode } from '@/lib/agent/eva-control-store'
 import type { Tab } from '@/lib/agent/client'
 import type {
+  AutomationSessionSnapshot,
   BrowserFramePayload,
   CursorEventPayload,
+  DesktopFramePayload,
   MobileFramePayload,
   PermissionRequestPayload,
 } from '@/lib/agent/control-bus'
 import type { ReasoningChain } from '@/lib/agent/reasoning-chain'
 import type { BrainTraceEvent } from '@/lib/agent/brain-trace'
 import type { SelfHealSession } from '@/lib/agent/self-heal'
+import type { TerminalSessionSnapshot } from '@/lib/agent/terminal-types'
+import type { VoiceStageCard } from '@/lib/agent/voice-stage-types'
 
 const VALID_TABS = new Set<Tab>([
   'agent',
@@ -33,6 +37,7 @@ const VALID_SPLIT_MODES = new Set<SplitMode>([
   'reasoning',
   'self_heal',
   'browser',
+  'terminal',
   'mobile',
   'identity',
   'permissions',
@@ -42,6 +47,7 @@ const VALID_SPLIT_MODES = new Set<SplitMode>([
   'tools',
   'automations',
   'brain',
+  'google_workspace',
 ])
 
 function findClickableTarget(selector?: string, label?: string): HTMLElement | null {
@@ -97,10 +103,60 @@ export function useControlBus() {
     // Initial hydration of grants, paired devices, reasoning chains, brain context packs, traces, and self-heal sessions
     void useEvaControl.getState().refreshPermissions()
     void useEvaControl.getState().refreshDevices()
+    void useEvaControl.getState().refreshComputerControl()
+    void useEvaControl.getState().refreshTerminal()
     void useEvaControl.getState().refreshReasoningChains()
     void useEvaControl.getState().refreshContextPacks()
     void useEvaControl.getState().refreshBrainTraces()
     void useEvaControl.getState().refreshSelfHealSessions()
+
+    // Listen for Electron global hotkeys (Alt+Space Screen Awareness, Alt+Shift+D Quick Dictation)
+    const desktopBridge = (
+      window as unknown as {
+        nexusDesktop?: {
+          onHotkeyScreenAwareness?: (
+            cb: (payload?: {
+              dataUrl?: string
+              base64?: string
+              mimeType?: string
+              name?: string
+            } | null) => void
+          ) => () => void
+          onHotkeyDictation?: (cb: () => void) => () => void
+        }
+      }
+    ).nexusDesktop
+
+    const offScreenHotkey = desktopBridge?.onHotkeyScreenAwareness?.((payload) => {
+      const captured =
+        payload?.dataUrl && payload?.base64
+          ? {
+              dataUrl: payload.dataUrl,
+              base64: payload.base64,
+              mimeType: payload.mimeType || 'image/jpeg',
+              name: payload.name,
+            }
+          : null
+      useEvaControl.getState().openScreenHud('screen', captured)
+    })
+
+    const offDictationHotkey = desktopBridge?.onHotkeyDictation?.(() => {
+      useEvaControl.getState().openScreenHud('dictation')
+    })
+
+    // In-browser keyboard shortcuts: Alt+Shift+S (Screen Glance), Alt+Shift+D (Quick Dictation)
+    const onGlobalKeyDown = (ev: KeyboardEvent) => {
+      if (!ev.altKey || !ev.shiftKey) return
+      const key = ev.key.toLowerCase()
+      if (key === 's') {
+        ev.preventDefault()
+        useEvaControl.getState().openScreenHud('screen')
+      } else if (key === 'd') {
+        ev.preventDefault()
+        useEvaControl.getState().openScreenHud('dictation')
+      }
+    }
+    window.addEventListener('keydown', onGlobalKeyDown)
 
     const ignoreRuntimeError = (text: string) =>
       !text ||
@@ -160,6 +216,18 @@ export function useControlBus() {
         if (msg.browserFrame) {
           ctrl.setBrowserFrame(msg.browserFrame as BrowserFramePayload)
         }
+        if (msg.desktopFrame) {
+          ctrl.setDesktopFrame(msg.desktopFrame as DesktopFramePayload)
+        }
+        if (msg.automationSession) {
+          ctrl.setAutomationSession(msg.automationSession as AutomationSessionSnapshot)
+        }
+        if (msg.terminalSnapshot) {
+          ctrl.setTerminalSnapshot(msg.terminalSnapshot as TerminalSessionSnapshot)
+        }
+        if (msg.voiceStageCard) {
+          ctrl.setVoiceStageCard(msg.voiceStageCard as VoiceStageCard)
+        }
         if (msg.mobileFrame) {
           ctrl.setMobileFrame(msg.mobileFrame as MobileFramePayload)
         }
@@ -212,9 +280,38 @@ export function useControlBus() {
         return
       }
 
+      if (type === 'desktop:frame') {
+        const frame = (msg.frame ?? null) as DesktopFramePayload | null
+        ctrl.setDesktopFrame(frame)
+        return
+      }
+
+      if (type === 'automation:session') {
+        const session = (msg.session ?? null) as AutomationSessionSnapshot | null
+        ctrl.setAutomationSession(session)
+        return
+      }
+
+      if (type === 'terminal:snapshot' || type === 'terminal:entry') {
+        if (msg.snapshot) {
+          ctrl.setTerminalSnapshot(msg.snapshot as TerminalSessionSnapshot)
+        }
+        return
+      }
+
       if (type === 'mobile:frame') {
         const frame = (msg.frame ?? null) as MobileFramePayload | null
         ctrl.setMobileFrame(frame)
+        return
+      }
+
+      if (type === 'voice_stage:present' && msg.card) {
+        ctrl.setVoiceStageCard(msg.card as VoiceStageCard)
+        return
+      }
+
+      if (type === 'voice_stage:dismiss') {
+        ctrl.dismissVoiceStageCard(typeof msg.id === 'string' ? msg.id : undefined)
         return
       }
 
@@ -295,6 +392,7 @@ export function useControlBus() {
             ctrl.openSplit(mode, typeof msg.title === 'string' ? msg.title : undefined)
             if (mode === 'permissions') void ctrl.refreshPermissions()
             if (mode === 'devices') void ctrl.refreshDevices()
+            if (mode === 'terminal') void ctrl.refreshTerminal()
             if (mode === 'identity') void ctrl.refreshIdentity()
             if (mode === 'reasoning') void ctrl.refreshReasoningChains()
             if (mode === 'self_heal') void ctrl.refreshSelfHealSessions()
@@ -339,11 +437,24 @@ export function useControlBus() {
             ? (msg.actions as { label: string; tab?: string; splitMode?: string; url?: string }[])
             : undefined
           ctrl.pushPopup({ id, title, body, kind, actions })
+          if (ctrl.layoutMode === 'focus') {
+            ctrl.setVoiceStageCard({
+              id,
+              kind: 'card',
+              title,
+              body,
+              actions,
+              sourceTool: 'app_control',
+              createdAt: new Date().toISOString(),
+            })
+          }
           return
         }
 
         if (command === 'close_popup') {
-          ctrl.dismissPopup(typeof msg.id === 'string' ? msg.id : undefined)
+          const id = typeof msg.id === 'string' ? msg.id : undefined
+          ctrl.dismissPopup(id)
+          ctrl.dismissVoiceStageCard(id)
           return
         }
 
@@ -443,6 +554,9 @@ export function useControlBus() {
 
     return () => {
       closed = true
+      offScreenHotkey?.()
+      offDictationHotkey?.()
+      window.removeEventListener('keydown', onGlobalKeyDown)
       window.removeEventListener('error', onWindowError)
       window.removeEventListener('unhandledrejection', onUnhandledRejection)
       if (reconnectTimer) clearTimeout(reconnectTimer)

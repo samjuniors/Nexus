@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-@custom-variant dark (&:is(.dark *));
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
   --color-background: var(--background);
@@ -25,6 +25,7 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -37,80 +38,148 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+
+  /* Desktop Commander signature semantic tokens */
+  --color-dc-blue: hsl(var(--dc-blue));
+  --color-dc-blue-glow: hsl(var(--dc-blue-glow));
+  --color-dc-blue-deep: hsl(var(--dc-blue-deep));
+  --color-dc-dark: hsl(var(--dc-dark));
+  --color-dc-deep: hsl(var(--dc-deep));
+  --color-dc-panel: hsl(var(--dc-panel));
+  --color-dc-panel-hi: hsl(var(--dc-panel-hi));
+  --color-dc-card: hsl(var(--dc-card));
+  --color-dc-surface: hsl(var(--dc-surface));
+  --color-dc-border: hsl(var(--dc-border));
+  --color-dc-green: hsl(var(--dc-green));
+  --color-dc-amber: hsl(var(--dc-amber));
+  --color-dc-red: hsl(var(--dc-red));
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 10px);
 }
 
+/* Desktop Commander — Harmonized Light Theme (cool 220°–222° slate + #2563eb cobalt accent) */
 :root {
-  --radius: 0.625rem;
-  --background: oklch(0.982 0.002 260);
-  --foreground: oklch(0.18 0.008 260);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.18 0.008 260);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.18 0.008 260);
-  --primary: oklch(0.24 0.015 260);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.945 0.004 260);
-  --secondary-foreground: oklch(0.22 0.008 260);
-  --muted: oklch(0.945 0.004 260);
-  --muted-foreground: oklch(0.45 0.01 260);
-  --accent: oklch(0.935 0.006 260);
-  --accent-foreground: oklch(0.18 0.008 260);
-  --destructive: oklch(0.55 0.22 27);
-  --border: oklch(0.885 0.006 260);
-  --input: oklch(0.86 0.006 260);
-  --ring: oklch(0.62 0.015 260);
-  --chart-1: oklch(0.58 0.19 41);
-  --chart-2: oklch(0.55 0.12 185);
-  --chart-3: oklch(0.4 0.08 227);
-  --chart-4: oklch(0.72 0.17 84);
-  --chart-5: oklch(0.66 0.17 70);
-  --sidebar: oklch(0.962 0.003 260);
-  --sidebar-foreground: oklch(0.18 0.008 260);
-  --sidebar-primary: oklch(0.24 0.015 260);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.93 0.006 260);
-  --sidebar-accent-foreground: oklch(0.18 0.008 260);
-  --sidebar-border: oklch(0.885 0.006 260);
-  --sidebar-ring: oklch(0.62 0.015 260);
+  --radius: 0.75rem;
+  --background: hsl(220 25% 98%);
+  --foreground: hsl(222 32% 11%);
+  --card: hsl(0 0% 100%);
+  --card-foreground: hsl(222 32% 11%);
+  --popover: hsl(0 0% 100%);
+  --popover-foreground: hsl(222 32% 11%);
+  --primary: hsl(221 83% 53%);
+  --primary-foreground: hsl(210 40% 98%);
+  --secondary: hsl(220 22% 94%);
+  --secondary-foreground: hsl(222 28% 16%);
+  --muted: hsl(220 20% 94%);
+  --muted-foreground: hsl(218 16% 42%);
+  --accent: hsl(219 38% 92%);
+  --accent-foreground: hsl(222 32% 11%);
+  --destructive: hsl(0 78% 52%);
+  --destructive-foreground: hsl(210 40% 98%);
+  --border: hsl(220 18% 88%);
+  --input: hsl(220 18% 86%);
+  --ring: hsl(221 83% 53%);
+  --chart-1: hsl(221 83% 53%);
+  --chart-2: hsl(152 60% 40%);
+  --chart-3: hsl(38 88% 48%);
+  --chart-4: hsl(218 90% 62%);
+  --chart-5: hsl(0 78% 56%);
+  --sidebar: hsl(220 24% 96%);
+  --sidebar-foreground: hsl(222 28% 16%);
+  --sidebar-primary: hsl(221 83% 53%);
+  --sidebar-primary-foreground: hsl(210 40% 98%);
+  --sidebar-accent: hsl(219 32% 92%);
+  --sidebar-accent-foreground: hsl(222 32% 11%);
+  --sidebar-border: hsl(220 18% 88%);
+  --sidebar-ring: hsl(221 83% 53%);
+
+  /* Desktop Commander design tokens (Light counterpart) */
+  --dc-blue: 221 83% 53%;
+  --dc-blue-glow: 218 95% 66%;
+  --dc-blue-deep: 224 76% 45%;
+  --dc-blue-rgb: 37, 99, 235;
+  --dc-dark: 220 25% 98%;
+  --dc-deep: 220 22% 95%;
+  --dc-panel: 220 24% 96%;
+  --dc-panel-hi: 220 20% 93%;
+  --dc-card: 0 0% 100%;
+  --dc-surface: 220 22% 94%;
+  --dc-border: 220 18% 88%;
+  --dc-line: hsl(222 25% 18% / 8%);
+  --dc-line-hi: hsl(222 25% 18% / 15%);
+  --dc-green: 152 60% 38%;
+  --dc-amber: 38 90% 46%;
+  --dc-red: 0 78% 52%;
+  --gradient-primary: linear-gradient(135deg, hsl(var(--dc-blue)), hsl(var(--dc-blue-glow)));
+  --gradient-subtle: linear-gradient(180deg, hsl(var(--dc-card)), hsl(var(--dc-surface)));
+  --shadow-elegant: 0 10px 30px -10px hsl(var(--dc-blue) / 14%);
+  --shadow-glow: 0 0 32px hsl(var(--dc-blue) / 18%);
+  --transition-smooth: all 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+  --hx-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Nexus minimal palette — charcoal surfaces, silver text, shimmering accents */
+/* Desktop Commander — Signature Dark Theme (extracted directly from desktopcommander.app) */
 .dark {
-  --background: oklch(0.155 0.005 260);
-  --foreground: oklch(0.88 0.005 260);
-  --card: oklch(0.195 0.006 260);
-  --card-foreground: oklch(0.88 0.005 260);
-  --popover: oklch(0.2 0.006 260);
-  --popover-foreground: oklch(0.88 0.005 260);
-  --primary: oklch(0.85 0.008 260);
-  --primary-foreground: oklch(0.16 0.006 260);
-  --secondary: oklch(0.24 0.006 260);
-  --secondary-foreground: oklch(0.88 0.005 260);
-  --muted: oklch(0.225 0.006 260);
-  --muted-foreground: oklch(0.6 0.01 260);
-  --accent: oklch(0.25 0.007 260);
-  --accent-foreground: oklch(0.9 0.005 260);
-  --destructive: oklch(0.62 0.19 25);
-  --border: oklch(1 0 0 / 8%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.78 0.01 260);
-  --chart-1: oklch(0.72 0.12 260);
-  --chart-2: oklch(0.75 0.12 195);
-  --chart-3: oklch(0.78 0.1 150);
-  --chart-4: oklch(0.8 0.1 85);
-  --chart-5: oklch(0.7 0.15 30);
-  --sidebar: oklch(0.17 0.005 260);
-  --sidebar-foreground: oklch(0.88 0.005 260);
-  --sidebar-primary: oklch(0.85 0.008 260);
-  --sidebar-primary-foreground: oklch(0.16 0.006 260);
-  --sidebar-accent: oklch(0.24 0.006 260);
-  --sidebar-accent-foreground: oklch(0.88 0.005 260);
-  --sidebar-border: oklch(1 0 0 / 8%);
-  --sidebar-ring: oklch(0.78 0.01 260);
+  --background: hsl(222 24% 8%);
+  --foreground: hsl(210 40% 98%);
+  --card: hsl(222 20% 12%);
+  --card-foreground: hsl(210 40% 98%);
+  --popover: hsl(222 20% 12%);
+  --popover-foreground: hsl(210 40% 98%);
+  --primary: hsl(218 100% 72%);
+  --primary-foreground: hsl(222 24% 8%);
+  --secondary: hsl(222 16% 18%);
+  --secondary-foreground: hsl(210 40% 98%);
+  --muted: hsl(222 16% 16%);
+  --muted-foreground: hsl(215 20% 65%);
+  --accent: hsl(222 20% 17%);
+  --accent-foreground: hsl(210 40% 98%);
+  --destructive: hsl(0 84% 60%);
+  --destructive-foreground: hsl(210 40% 98%);
+  --border: hsl(222 16% 20%);
+  --input: hsl(222 16% 16%);
+  --ring: hsl(218 100% 72%);
+  --chart-1: hsl(218 100% 72%);
+  --chart-2: hsl(152 68% 58%);
+  --chart-3: hsl(38 96% 64%);
+  --chart-4: hsl(218 100% 82%);
+  --chart-5: hsl(0 88% 70%);
+  --sidebar: hsl(222 22% 11%);
+  --sidebar-foreground: hsl(210 40% 98%);
+  --sidebar-primary: hsl(218 100% 72%);
+  --sidebar-primary-foreground: hsl(222 24% 8%);
+  --sidebar-accent: hsl(222 20% 15%);
+  --sidebar-accent-foreground: hsl(210 40% 98%);
+  --sidebar-border: hsl(218 40% 85% / 9%);
+  --sidebar-ring: hsl(218 100% 72%);
+
+  /* Desktop Commander design tokens (Dark — exact source values) */
+  --dc-blue: 218 100% 72%;
+  --dc-blue-glow: 218 100% 82%;
+  --dc-blue-deep: 221 83% 53%;
+  --dc-blue-rgb: 112, 163, 255;
+  --dc-dark: 222 24% 8%;
+  --dc-deep: 222 28% 6%;
+  --dc-panel: 222 22% 11%;
+  --dc-panel-hi: 222 20% 14%;
+  --dc-card: 222 20% 12%;
+  --dc-surface: 222 16% 18%;
+  --dc-border: 222 16% 20%;
+  --dc-line: hsl(218 40% 85% / 9%);
+  --dc-line-hi: hsl(218 40% 85% / 17%);
+  --dc-green: 152 68% 58%;
+  --dc-amber: 38 96% 64%;
+  --dc-red: 0 88% 70%;
+  --gradient-primary: linear-gradient(135deg, hsl(var(--dc-blue)), hsl(var(--dc-blue-glow)));
+  --gradient-subtle: linear-gradient(180deg, hsl(var(--dc-card)), hsl(var(--dc-surface)));
+  --shadow-elegant: 0 10px 30px -10px hsl(var(--dc-blue) / 20%);
+  --shadow-glow: 0 0 40px hsl(var(--dc-blue) / 30%);
+  --transition-smooth: all 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+  --hx-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @layer base {
@@ -119,15 +188,31 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  ::selection {
+    background: rgba(var(--dc-blue-rgb), 0.32);
+    color: hsl(210 40% 98%);
+  }
+  html:not(.dark) ::selection {
+    background: rgba(37, 99, 235, 0.18);
+    color: hsl(222 32% 11%);
+  }
+  :focus-visible {
+    outline: 2px solid hsl(var(--dc-blue-glow));
+    outline-offset: 2px;
   }
 }
 
-/* ---- Nexus minimal utilities ---- */
+/* ---- Desktop Commander precision utilities ---- */
 
 .grid-bg {
   background-image:
-    linear-gradient(oklch(1 0 0 / 1.4%) 1px, transparent 1px),
-    linear-gradient(90deg, oklch(1 0 0 / 1.4%) 1px, transparent 1px);
+    linear-gradient(hsl(218 40% 85% / 3%) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(218 40% 85% / 3%) 1px, transparent 1px);
   background-size: 40px 40px;
 }
 
@@ -137,17 +222,33 @@
   text-transform: uppercase;
 }
 
-/* ---- silver shimmer family ---- */
+.dc-gradient-primary {
+  background: var(--gradient-primary);
+}
 
-/* headline / wordmark shimmer: a light sweep rolls across silver text */
+.dc-gradient-subtle {
+  background: var(--gradient-subtle);
+}
+
+.dc-shadow-elegant {
+  box-shadow: var(--shadow-elegant);
+}
+
+.dc-shadow-glow {
+  box-shadow: var(--shadow-glow);
+}
+
+/* ---- Desktop Commander electric-blue & ice shimmer family ---- */
+
+/* headline / wordmark shimmer: a cool cobalt-ice sweep rolls across text */
 .shimmer-text {
   background: linear-gradient(
     100deg,
-    oklch(0.62 0.01 260) 0%,
-    oklch(0.62 0.01 260) 38%,
-    oklch(0.97 0.004 260) 50%,
-    oklch(0.62 0.01 260) 62%,
-    oklch(0.62 0.01 260) 100%
+    hsl(216 24% 74%) 0%,
+    hsl(216 24% 74%) 36%,
+    hsl(218 100% 84%) 50%,
+    hsl(216 24% 74%) 64%,
+    hsl(216 24% 74%) 100%
   );
   background-size: 250% 100%;
   -webkit-background-clip: text;
@@ -160,11 +261,11 @@
 .shimmer-text-soft {
   background: linear-gradient(
     100deg,
-    oklch(0.58 0.01 260) 0%,
-    oklch(0.58 0.01 260) 40%,
-    oklch(0.88 0.005 260) 50%,
-    oklch(0.58 0.01 260) 60%,
-    oklch(0.58 0.01 260) 100%
+    hsl(218 16% 58%) 0%,
+    hsl(218 16% 58%) 38%,
+    hsl(218 100% 78%) 50%,
+    hsl(218 16% 58%) 62%,
+    hsl(218 16% 58%) 100%
   );
   background-size: 250% 100%;
   -webkit-background-clip: text;
@@ -182,14 +283,14 @@
 .shimmer-line {
   position: relative;
   overflow: hidden;
-  background: oklch(1 0 0 / 6%);
+  background: hsl(218 40% 85% / 8%);
 }
 .shimmer-line::after {
   content: "";
   position: absolute;
   inset: 0;
   width: 45%;
-  background: linear-gradient(90deg, transparent, oklch(0.9 0.005 260 / 75%), transparent);
+  background: linear-gradient(90deg, transparent, hsl(218 100% 72% / 85%), transparent);
   animation: shimmer-slide 1.6s ease-in-out infinite;
 }
 @keyframes shimmer-slide {
@@ -197,17 +298,17 @@
   100% { transform: translateX(320%); }
 }
 
-/* silver ring glow — avatar / dot while thinking */
+/* cobalt ring glow — avatar / dot while thinking */
 .glow-dot {
-  box-shadow: 0 0 8px 2px oklch(0.85 0.008 260 / 45%);
+  box-shadow: 0 0 12px 2px rgba(var(--dc-blue-rgb), 0.65);
 }
 .shimmer-ring {
-  border-color: oklch(0.7 0.01 260 / 45%);
+  border-color: hsl(218 100% 72% / 45%);
   animation: shimmer-ring 2s ease-in-out infinite;
 }
 @keyframes shimmer-ring {
-  0%, 100% { box-shadow: 0 0 0 0 oklch(0.85 0.008 260 / 0%); }
-  50% { box-shadow: 0 0 10px 1px oklch(0.85 0.008 260 / 30%); }
+  0%, 100% { box-shadow: 0 0 0 0 hsl(218 100% 72% / 0%); }
+  50% { box-shadow: 0 0 14px 2px hsl(218 100% 72% / 32%); }
 }
 
 .pulse-dot {
@@ -223,24 +324,24 @@
   content: "▊";
   margin-left: 2px;
   animation: pulse-dot 1s steps(2) infinite;
-  color: oklch(0.78 0.01 260);
+  color: hsl(var(--dc-blue));
 }
 
 /* Custom scrollbars for long lists */
 .nice-scroll {
   scrollbar-width: thin;
-  scrollbar-color: oklch(1 0 0 / 16%) transparent;
+  scrollbar-color: hsl(218 40% 85% / 16%) transparent;
 }
 .nice-scroll::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 .nice-scroll::-webkit-scrollbar-thumb {
-  background: oklch(1 0 0 / 14%);
+  background: hsl(218 40% 85% / 14%);
   border-radius: 999px;
 }
 .nice-scroll::-webkit-scrollbar-thumb:hover {
-  background: oklch(1 0 0 / 24%);
+  background: hsl(218 100% 72% / 35%);
 }
 .nice-scroll::-webkit-scrollbar-track {
   background: transparent;
@@ -254,8 +355,9 @@
 }
 .md-body h1, .md-body h2, .md-body h3 {
   font-weight: 600;
+  letter-spacing: -0.02em;
   margin: 0.9em 0 0.4em;
-  color: oklch(0.92 0.004 260);
+  color: hsl(210 40% 98%);
 }
 .md-body h1 { font-size: 1.15rem; }
 .md-body h2 { font-size: 1.05rem; }
@@ -266,44 +368,46 @@
 .md-body ol { list-style: decimal; }
 .md-body li { margin: 0.2em 0; }
 .md-body a {
-  color: oklch(0.76 0.04 245);
+  color: hsl(218 100% 72%);
   text-decoration: underline;
-  text-decoration-color: oklch(0.76 0.04 245 / 40%);
+  text-decoration-color: hsl(218 100% 72% / 40%);
   text-underline-offset: 2px;
 }
 .md-body a:hover {
-  color: oklch(0.85 0.03 245);
+  color: hsl(218 100% 82%);
 }
 .md-body code {
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-size: 0.82em;
-  background: oklch(1 0 0 / 8%);
-  padding: 0.1em 0.35em;
-  border-radius: 4px;
+  background: hsl(222 16% 18%);
+  border: 1px solid hsl(218 40% 85% / 8%);
+  padding: 0.1em 0.38em;
+  border-radius: 5px;
 }
 .md-body pre {
-  background: oklch(0.13 0.005 260);
-  border: 1px solid oklch(1 0 0 / 10%);
-  border-radius: 8px;
+  background: hsl(222 28% 6%);
+  border: 1px solid hsl(218 40% 85% / 12%);
+  border-radius: 10px;
   padding: 0.75rem 1rem;
   overflow-x: auto;
   margin: 0.6em 0;
 }
 .md-body pre code {
   background: transparent;
+  border: 0;
   padding: 0;
 }
 .md-body blockquote {
-  border-left: 3px solid oklch(0.85 0.008 260 / 35%);
-  padding-left: 0.8em;
-  color: oklch(0.72 0.008 260);
+  border-left: 2px solid hsl(218 100% 72% / 45%);
+  padding-left: 0.85em;
+  color: hsl(216 24% 74%);
   margin: 0.5em 0;
 }
 .md-body img {
   max-width: 100%;
-  border-radius: 10px;
+  border-radius: 12px;
   margin: 0.5em 0;
-  border: 1px solid oklch(1 0 0 / 10%);
+  border: 1px solid hsl(218 40% 85% / 12%);
 }
 .md-body table {
   border-collapse: collapse;
@@ -312,28 +416,28 @@
   width: 100%;
 }
 .md-body th, .md-body td {
-  border: 1px solid oklch(1 0 0 / 12%);
-  padding: 0.35em 0.6em;
+  border: 1px solid hsl(218 40% 85% / 12%);
+  padding: 0.4em 0.65em;
   text-align: left;
 }
 
-/* ---- Light mode refinements (preserves default .dark charcoal pixel-for-pixel) ---- */
+/* ---- Light mode refinements (cool slate-blue Desktop Commander counterpart) ---- */
 
 html:not(.dark) .grid-bg {
   background-image:
-    linear-gradient(oklch(0 0 0 / 3.5%) 1px, transparent 1px),
-    linear-gradient(90deg, oklch(0 0 0 / 3.5%) 1px, transparent 1px);
+    linear-gradient(hsl(222 30% 15% / 4%) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(222 30% 15% / 4%) 1px, transparent 1px);
   background-size: 40px 40px;
 }
 
 html:not(.dark) .shimmer-text {
   background: linear-gradient(
     100deg,
-    oklch(0.22 0.01 260) 0%,
-    oklch(0.22 0.01 260) 38%,
-    oklch(0.55 0.015 260) 50%,
-    oklch(0.22 0.01 260) 62%,
-    oklch(0.22 0.01 260) 100%
+    hsl(222 32% 16%) 0%,
+    hsl(222 32% 16%) 36%,
+    hsl(221 83% 53%) 50%,
+    hsl(222 32% 16%) 64%,
+    hsl(222 32% 16%) 100%
   );
   background-size: 250% 100%;
   -webkit-background-clip: text;
@@ -344,11 +448,11 @@ html:not(.dark) .shimmer-text {
 html:not(.dark) .shimmer-text-soft {
   background: linear-gradient(
     100deg,
-    oklch(0.32 0.01 260) 0%,
-    oklch(0.32 0.01 260) 40%,
-    oklch(0.58 0.01 260) 50%,
-    oklch(0.32 0.01 260) 60%,
-    oklch(0.32 0.01 260) 100%
+    hsl(218 18% 36%) 0%,
+    hsl(218 18% 36%) 38%,
+    hsl(221 83% 53%) 50%,
+    hsl(218 18% 36%) 62%,
+    hsl(218 18% 36%) 100%
   );
   background-size: 250% 100%;
   -webkit-background-clip: text;
@@ -357,81 +461,82 @@ html:not(.dark) .shimmer-text-soft {
 }
 
 html:not(.dark) .shimmer-line {
-  background: oklch(0 0 0 / 6%);
+  background: hsl(222 24% 20% / 7%);
 }
 html:not(.dark) .shimmer-line::after {
-  background: linear-gradient(90deg, transparent, oklch(0.28 0.01 260 / 55%), transparent);
+  background: linear-gradient(90deg, transparent, hsl(221 83% 53% / 65%), transparent);
 }
 
 html:not(.dark) .nice-scroll {
-  scrollbar-color: oklch(0 0 0 / 18%) transparent;
+  scrollbar-color: hsl(222 24% 20% / 18%) transparent;
 }
 html:not(.dark) .nice-scroll::-webkit-scrollbar-thumb {
-  background: oklch(0 0 0 / 16%);
+  background: hsl(222 24% 20% / 16%);
 }
 html:not(.dark) .nice-scroll::-webkit-scrollbar-thumb:hover {
-  background: oklch(0 0 0 / 28%);
+  background: hsl(221 83% 53% / 38%);
 }
 
 html:not(.dark) .md-body h1,
 html:not(.dark) .md-body h2,
 html:not(.dark) .md-body h3 {
-  color: oklch(0.18 0.01 260);
+  color: hsl(222 32% 11%);
 }
 html:not(.dark) .md-body a {
-  color: oklch(0.45 0.14 250);
-  text-decoration-color: oklch(0.45 0.14 250 / 40%);
+  color: hsl(221 83% 53%);
+  text-decoration-color: hsl(221 83% 53% / 40%);
 }
 html:not(.dark) .md-body code {
-  background: oklch(0 0 0 / 6%);
+  background: hsl(220 22% 93%);
+  border-color: hsl(220 18% 86%);
 }
 html:not(.dark) .md-body pre {
-  background: oklch(0.955 0.004 260);
-  border-color: oklch(0.86 0.008 260);
+  background: hsl(220 24% 95%);
+  border-color: hsl(220 18% 86%);
 }
 html:not(.dark) .md-body blockquote {
-  border-left-color: oklch(0.4 0.01 260 / 35%);
-  color: oklch(0.42 0.01 260);
+  border-left-color: hsl(221 83% 53% / 45%);
+  color: hsl(218 16% 40%);
 }
 html:not(.dark) .md-body img,
 html:not(.dark) .md-body th,
 html:not(.dark) .md-body td {
-  border-color: oklch(0.86 0.008 260);
+  border-color: hsl(220 18% 86%);
 }
 
 /* Harmonize dark-alpha surface & text utilities when Light Mode is active */
 html:not(.dark) :is(.bg-black\/15, .bg-black\/20, .bg-black\/25, .bg-black\/30, .bg-black\/35, .bg-black\/40, .bg-black\/50, .bg-black\/60) {
-  background-color: oklch(0.95 0.004 260 / 85%);
+  background-color: hsl(220 22% 94% / 88%);
 }
 html:not(.dark) :is(.bg-white\/4, .bg-white\/5, .bg-white\/6, .bg-white\/10, .bg-white\/\[0\.01\], .bg-white\/\[0\.02\], .bg-white\/\[0\.025\], .bg-white\/\[0\.03\], .bg-white\/\[0\.04\], .bg-white\/\[0\.05\], .bg-white\/\[0\.06\], .bg-white\/\[0\.07\], .bg-white\/\[0\.08\], .bg-white\/\[0\.1\]) {
-  background-color: oklch(0.99 0.002 260 / 92%);
+  background-color: hsl(0 0% 100% / 94%);
 }
 html:not(.dark) :is(.border-white\/4, .border-white\/5, .border-white\/6, .border-white\/8, .border-white\/10, .border-white\/12, .border-white\/15, .border-white\/20, .border-white\/25, .border-white\/30, .border-white\/\[0\.05\], .border-white\/\[0\.06\], .border-white\/\[0\.07\], .border-white\/\[0\.08\], .border-white\/\[0\.09\], .border-white\/\[0\.1\], .border-white\/\[0\.12\], .border-white\/\[0\.16\]) {
-  border-color: oklch(0.875 0.008 260);
+  border-color: hsl(220 18% 87%);
 }
 html:not(.dark) :is(.text-zinc-50, .text-zinc-100, .text-zinc-200) {
-  color: oklch(0.18 0.01 260);
+  color: hsl(222 32% 11%);
 }
 html:not(.dark) :is(.text-zinc-300, .text-zinc-300\/80) {
-  color: oklch(0.29 0.01 260);
+  color: hsl(220 20% 28%);
 }
 html:not(.dark) :is(.text-zinc-400, .text-zinc-500) {
-  color: oklch(0.45 0.01 260);
+  color: hsl(218 16% 42%);
 }
 html:not(.dark) :is(.text-amber-100\/80, .text-amber-100\/90, .text-amber-200, .text-amber-200\/90, .text-amber-300, .text-amber-300\/80, .text-amber-300\/90) {
-  color: oklch(0.52 0.14 68);
+  color: hsl(34 86% 36%);
 }
 html:not(.dark) :is(.text-emerald-200, .text-emerald-200\/80, .text-emerald-300, .text-emerald-300\/80, .text-emerald-300\/90) {
-  color: oklch(0.45 0.14 155);
+  color: hsl(152 62% 32%);
 }
 html:not(.dark) :is(.text-sky-100, .text-sky-100\/90, .text-sky-200, .text-sky-200\/70, .text-sky-200\/80, .text-sky-200\/90, .text-sky-300, .text-sky-300\/70, .text-sky-300\/80) {
-  color: oklch(0.45 0.13 240);
+  color: hsl(221 83% 48%);
 }
 html:not(.dark) :is(.text-violet-100\/90, .text-violet-200\/70, .text-violet-300\/80, .text-violet-300\/90) {
-  color: oklch(0.46 0.15 290);
+  color: hsl(256 68% 48%);
 }
 html:not(.dark) svg text {
-  fill: oklch(0.24 0.01 260);
+  fill: hsl(222 28% 18%);
 }
 
 /* ---- Voice Composer state-reactive rainbow aura & prism ring ---- */

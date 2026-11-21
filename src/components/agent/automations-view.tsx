@@ -439,7 +439,7 @@ export function AutomationsView() {
       </div>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="border-white/10 bg-zinc-950 sm:max-w-lg">
+        <DialogContent className="border-border bg-card sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-base">
               <CalendarClock className="h-4 w-4 text-primary" />

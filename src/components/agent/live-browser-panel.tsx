@@ -8,13 +8,17 @@ import {
   CornerDownLeft,
   ExternalLink,
   Globe,
+  Hand,
+  Laptop,
   Loader2,
   MousePointer2,
   Music,
+  Pause,
   Play,
   Power,
   RefreshCw,
   Sparkles,
+  Square,
   X,
 } from 'lucide-react'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
@@ -35,10 +39,17 @@ const QUICK_URLS = [
  */
 export function LiveBrowserPanel() {
   const frame = useEvaControl((s) => s.browserFrame)
+  const desktopFrame = useEvaControl((s) => s.desktopFrame)
+  const automationSession = useEvaControl((s) => s.automationSession)
   const busy = useEvaControl((s) => s.browserBusy)
+  const computerBusy = useEvaControl((s) => s.computerControlBusy)
   const browserAction = useEvaControl((s) => s.browserAction)
   const setBrowserFrame = useEvaControl((s) => s.setBrowserFrame)
+  const controlAutomationSession = useEvaControl((s) => s.controlAutomationSession)
+  const captureWindowsScreen = useEvaControl((s) => s.captureWindowsScreen)
+  const windowsBridgeAction = useEvaControl((s) => s.windowsBridgeAction)
 
+  const [viewSource, setViewSource] = useState<'browser' | 'windows'>('browser')
   const [urlInput, setUrlInput] = useState(frame?.url || 'https://example.com')
   const [autopilotInput, setAutopilotInput] = useState('')
   const [typeInput, setTypeInput] = useState('')
@@ -120,13 +131,125 @@ export function LiveBrowserPanel() {
   }
 
   const showingMediaPlayer = Boolean(frame?.mediaEmbedUrl && !showDomOverride)
+  const isPaused = automationSession?.status === 'paused'
+  const isTakeover = automationSession?.status === 'takeover'
+  const sessionActive = Boolean(
+    automationSession &&
+      automationSession.status !== 'idle' &&
+      automationSession.status !== 'completed'
+  )
+
+  const handleWindowsClick = (e: React.MouseEvent<HTMLImageElement>) => {
+    if (!desktopFrame || computerBusy) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return
+    const x = Math.round(((e.clientX - rect.left) / rect.width) * Math.max(1, desktopFrame.width))
+    const y = Math.round(((e.clientY - rect.top) / rect.height) * Math.max(1, desktopFrame.height))
+    void windowsBridgeAction('ui_click', { x, y }, desktopFrame.deviceId)
+  }
 
   return (
     <div data-live-browser-panel="1" className="flex h-full min-h-0 flex-col bg-background">
+      {/* Workspace target & live automation session control strip */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card/60 px-3 py-1.5">
+        <div className="inline-flex overflow-hidden rounded-md border border-border bg-background">
+          <button
+            type="button"
+            onClick={() => setViewSource('browser')}
+            className={cn(
+              'inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium transition-colors',
+              viewSource === 'browser'
+                ? 'bg-primary/12 text-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <Globe className="h-3 w-3" />
+            Isolated Browser
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewSource('windows')}
+            className={cn(
+              'inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium transition-colors',
+              viewSource === 'windows'
+                ? 'bg-primary/12 text-primary'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <Laptop className="h-3 w-3" />
+            Windows PC
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1">
+          {viewSource === 'windows' && (
+            <button
+              type="button"
+              disabled={computerBusy}
+              onClick={async () => {
+                setErrorMsg(null)
+                const res = await captureWindowsScreen()
+                if (!res.ok && res.error) setErrorMsg(res.error)
+              }}
+              className="inline-flex h-6 items-center gap-1 rounded border border-border bg-background px-2 font-mono text-[10.5px] text-foreground hover:bg-muted disabled:opacity-40"
+            >
+              <RefreshCw className={cn('h-3 w-3', computerBusy && 'animate-spin')} />
+              Capture PC
+            </button>
+          )}
+          {sessionActive && (
+            <>
+              <button
+                type="button"
+                disabled={computerBusy}
+                onClick={() => void controlAutomationSession(isPaused ? 'resume' : 'pause')}
+                className={cn(
+                  'inline-flex h-6 items-center gap-1 rounded border px-2 font-mono text-[10.5px] font-medium transition-colors disabled:opacity-40',
+                  isPaused
+                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                    : 'border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                )}
+              >
+                {isPaused ? <Play className="h-2.5 w-2.5" /> : <Pause className="h-2.5 w-2.5" />}
+                {isPaused ? 'Resume' : 'Pause'}
+              </button>
+              <button
+                type="button"
+                disabled={computerBusy}
+                onClick={() =>
+                  void controlAutomationSession(isTakeover ? 'release_takeover' : 'takeover')
+                }
+                className={cn(
+                  'inline-flex h-6 items-center gap-1 rounded border px-2 font-mono text-[10.5px] font-medium transition-colors disabled:opacity-40',
+                  isTakeover
+                    ? 'border-sky-500/40 bg-sky-500/15 text-sky-600 dark:text-sky-300'
+                    : 'border-border bg-background text-foreground hover:bg-muted'
+                )}
+              >
+                <Hand className="h-2.5 w-2.5" />
+                {isTakeover ? 'Hand Back' : 'Take Over'}
+              </button>
+              <button
+                type="button"
+                disabled={computerBusy}
+                onClick={() => void controlAutomationSession('stop')}
+                className="inline-flex h-6 items-center gap-1 rounded border border-destructive/35 bg-destructive/10 px-2 font-mono text-[10.5px] font-medium text-destructive hover:bg-destructive/20 disabled:opacity-40"
+              >
+                <Square className="h-2.5 w-2.5" />
+                Stop
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
       {/* Browser address & navigation bar */}
       <form
         onSubmit={handleNavigate}
-        className="flex items-center gap-1.5 border-b border-border bg-card/50 px-3 py-2"
+        className={cn(
+          'flex items-center gap-1.5 border-b border-border bg-card/50 px-3 py-2',
+          viewSource === 'windows' && 'hidden'
+        )}
       >
         <button
           type="button"
@@ -215,7 +338,54 @@ export function LiveBrowserPanel() {
 
       {/* Main viewport stage */}
       <div className="nice-scroll relative flex min-h-0 flex-1 flex-col overflow-auto bg-zinc-950/80 p-3">
-        {!frame ? (
+        {viewSource === 'windows' ? (
+          desktopFrame?.imageBase64 ? (
+            <div className="flex flex-col gap-2">
+              <div className="relative overflow-hidden rounded-lg border border-border bg-black">
+                <img
+                  src={`data:image/jpeg;base64,${desktopFrame.imageBase64}`}
+                  alt={desktopFrame.windowTitle || desktopFrame.deviceName}
+                  onClick={handleWindowsClick}
+                  className={cn(
+                    'block h-auto w-full select-none',
+                    computerBusy ? 'cursor-wait opacity-80' : 'cursor-crosshair'
+                  )}
+                />
+              </div>
+              <div className="flex items-center justify-between font-mono text-[11px] text-muted-foreground">
+                <span className="truncate">
+                  {desktopFrame.deviceName} · {desktopFrame.windowTitle || 'Windows Desktop'}
+                </span>
+                <span className="shrink-0 tabular-nums">
+                  {desktopFrame.width}×{desktopFrame.height}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="my-auto flex flex-col items-center justify-center px-4 py-10 text-center">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-card">
+                <Laptop className="h-5 w-5 text-emerald-400" />
+              </div>
+              <h3 className="mt-3 text-sm font-semibold text-foreground">Windows PC Live Workspace</h3>
+              <p className="mt-1 max-w-sm text-xs leading-relaxed text-muted-foreground">
+                Connect your Windows PC in Devices using the Companion Bridge, then capture a live desktop frame or click anywhere to interact.
+              </p>
+              <button
+                type="button"
+                disabled={computerBusy}
+                onClick={async () => {
+                  setErrorMsg(null)
+                  const res = await captureWindowsScreen()
+                  if (!res.ok && res.error) setErrorMsg(res.error)
+                }}
+                className="mt-4 inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/15 px-3 text-xs font-medium text-emerald-700 hover:bg-emerald-500/25 disabled:opacity-50 dark:text-emerald-300"
+              >
+                <RefreshCw className={cn('h-3.5 w-3.5', computerBusy && 'animate-spin')} />
+                Capture Windows Screen
+              </button>
+            </div>
+          )
+        ) : !frame ? (
           <div className="my-auto flex flex-col items-center justify-center px-4 py-10 text-center">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-card">
               <Globe className="h-5 w-5 text-sky-400" />

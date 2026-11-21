@@ -24,6 +24,8 @@ interface MemoryStore {
   permissionGrant: Row[]
   permissionAuditLog: Row[]
   connectedDevice: Row[]
+  connectedFolder: Row[]
+  allowedDesktopApp: Row[]
 }
 
 const DEFAULTS: Record<keyof MemoryStore, () => Row> = {
@@ -154,6 +156,22 @@ const DEFAULTS: Record<keyof MemoryStore, () => Row> = {
     createdAt: new Date(),
     updatedAt: new Date(),
   }),
+  connectedFolder: () => ({
+    platform: 'windows',
+    accessMode: 'read',
+    enabled: true,
+    lastAccessedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }),
+  allowedDesktopApp: () => ({
+    platform: 'windows',
+    policy: 'ask',
+    category: 'productivity',
+    lastUsedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }),
 }
 
 let seqCounter = 1
@@ -278,6 +296,8 @@ function createInMemoryPrisma(): PrismaClient {
       permissionGrant: [],
       permissionAuditLog: [],
       connectedDevice: [],
+      connectedFolder: [],
+      allowedDesktopApp: [],
     }
   }
   const store = globalStore.__nexusMemDb

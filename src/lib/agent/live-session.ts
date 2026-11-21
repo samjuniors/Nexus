@@ -8,7 +8,12 @@ import { getBrainPrefs } from '@/lib/agent/brain-host'
 import { stepRun } from '@/lib/agent/orchestrator'
 import { chatText, extractJson } from '@/lib/agent/zai'
 import { reasoningChain } from '@/lib/agent/reasoning-chain'
-import type { EventOut, RunEventData } from '@/lib/agent/types'
+import { controlBus } from '@/lib/agent/control-bus'
+import {
+  buildVoiceStageCardFromPresentVisualArgs,
+  buildVoiceStageCardFromToolResult,
+} from '@/lib/agent/voice-stage-types'
+import type { EventOut, RunEventData, ToolResultDisplay } from '@/lib/agent/types'
 
 const LIVE_MODEL = 'gemini-3.8-live'
 const VALID_VOICES = new Set(['Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir'])
@@ -334,6 +339,80 @@ const LIVE_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       required: ['action'],
     },
   },
+  {
+    name: 'terminal_exec',
+    description:
+      'Run REAL Windows PowerShell (on paired Windows PCs) or host bash/pwsh/sh commands live in the Terminal split panel, or use action "pair_windows" to generate a real 1-line PowerShell pairing command so Eva can pair and control a Windows PC or run pairing workflows.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: { type: Type.STRING, description: 'One of: exec, status, pair_windows, set_target, interrupt, clear.' },
+        command: { type: Type.STRING, description: 'Real PowerShell or bash command to run when action is exec.' },
+        target: { type: Type.STRING, description: 'Target shell host: auto, windows_pc, or host.' },
+        shell: { type: Type.STRING, description: 'Shell kind: powershell, pwsh, bash, or sh.' },
+        deviceId: { type: Type.STRING, description: 'Optional paired Windows PC device ID.' },
+        deviceName: { type: Type.STRING, description: 'Optional name when action is pair_windows (e.g. "My Windows PC").' },
+        cwd: { type: Type.STRING, description: 'Optional working directory.' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'present_visual',
+    description:
+      'Display or dismiss a clean visual card directly over the Voice Focus screen while Coucou docks smoothly into the top corner. Use this proactively whenever the user asks to SEE something in Voice Mode — such as today\'s date/time ("show me the date", "what time is it"), an image, gallery, weather, checklist/list, code snippet, comparison, or structured answer. Call action="dismiss" when the user says "close it", "hide that", "dismiss", or "done".',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: {
+          type: Type.STRING,
+          description: 'Either "present" (default) to display a visual over Voice Mode, or "dismiss" to clear it and return Coucou to center.',
+        },
+        kind: {
+          type: Type.STRING,
+          description: 'Visual layout kind: "date_time", "image", "gallery", "card", "list", or "code".',
+        },
+        title: {
+          type: Type.STRING,
+          description: 'Short, crisp card title (e.g. "Today", "Generated Concept", "Grocery List").',
+        },
+        subtitle: {
+          type: Type.STRING,
+          description: 'Optional quiet metadata subtitle (e.g. timezone or context).',
+        },
+        headline: {
+          type: Type.STRING,
+          description: 'Optional prominent headline figure/value for "card" kind.',
+        },
+        body: {
+          type: Type.STRING,
+          description: 'Clean body text, caption, or note.',
+        },
+        imageUrl: {
+          type: Type.STRING,
+          description: 'Image URL when kind is "image".',
+        },
+        timezone: {
+          type: Type.STRING,
+          description: 'Optional IANA timezone (e.g. "America/New_York", "Asia/Kolkata") when kind is "date_time".',
+        },
+        items: {
+          type: Type.ARRAY,
+          description: 'Array of items for "list" (strings or {text, subtext, checked}) or "gallery" ({url, caption}).',
+          items: { type: Type.STRING },
+        },
+        code: {
+          type: Type.STRING,
+          description: 'Code snippet when kind is "code".',
+        },
+        language: {
+          type: Type.STRING,
+          description: 'Programming language when kind is "code".',
+        },
+      },
+      required: ['action'],
+    },
+  },
 ]
 
 function safeSend(ws: WebSocket, payload: unknown) {
@@ -432,6 +511,12 @@ HOW EVA ACTS & MANAGES THE ORG BY VOICE:
   * Call \`self_manage_extensions\` to autonomously install, uninstall, toggle, or connect Plugins, Skills, Tools, and MCP servers yourself so the user never has to install them manually (one-time permission applies).
   * Call \`self_heal_code\` whenever the user reports a bug in this app, a UI issue, or asks you to add/upgrade a feature in your own codebase. NEVER say "I cannot modify my own code" or "I lack the capability" — call \`self_heal_code\` (e.g. \`auto_heal\` or \`inspect\` + \`patch\` + \`verify\`), which requests one-time approval, snapshots files for instant rollback, verifies TypeScript, and opens the Self-Heal Studio split panel live.
   * Call \`device_control\` to list paired computers or run approved desktop actions (system_info, open_url, open_app, shell) on an online computer paired via the Nexus Companion Bridge.
+  * Call \`terminal_exec\` to open the real live Terminal / PowerShell split panel, run REAL PowerShell or bash commands (never fake output!), or call \`terminal_exec({ action: "pair_windows" })\` to generate a real 1-line Windows PowerShell pairing command.
+  * Call \`present_visual\` to autonomously show clean visuals right on top of the Voice Focus screen (Coucou automatically shrinks and docks to the top corner so the visual is crisp and unobstructed):
+    - Whenever the user asks to SEE the date, day, or time (e.g. "show me today's date", "what's the date and time"): IMMEDIATELY call \`present_visual({ action: "present", kind: "date_time", title: "Today" })\` so a live clock and date card appears on screen while you speak the answer.
+    - Whenever the user asks to see a list, steps, summary, key numbers, code snippet, or comparison on screen: call \`present_visual\` with \`kind: "list"\`, \`"card"\`, or \`"code"\`.
+    - Generated images (\`generate_image\`), searched images (\`search_images\`), charts (\`create_chart\`), and weather (\`weather_lookup\`) automatically appear on the Voice screen when you run them via \`execute_tool\` — you can also call \`present_visual\` with \`kind: "image"\` if you want to re-display an image URL.
+    - When the user says "close it", "hide that", "dismiss", or "clear the screen", IMMEDIATELY call \`present_visual({ action: "dismiss" })\` so Coucou glides cleanly back to center.
   * Call \`enter_sleep_mode\` when the user asks you to go to sleep, enter sleep mode, goodnight, or stop listening. Say a brief confirmation ("Going to sleep — click Wake Eva whenever you need me.") so your spoken reply finishes cleanly before your ear pauses.
 
 AUTONOMOUS DECISION DOCTRINE (CRITICAL):
@@ -530,6 +615,13 @@ async function runLiveToolCall(
     safeSend(ws, { type: 'mission_events', runId: run.id, status: 'executing', events: evs })
 
     const res = await executeTool(toolSlug, parsedArgs, run.id, conversationId)
+    // Automatically promote visual tool results (generated images, galleries, weather, date/time, code)
+    // directly onto the Voice Focus stage so Coucou docks cleanly and the user immediately sees the output!
+    const promotedCard = buildVoiceStageCardFromToolResult(toolSlug, parsedArgs, res)
+    if (promotedCard) {
+      controlBus.broadcastVoiceStagePresent(promotedCard)
+    }
+
     const doneEvs: EventOut[] = []
     doneEvs.push(
       await addEvent(run.id, 'tool_result', {
@@ -580,6 +672,7 @@ async function runLiveToolCall(
       summary: res.summary,
       output: res.raw.slice(0, 3000),
       display: res.display ?? null,
+      presentedOnVoiceStage: Boolean(promotedCard),
     }
   }
 
@@ -609,6 +702,21 @@ async function runLiveToolCall(
           events: step.events,
         })
         for (const ev of step.events) {
+          if (ev.type === 'tool_result' && ev.data.ok && ev.data.display) {
+            const card = buildVoiceStageCardFromToolResult(
+              String(ev.data.tool ?? ''),
+              {},
+              {
+                ok: Boolean(ev.data.ok),
+                summary: String(ev.data.summary ?? ''),
+                raw: String(ev.data.summary ?? ''),
+                display: ev.data.display as ToolResultDisplay,
+              }
+            )
+            if (card) {
+              controlBus.broadcastVoiceStagePresent(card)
+            }
+          }
           if (ev.type === 'final' && typeof ev.data.answer === 'string') {
             finalAnswer = ev.data.answer
           }
@@ -687,6 +795,8 @@ async function runLiveToolCall(
       })
       safeSend(ws, { type: 'mission_events', runId: run.id, status: 'executing', events: [callEv] })
       const toolRes = await executeTool(preferredTool, parsedToolArgs, run.id, conversationId)
+      const subCard = buildVoiceStageCardFromToolResult(preferredTool, parsedToolArgs, toolRes)
+      if (subCard) controlBus.broadcastVoiceStagePresent(subCard)
       const resEv = await addEvent(run.id, 'tool_result', {
         tool: preferredTool,
         ok: toolRes.ok,
@@ -729,6 +839,8 @@ Respond ONLY with minified JSON:
           })
           safeSend(ws, { type: 'mission_events', runId: run.id, status: 'executing', events: [callEv] })
           const toolRes = await executeTool(tSlug, tArgs, run.id, conversationId)
+          const subCard = buildVoiceStageCardFromToolResult(tSlug, tArgs, toolRes)
+          if (subCard) controlBus.broadcastVoiceStagePresent(subCard)
           const resEv = await addEvent(run.id, 'tool_result', {
             tool: tSlug,
             ok: toolRes.ok,
@@ -916,6 +1028,36 @@ Respond ONLY with minified JSON:
     return { ok: true, sleeping: true, message: 'Eva entering Sleep Mode.' }
   }
 
+  if (name === 'present_visual') {
+    const action = String(args.action ?? 'present').trim().toLowerCase()
+    if (action === 'dismiss' || action === 'close' || action === 'hide' || action === 'clear') {
+      controlBus.broadcastVoiceStageDismiss(typeof args.id === 'string' ? args.id : undefined)
+      return {
+        ok: true,
+        action: 'dismiss',
+        message: 'Cleared visual card from Voice Mode stage. Coucou returned to center.',
+      }
+    }
+    const card = buildVoiceStageCardFromPresentVisualArgs(args)
+    controlBus.broadcastVoiceStagePresent(card)
+    return {
+      ok: true,
+      action: 'present',
+      cardId: card.id,
+      kind: card.kind,
+      title: card.title,
+      ...(card.kind === 'date_time'
+        ? {
+            weekday: card.weekday,
+            dateLabel: card.dateLabel,
+            timeLabel: card.timeLabel,
+            timezone: card.timezone,
+          }
+        : {}),
+      message: `Displayed "${card.title}" (${card.kind}) cleanly on top of the Voice Focus screen.`,
+    }
+  }
+
   if (
     name === 'app_control' ||
     name === 'browser_control' ||
@@ -923,6 +1065,7 @@ Respond ONLY with minified JSON:
     name === 'agent_email' ||
     name === 'self_manage_extensions' ||
     name === 'device_control' ||
+    name === 'terminal_exec' ||
     name === 'self_heal_code'
   ) {
     const voiceChain =
@@ -1013,17 +1156,19 @@ export async function handleLiveSocket(ws: WebSocket, req: IncomingMessage): Pro
     })
 
     let userTranscriptBuf = ''
-    let assistantTranscriptBuf = ''
+    let liveAssistantTranscriptBuf = ''
+    let savedAssistantTranscriptBuf = ''
     let flushingTurn = false
 
     const flushTurn = async () => {
       if (flushingTurn) return
       const u = userTranscriptBuf.trim()
-      const a = assistantTranscriptBuf.trim()
+      const a = savedAssistantTranscriptBuf.trim()
       if (!u && !a) return
       flushingTurn = true
       userTranscriptBuf = ''
-      assistantTranscriptBuf = ''
+      liveAssistantTranscriptBuf = ''
+      savedAssistantTranscriptBuf = ''
       try {
         let userMsg: Awaited<ReturnType<typeof db.message.create>> | null = null
         let assistantMsg: Awaited<ReturnType<typeof db.message.create>> | null = null
@@ -1143,10 +1288,11 @@ export async function handleLiveSocket(ws: WebSocket, req: IncomingMessage): Pro
           }
 
           if (content?.outputTranscription?.text) {
-            assistantTranscriptBuf += content.outputTranscription.text
+            liveAssistantTranscriptBuf += content.outputTranscription.text
+            savedAssistantTranscriptBuf += content.outputTranscription.text
             safeSend(ws, {
               type: 'output_transcript',
-              text: assistantTranscriptBuf,
+              text: liveAssistantTranscriptBuf,
               delta: content.outputTranscription.text,
             })
           }
@@ -1157,12 +1303,25 @@ export async function handleLiveSocket(ws: WebSocket, req: IncomingMessage): Pro
             }
           }
 
+          if (content?.generationComplete) {
+            safeSend(ws, { type: 'output_generation_complete' })
+          }
+
           if (content?.interrupted) {
+            liveAssistantTranscriptBuf = ''
             safeSend(ws, { type: 'interrupted' })
           }
 
           const calls = message.toolCall?.functionCalls ?? []
           if (calls.length > 0) {
+            // Reset live spoken subtitle segment across tool calls so post-tool speech
+            // starts cleanly at 0s instead of replaying pre-tool preamble text.
+            if (liveAssistantTranscriptBuf.trim()) {
+              liveAssistantTranscriptBuf = ''
+              if (savedAssistantTranscriptBuf && !/\s$/.test(savedAssistantTranscriptBuf)) {
+                savedAssistantTranscriptBuf += ' '
+              }
+            }
             void (async () => {
               const responses: { id?: string; name: string; response: Record<string, unknown> }[] = []
               for (const call of calls) {
@@ -1183,12 +1342,14 @@ export async function handleLiveSocket(ws: WebSocket, req: IncomingMessage): Pro
                 })
               }
               if (!closed && session) {
+                safeSend(ws, { type: 'output_segment_reset' })
                 session.sendToolResponse({ functionResponses: responses })
               }
             })()
           }
 
           if (content?.turnComplete) {
+            safeSend(ws, { type: 'output_generation_complete' })
             void flushTurn()
           }
         },

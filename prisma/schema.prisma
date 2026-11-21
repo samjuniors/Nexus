@@ -322,4 +322,31 @@ model ConnectedDevice {
   updatedAt        DateTime  @updatedAt
 }
 
+// Granular local folders (e.g. Downloads, Desktop, Documents) explicitly authorized for Eva
+model ConnectedFolder {
+  id             String    @id @default(cuid())
+  label          String
+  path           String    @unique
+  platform       String    @default("windows") // windows | macos | linux
+  accessMode     String    @default("read") // read | read_write
+  enabled        Boolean   @default(true)
+  lastAccessedAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+// Granular per-app permissions controlling which desktop applications Eva may launch or automate
+model AllowedDesktopApp {
+  id          String    @id @default(cuid())
+  name        String
+  executable  String    @unique
+  platform    String    @default("windows") // windows | macos | linux
+  policy      String    @default("ask") // always | ask | deny
+  category    String    @default("productivity") // browser | creative | dev | system | productivity
+  lastUsedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+
 

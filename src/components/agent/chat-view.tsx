@@ -4,13 +4,16 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
   BrainCog,
+  CalendarCheck2,
   Hexagon,
   History,
   Loader2,
   MessageSquarePlus,
   Mic,
+  Monitor,
   Settings,
   Sparkles as SparklesIcon,
+  Terminal,
   Trash2,
   Wrench,
 } from 'lucide-react'
@@ -32,6 +35,8 @@ import { MissionBlock } from '@/components/agent/mission-block'
 import { MissionProgressBar } from '@/components/agent/mission-progress-bar'
 import { Typewriter } from '@/components/agent/typewriter'
 import { VoiceComposer } from '@/components/agent/voice-composer'
+import { InlineWorkspacePreviewCard } from '@/components/agent/inline-workspace-preview-card'
+import { ScreenAwarenessHud } from '@/components/agent/screen-awareness-hud'
 import { cn } from '@/lib/utils'
 import { useToast } from '@/hooks/use-toast'
 import type { SuggestionDTO } from '@/lib/agent/client'
@@ -76,6 +81,8 @@ export function ChatView() {
   const streamingAssistantId = useApp((s) => s.streamingAssistantId)
   const { voice, wake, vision, evaExpression, emotion, handTracking, onToggleSleepMode } = useEva()
   const setSettingsOpen = useEvaControl((s) => s.setSettingsOpen)
+  const openScreenHud = useEvaControl((s) => s.openScreenHud)
+  const openSplit = useEvaControl((s) => s.openSplit)
   const [input, setInput] = useState('')
   const [historyOpen, setHistoryOpen] = useState(false)
   const [isSending, setIsSending] = useState(false)
@@ -248,6 +255,44 @@ export function ChatView() {
           <h1 className="truncate text-sm font-semibold tracking-tight text-foreground">
             {conversation?.title ?? 'New chat'}
           </h1>
+        </div>
+        <div className="hidden items-center gap-1.5 lg:flex">
+          <button
+            type="button"
+            onClick={() => openScreenHud('screen')}
+            title="Screen Awareness (Alt+Space / Alt+Shift+S)"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border/80 bg-transparent px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Monitor className="h-3.5 w-3.5" />
+            <span>Screen Glance</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => openScreenHud('dictation')}
+            title="Quick Dictation (Alt+Shift+D)"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border/80 bg-transparent px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Mic className="h-3.5 w-3.5" />
+            <span>Dictate</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => openSplit('terminal', 'Terminal · PowerShell')}
+            title="Open Real Terminal & PowerShell"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border/80 bg-transparent px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Terminal className="h-3.5 w-3.5" />
+            <span>Terminal</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => openSplit('google_workspace', 'Google Workspace')}
+            title="Open Google Workspace (Gmail, Drive, Docs, Calendar)"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border/80 bg-transparent px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <CalendarCheck2 className="h-3.5 w-3.5" />
+            <span>Google</span>
+          </button>
         </div>
         <button
           type="button"
@@ -570,6 +615,8 @@ export function ChatView() {
               )}
             </div>
           )}
+          {/* Inline isolated browser & Windows PC live preview card inside chat */}
+          <InlineWorkspacePreviewCard />
           <div ref={bottomRef} />
         </div>
       </div>
@@ -590,6 +637,14 @@ export function ChatView() {
         onSubmit={submit}
         onStopTask={stopTask}
         onKeyDown={handleKeyDown}
+      />
+
+      {/* Screen Awareness (Alt+Space / Alt+Shift+S) & Quick Dictation (Alt+Shift+D) HUD */}
+      <ScreenAwarenessHud
+        onInsertIntoChat={(text) => {
+          setInput((prev) => (prev.trim() ? `${prev.trim()}\n${text}` : text))
+          textareaRef.current?.focus()
+        }}
       />
     </div>
   )

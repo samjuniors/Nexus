@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
-import { GoogleGenAI, ThinkingLevel } from '@google/genai'
+import { ThinkingLevel } from '@google/genai'
 import { db } from '@/lib/db'
 import { ensureSeeded } from '@/lib/agent/seed'
+import { generateGeminiWithFallback } from '@/lib/agent/zai'
 
 export const runtime = 'nodejs'
 
@@ -64,16 +65,8 @@ export async function POST(request: Request) {
       },
     })
 
-    const ai = new GoogleGenAI({
+    const response = await generateGeminiWithFallback({
       apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    })
-
-    const response = await ai.models.generateContent({
       model: 'gemini-4-hydrogen',
       contents: {
         parts: [

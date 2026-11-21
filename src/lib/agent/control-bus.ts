@@ -2,11 +2,14 @@ import type WebSocket from 'ws'
 import { reasoningChain, type ReasoningChain } from '@/lib/agent/reasoning-chain'
 import { brainTrace, type BrainTraceEvent } from '@/lib/agent/brain-trace'
 import { selfHealManager, type SelfHealSession } from '@/lib/agent/self-heal'
+import type { TerminalEntry, TerminalSessionSnapshot } from '@/lib/agent/terminal-types'
+import type { VoiceStageCard } from '@/lib/agent/voice-stage-types'
 
 export type ControlSplitMode =
   | 'reasoning'
   | 'self_heal'
   | 'browser'
+  | 'terminal'
   | 'mobile'
   | 'permissions'
   | 'devices'
@@ -16,6 +19,7 @@ export type ControlSplitMode =
   | 'tools'
   | 'automations'
   | 'brain'
+  | 'google_workspace'
 
 export type ControlUiCommand =
   | { command: 'navigate_tab'; tab: string }
@@ -60,6 +64,50 @@ export interface BrowserFramePayload {
   mediaEmbedUrl?: string | null
   mediaTitle?: string | null
   mediaVideoId?: string | null
+  updatedAt: string
+}
+
+export interface DesktopFramePayload {
+  active: boolean
+  deviceId: string
+  deviceName: string
+  platform: string
+  windowTitle: string
+  imageBase64: string
+  width: number
+  height: number
+  lastAction: string
+  updatedAt: string
+}
+
+export type AutomationSessionStatus =
+  | 'idle'
+  | 'running'
+  | 'paused'
+  | 'awaiting_approval'
+  | 'takeover'
+  | 'completed'
+  | 'error'
+
+export interface AutomationSessionActionLog {
+  id: string
+  step: number
+  label: string
+  detail?: string
+  status: 'running' | 'done' | 'paused' | 'blocked' | 'error'
+  ts: string
+}
+
+export interface AutomationSessionSnapshot {
+  sessionId: string | null
+  target: 'browser' | 'windows' | 'hybrid'
+  status: AutomationSessionStatus
+  goal: string
+  currentStep: string
+  stepIndex: number
+  totalSteps: number
+  canTakeOver: boolean
+  actionLog: AutomationSessionActionLog[]
   updatedAt: string
 }
 
@@ -175,7 +223,11 @@ class NexusControlBus {
   private pendingPermissions = new Map<string, PendingPermission>()
   private pendingDeviceCommands = new Map<string, PendingDeviceCommand>()
   private latestBrowserFrame: BrowserFramePayload | null = null
+  private latestDesktopFrame: DesktopFramePayload | null = null
   private latestMobileFrame: MobileFramePayload | null = null
+  private latestAutomationSession: AutomationSessionSnapshot | null = null
+  private latestTerminalSnapshot: TerminalSessionSnapshot | null = null
+  private latestVoiceStageCard: VoiceStageCard | null = null
 
   constructor() {
     reasoningChain.subscribe((event) => {
@@ -199,11 +251,15 @@ class NexusControlBus {
 
   registerUiClient(ws: WebSocket) {
     this.uiClients.add(ws)
-    // Initial sync: send latest browser frame, any active permission prompts, online device IDs, reasoning chains, brain traces, and self-heal sessions
+    // Initial sync: send latest browser/desktop/mobile frames, automation session, active permission prompts, online device IDs, reasoning chains, brain traces, and self-heal sessions
     this.safeSend(ws, {
       type: 'control:init',
       browserFrame: this.latestBrowserFrame,
+      desktopFrame: this.latestDesktopFrame,
       mobileFrame: this.latestMobileFrame,
+      automationSession: this.latestAutomationSession,
+      terminalSnapshot: this.latestTerminalSnapshot,
+      voiceStageCard: this.latestVoiceStageCard,
       pendingPermissions: Array.from(this.pendingPermissions.values()).map((p) => p.request),
       onlineDeviceIds: Array.from(this.deviceSockets.keys()),
       reasoningChains: reasoningChain.listChains(20),
@@ -259,6 +315,26 @@ class NexusControlBus {
     this.broadcast({ type: 'browser:frame', frame })
   }
 
+  broadcastDesktopFrame(frame: DesktopFramePayload) {
+    this.latestDesktopFrame = frame.active ? frame : null
+    this.broadcast({ type: 'desktop:frame', frame })
+  }
+
+  broadcastAutomationSession(session: AutomationSessionSnapshot) {
+    this.latestAutomationSession = session
+    this.broadcast({ type: 'automation:session', session })
+  }
+
+  broadcastTerminalSnapshot(snapshot: TerminalSessionSnapshot) {
+    this.latestTerminalSnapshot = snapshot
+    this.broadcast({ type: 'terminal:snapshot', snapshot })
+  }
+
+  broadcastTerminalEntry(entry: TerminalEntry, snapshot: TerminalSessionSnapshot) {
+    this.latestTerminalSnapshot = snapshot
+    this.broadcast({ type: 'terminal:entry', entry, snapshot })
+  }
+
   broadcastMobileFrame(frame: MobileFramePayload) {
     this.latestMobileFrame = frame.active ? frame : null
     this.broadcast({ type: 'mobile:frame', frame })
@@ -276,8 +352,32 @@ class NexusControlBus {
     this.broadcast({ type: 'self_heal:update', session })
   }
 
+  broadcastVoiceStagePresent(card: VoiceStageCard) {
+    this.latestVoiceStageCard = card
+    this.broadcast({ type: 'voice_stage:present', card })
+  }
+
+  broadcastVoiceStageDismiss(id?: string) {
+    if (!id || this.latestVoiceStageCard?.id === id) {
+      this.latestVoiceStageCard = null
+    }
+    this.broadcast({ type: 'voice_stage:dismiss', id: id ?? null })
+  }
+
+  getLatestVoiceStageCard(): VoiceStageCard | null {
+    return this.latestVoiceStageCard
+  }
+
   getLatestBrowserFrame(): BrowserFramePayload | null {
     return this.latestBrowserFrame
+  }
+
+  getLatestDesktopFrame(): DesktopFramePayload | null {
+    return this.latestDesktopFrame
+  }
+
+  getLatestAutomationSession(): AutomationSessionSnapshot | null {
+    return this.latestAutomationSession
   }
 
   getLatestMobileFrame(): MobileFramePayload | null {
@@ -366,6 +466,21 @@ class NexusControlBus {
       type: 'device:status',
       onlineDeviceIds: this.getOnlineDeviceIds(),
     })
+  }
+
+  pushAllowlistToDevices(payload: {
+    folders: { id: string; label: string; path: string; accessMode: string; enabled: boolean }[]
+    apps: { id: string; name: string; executable: string; policy: string }[]
+  }) {
+    for (const sock of this.deviceSockets.values()) {
+      if (sock.platform === 'android' || sock.platform === 'ios') continue
+      this.safeSend(sock.ws, {
+        type: 'allowlist:sync',
+        folders: payload.folders,
+        apps: payload.apps,
+        updatedAt: new Date().toISOString(),
+      })
+    }
   }
 
   sendDeviceCommand(

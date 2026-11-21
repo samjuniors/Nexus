@@ -3,6 +3,8 @@ import type { IncomingMessage } from 'http'
 import type WebSocket from 'ws'
 import { db } from '@/lib/db'
 import { controlBus } from '@/lib/agent/control-bus'
+import { listAllowedDesktopApps, listConnectedFolders } from '@/lib/agent/computer-control'
+import { terminalManager } from '@/lib/agent/terminal-manager'
 
 export interface ConnectedDeviceDTO {
   id: string
@@ -52,7 +54,25 @@ const MOBILE_CAPABILITIES = [
   'android_notifications',
 ]
 
-const DESKTOP_CAPABILITIES = ['open_url', 'open_app', 'shell', 'system_info']
+const DESKTOP_CAPABILITIES = [
+  'open_url',
+  'open_app',
+  'shell',
+  'powershell',
+  'system_info',
+  'screen_capture',
+  'window_list',
+  'focus_window',
+  'ui_click',
+  'ui_type',
+  'ui_hotkey',
+  'paste_text',
+  'list_folder',
+  'read_file',
+  'write_file',
+  'move_file',
+  'batch_rename',
+]
 
 export async function createPairedDevice(name: string, platform = 'macos'): Promise<{
   device: ConnectedDeviceDTO
@@ -141,6 +161,35 @@ export async function handleDeviceBridgeSocket(ws: WebSocket, req: IncomingMessa
 
   ws.send(JSON.stringify({ type: 'bridge:welcome', deviceId: device.id, name: device.name }))
 
+  // Immediately push current Connected Folders & Allowed Desktop Apps allowlist to desktop bridges
+  if (platformParam !== 'android' && platformParam !== 'ios') {
+    void Promise.all([listConnectedFolders(), listAllowedDesktopApps()])
+      .then(([folders, apps]) => {
+        if (ws.readyState === 1) {
+          ws.send(
+            JSON.stringify({
+              type: 'allowlist:sync',
+              folders: folders.map((f) => ({
+                id: f.id,
+                label: f.label,
+                path: f.path,
+                accessMode: f.accessMode,
+                enabled: f.enabled,
+              })),
+              apps: apps.map((a) => ({
+                id: a.id,
+                name: a.name,
+                executable: a.executable,
+                policy: a.policy,
+              })),
+              updatedAt: new Date().toISOString(),
+            })
+          )
+        }
+      })
+      .catch(() => {})
+  }
+
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(String(raw)) as {
@@ -149,12 +198,39 @@ export async function handleDeviceBridgeSocket(ws: WebSocket, req: IncomingMessa
         ok?: boolean
         output?: string
         error?: string
+        imageBase64?: string
+        width?: number
+        height?: number
+        windowTitle?: string
+        lastAction?: string
+        stream?: 'stdout' | 'stderr'
+        text?: string
       }
       if (msg.type === 'device:result' && msg.commandId) {
         controlBus.resolveDeviceCommand(msg.commandId, {
           ok: Boolean(msg.ok),
           output: String(msg.output ?? ''),
           error: msg.error ? String(msg.error) : undefined,
+        })
+      } else if (msg.type === 'terminal:chunk' && typeof msg.text === 'string') {
+        terminalManager.appendRemoteChunk({
+          deviceId: device.id,
+          deviceName: device.name,
+          stream: msg.stream === 'stderr' ? 'stderr' : 'stdout',
+          text: msg.text,
+        })
+      } else if (msg.type === 'desktop:frame' && typeof msg.imageBase64 === 'string') {
+        controlBus.broadcastDesktopFrame({
+          active: true,
+          deviceId: device.id,
+          deviceName: device.name,
+          platform: platformParam,
+          windowTitle: String(msg.windowTitle ?? device.name),
+          imageBase64: msg.imageBase64,
+          width: Number(msg.width ?? 1280),
+          height: Number(msg.height ?? 720),
+          lastAction: String(msg.lastAction ?? 'Live Windows desktop capture'),
+          updatedAt: new Date().toISOString(),
         })
       } else if (msg.type === 'bridge:ping') {
         ws.send(JSON.stringify({ type: 'bridge:pong', ts: Date.now() }))
@@ -186,12 +262,24 @@ export function buildCompanionRunnerScript(origin: string): string {
   const wsUrl = origin.replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:') + '/api/device-bridge'
   return `#!/usr/bin/env node
 /**
- * Nexus Agent OS — Local OS Companion Bridge (Optional)
- * Connects your local Mac/Windows/Linux machine to Eva via an authenticated WebSocket.
- * Usage: node nexus-companion.mjs --token <YOUR_PAIRING_TOKEN>
+ * Nexus Agent OS — Windows & Desktop Companion Bridge v2
+ * Connects your Windows / macOS / Linux PC to Eva over an authenticated WebSocket.
+ *
+ * Security Guardrails enforced locally on your machine:
+ * - Connected Folders Allowlist: Only explicitly enabled folders can be listed, read, or written.
+ * - Read-Only vs Read & Write enforcement + strict path traversal (..) blocking.
+ * - Per-App Allowlist: Apps marked "deny" are rejected locally before spawning.
+ * - Native Windows PowerShell / Win32 screen capture, window focus, UI click/type, and dictation paste.
+ *
+ * Usage (Windows PowerShell):
+ *   $env:NEXUS_DEVICE_TOKEN="<YOUR_TOKEN>"; node nexus-companion.mjs
+ * Usage (Bash / CMD):
+ *   node nexus-companion.mjs --token <YOUR_PAIRING_TOKEN>
  */
+import fs from 'node:fs';
 import os from 'node:os';
-import { execFile } from 'node:child_process';
+import path from 'node:path';
+import { execFile, spawn } from 'node:child_process';
 
 const tokenIdx = process.argv.indexOf('--token');
 const token = tokenIdx !== -1 ? process.argv[tokenIdx + 1] : process.env.NEXUS_DEVICE_TOKEN;
@@ -203,16 +291,114 @@ if (!token) {
 const platform = process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux';
 const endpoint = '${wsUrl}?token=' + encodeURIComponent(token) + '&platform=' + platform;
 
-function run(cmd, args) {
+let syncedFolders = [];
+let syncedApps = [];
+
+function expandEnvPath(rawPath) {
+  if (!rawPath || typeof rawPath !== 'string') return '';
+  let expanded = rawPath.trim();
+  if (expanded.startsWith('~')) {
+    expanded = path.join(os.homedir(), expanded.slice(1));
+  }
+  expanded = expanded.replace(/%([^%]+)%/g, (_m, key) => {
+    if (key.toUpperCase() === 'USERPROFILE' || key.toUpperCase() === 'HOME') return os.homedir();
+    return process.env[key] || '';
+  });
+  return path.resolve(expanded);
+}
+
+function checkFolderGuard(targetPath, needWrite = false) {
+  if (!targetPath || typeof targetPath !== 'string') {
+    return { ok: false, error: 'Target path is required.' };
+  }
+  if (/(^|[\\\\/])\\.\\.([\\\\/]|$)/.test(targetPath)) {
+    return { ok: false, error: 'Blocked: path traversal (..) is not permitted.' };
+  }
+  const resolvedTarget = expandEnvPath(targetPath);
+  const normTarget = platform === 'windows' ? resolvedTarget.toLowerCase() : resolvedTarget;
+  const enabled = syncedFolders.filter((f) => f && f.enabled);
+  if (enabled.length === 0) {
+    return { ok: false, error: 'No Connected Folders are enabled in Permissions > Connected Folders.' };
+  }
+  for (const folder of enabled) {
+    const resolvedRoot = expandEnvPath(folder.path);
+    const normRoot = platform === 'windows' ? resolvedRoot.toLowerCase() : resolvedRoot;
+    const sep = path.sep;
+    if (normTarget === normRoot || normTarget.startsWith(normRoot + sep)) {
+      if (needWrite && folder.accessMode !== 'read_write') {
+        return { ok: false, error: 'Blocked: folder "' + folder.label + '" is Read-Only.' };
+      }
+      return { ok: true, resolvedPath: resolvedTarget, folder };
+    }
+  }
+  return { ok: false, error: 'Blocked: path is outside your enabled Connected Folders allowlist.' };
+}
+
+function checkAppGuard(appName) {
+  const clean = String(appName || '').trim().toLowerCase();
+  if (!clean) return { ok: false, error: 'Application name is required.' };
+  const match = syncedApps.find((a) => {
+    const exe = String(a.executable || '').toLowerCase();
+    const nm = String(a.name || '').toLowerCase();
+    return clean === exe || clean === exe.replace(/\\.exe$/i, '') || clean === nm;
+  });
+  if (match && match.policy === 'deny') {
+    return { ok: false, error: 'Blocked locally: "' + match.name + '" is set to Deny in Allowed Apps.' };
+  }
+  return { ok: true, match };
+}
+
+function run(cmd, args, opts = {}) {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: 12000 }, (err, stdout, stderr) => {
-      if (err) return resolve({ ok: false, output: stdout || '', error: stderr || err.message });
-      resolve({ ok: true, output: (stdout || stderr || 'Done').trim() });
+    execFile(cmd, args, { timeout: 15000, maxBuffer: 16 * 1024 * 1024, ...opts }, (err, stdout, stderr) => {
+      if (err) return resolve({ ok: false, output: String(stdout || ''), error: String(stderr || err.message) });
+      resolve({ ok: true, output: String(stdout || stderr || 'Done').trim() });
     });
   });
 }
 
-async function executeAction(action, args = {}) {
+function runPowerShell(script) {
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded]);
+}
+
+async function captureWindowsScreen() {
+  if (platform !== 'windows') {
+    return { ok: false, output: '', error: 'Native screen_capture requires Windows PowerShell on this bridge.' };
+  }
+  const ps = [
+    'Add-Type -AssemblyName System.Windows.Forms,System.Drawing',
+    '$bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds',
+    '$bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height',
+    '$g = [System.Drawing.Graphics]::FromImage($bmp)',
+    '$g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)',
+    '$ms = New-Object System.IO.MemoryStream',
+    '$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Jpeg)',
+    '$g.Dispose(); $bmp.Dispose()',
+    '$b64 = [Convert]::ToBase64String($ms.ToArray())',
+    '$ms.Dispose()',
+    'Write-Output ("W=" + $bounds.Width + ";H=" + $bounds.Height + ";B64=" + $b64)',
+  ].join('\\n');
+  const res = await runPowerShell(ps);
+  if (!res.ok) return res;
+  const match = /W=(\\d+);H=(\\d+);B64=([A-Za-z0-9+/=]+)/.exec(res.output);
+  if (!match) return { ok: false, output: '', error: 'Could not decode screen capture frame.' };
+  return {
+    ok: true,
+    output: JSON.stringify({
+      width: Number(match[1]),
+      height: Number(match[2]),
+      imageBase64: 'data:image/jpeg;base64,' + match[3],
+    }),
+    frame: {
+      width: Number(match[1]),
+      height: Number(match[2]),
+      imageBase64: 'data:image/jpeg;base64,' + match[3],
+    },
+  };
+}
+
+async function executeAction(action, args = {}, ws) {
   if (action === 'system_info') {
     return {
       ok: true,
@@ -221,26 +407,265 @@ async function executeAction(action, args = {}) {
         platform,
         release: os.release(),
         arch: os.arch(),
+        homedir: os.homedir(),
         cpus: os.cpus().length,
         freeMemMB: Math.round(os.freemem() / 1048576),
+        connectedFolders: syncedFolders.filter((f) => f.enabled).length,
+        allowedApps: syncedApps.filter((a) => a.policy !== 'deny').length,
       }, null, 2),
     };
   }
+
+  if (action === 'screen_capture') {
+    const cap = await captureWindowsScreen();
+    if (cap.ok && cap.frame && ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({
+        type: 'desktop:frame',
+        imageBase64: cap.frame.imageBase64,
+        width: cap.frame.width,
+        height: cap.frame.height,
+        windowTitle: os.hostname() + ' · Windows Desktop',
+        lastAction: args.label || 'Captured Windows desktop preview',
+      }));
+    }
+    return { ok: cap.ok, output: cap.output, error: cap.error };
+  }
+
+  if (action === 'window_list') {
+    if (platform !== 'windows') return { ok: false, output: '', error: 'window_list is supported on Windows.' };
+    const ps = 'Get-Process | Where-Object { $_.MainWindowTitle -ne "" } | Select-Object ProcessName, MainWindowTitle, Id | ConvertTo-Json -Compress';
+    return runPowerShell(ps);
+  }
+
+  if (action === 'focus_window' && typeof args.title === 'string') {
+    if (platform !== 'windows') return { ok: false, output: '', error: 'focus_window is supported on Windows.' };
+    const safeTitle = args.title.replace(/'/g, "''");
+    const ps = [
+      '$wshell = New-Object -ComObject WScript.Shell',
+      '$ok = $wshell.AppActivate(' + "'" + safeTitle + "'" + ')',
+      'Write-Output $ok',
+    ].join('\\n');
+    return runPowerShell(ps);
+  }
+
+  if (action === 'ui_click') {
+    if (platform !== 'windows') return { ok: false, output: '', error: 'ui_click is supported on Windows.' };
+    const x = Math.round(Number(args.x ?? 0));
+    const y = Math.round(Number(args.y ?? 0));
+    const ps = [
+      'Add-Type -MemberDefinition "[DllImport(\\"user32.dll\\")] public static extern bool SetCursorPos(int X, int Y); [DllImport(\\"user32.dll\\")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);" -Name Win32Mouse -Namespace Nexus',
+      '[Nexus.Win32Mouse]::SetCursorPos(' + x + ', ' + y + ') | Out-Null',
+      'Start-Sleep -Milliseconds 40',
+      '[Nexus.Win32Mouse]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)',
+      '[Nexus.Win32Mouse]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)',
+      'Write-Output "Clicked (' + x + ',' + y + ')"',
+    ].join('\\n');
+    const res = await runPowerShell(ps);
+    if (res.ok) await executeAction('screen_capture', { label: 'Clicked (' + x + ',' + y + ')' }, ws);
+    return res;
+  }
+
+  if (action === 'ui_type' && typeof args.text === 'string') {
+    if (platform !== 'windows') return { ok: false, output: '', error: 'ui_type is supported on Windows.' };
+    const escaped = args.text.replace(/[+^%~(){}\\[\\]]/g, '{$&}').replace(/'/g, "''");
+    const ps = [
+      'Add-Type -AssemblyName System.Windows.Forms',
+      '[System.Windows.Forms.SendKeys]::SendWait(' + "'" + escaped + "'" + ')',
+      'Write-Output "Typed text"',
+    ].join('\\n');
+    return runPowerShell(ps);
+  }
+
+  if (action === 'paste_text' && typeof args.text === 'string') {
+    if (platform !== 'windows') return { ok: false, output: '', error: 'paste_text is supported on Windows.' };
+    const safe = args.text.replace(/'/g, "''");
+    const ps = [
+      'Set-Clipboard -Value ' + "'" + safe + "'",
+      'Add-Type -AssemblyName System.Windows.Forms',
+      'Start-Sleep -Milliseconds 60',
+      '[System.Windows.Forms.SendKeys]::SendWait("^v")',
+      'Write-Output "Pasted clean text into active window"',
+    ].join('\\n');
+    return runPowerShell(ps);
+  }
+
+  if (action === 'ui_hotkey' && typeof args.keys === 'string') {
+    if (platform !== 'windows') return { ok: false, output: '', error: 'ui_hotkey is supported on Windows.' };
+    const safe = args.keys.replace(/'/g, "''");
+    const ps = [
+      'Add-Type -AssemblyName System.Windows.Forms',
+      '[System.Windows.Forms.SendKeys]::SendWait(' + "'" + safe + "'" + ')',
+      'Write-Output "Sent hotkey"',
+    ].join('\\n');
+    return runPowerShell(ps);
+  }
+
+  if (action === 'list_folder' && typeof args.path === 'string') {
+    const guard = checkFolderGuard(args.path, false);
+    if (!guard.ok) return { ok: false, output: '', error: guard.error };
+    try {
+      const entries = fs.readdirSync(guard.resolvedPath, { withFileTypes: true }).slice(0, 120);
+      const items = entries.map((e) => {
+        const full = path.join(guard.resolvedPath, e.name);
+        let size = 0;
+        let mtime = null;
+        try {
+          const st = fs.statSync(full);
+          size = st.size;
+          mtime = st.mtime.toISOString();
+        } catch {}
+        return { name: e.name, kind: e.isDirectory() ? 'dir' : 'file', path: full, size, mtime };
+      });
+      return { ok: true, output: JSON.stringify({ folder: guard.resolvedPath, items }, null, 2) };
+    } catch (err) {
+      return { ok: false, output: '', error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  if (action === 'read_file' && typeof args.path === 'string') {
+    const guard = checkFolderGuard(args.path, false);
+    if (!guard.ok) return { ok: false, output: '', error: guard.error };
+    try {
+      const ext = path.extname(guard.resolvedPath).toLowerCase();
+      if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
+        const buf = fs.readFileSync(guard.resolvedPath);
+        if (buf.length > 4 * 1024 * 1024) {
+          return { ok: false, output: '', error: 'Image exceeds 4MB bridge transfer limit.' };
+        }
+        const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+        return { ok: true, output: JSON.stringify({ path: guard.resolvedPath, mimeType: mime, base64: buf.toString('base64') }) };
+      }
+      const content = fs.readFileSync(guard.resolvedPath, 'utf8').slice(0, 32000);
+      return { ok: true, output: content };
+    } catch (err) {
+      return { ok: false, output: '', error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  if (action === 'write_file' && typeof args.path === 'string' && typeof args.content === 'string') {
+    const guard = checkFolderGuard(args.path, true);
+    if (!guard.ok) return { ok: false, output: '', error: guard.error };
+    try {
+      fs.mkdirSync(path.dirname(guard.resolvedPath), { recursive: true });
+      fs.writeFileSync(guard.resolvedPath, args.content, 'utf8');
+      return { ok: true, output: 'Saved file: ' + guard.resolvedPath };
+    } catch (err) {
+      return { ok: false, output: '', error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  if (action === 'move_file' && typeof args.from === 'string' && typeof args.to === 'string') {
+    const gFrom = checkFolderGuard(args.from, true);
+    if (!gFrom.ok) return { ok: false, output: '', error: 'Source: ' + gFrom.error };
+    const gTo = checkFolderGuard(args.to, true);
+    if (!gTo.ok) return { ok: false, output: '', error: 'Destination: ' + gTo.error };
+    try {
+      fs.mkdirSync(path.dirname(gTo.resolvedPath), { recursive: true });
+      fs.renameSync(gFrom.resolvedPath, gTo.resolvedPath);
+      return { ok: true, output: 'Moved to: ' + gTo.resolvedPath };
+    } catch (err) {
+      return { ok: false, output: '', error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   if (action === 'open_url' && typeof args.url === 'string') {
     if (platform === 'macos') return run('open', [args.url]);
     if (platform === 'windows') return run('cmd', ['/c', 'start', '', args.url]);
     return run('xdg-open', [args.url]);
   }
+
   if (action === 'open_app' && typeof args.app === 'string') {
+    const appGuard = checkAppGuard(args.app);
+    if (!appGuard.ok) return { ok: false, output: '', error: appGuard.error };
     if (platform === 'macos') return run('open', ['-a', args.app]);
     if (platform === 'windows') return run('cmd', ['/c', 'start', '', args.app]);
     return run(args.app, []);
   }
+
+  if (action === 'powershell' && typeof args.script === 'string') {
+    const marker = '__NEXUS_CWD_MARKER_9f2a__:';
+    const psBin = platform === 'windows' ? 'powershell.exe' : 'pwsh';
+    const workDir = typeof args.cwd === 'string' && args.cwd.trim() ? expandEnvPath(args.cwd) : os.homedir();
+    const timeoutMs = Math.min(120000, Math.max(3000, Number(args.timeoutMs || 45000)));
+    const wrapped = [
+      args.script,
+      '$__nxs_code = if ($LASTEXITCODE -ne $null) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 }',
+      'Write-Output ("' + marker + '" + (Get-Location).Path)',
+      'exit $__nxs_code',
+    ].join('\\n');
+    const encoded = Buffer.from(wrapped, 'utf16le').toString('base64');
+    return new Promise((resolve) => {
+      const child = spawn(psBin, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
+        cwd: fs.existsSync(workDir) ? workDir : os.homedir(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      let timedOut = false;
+      let streamed = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try { child.kill('SIGTERM'); } catch {}
+        setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 600);
+      }, timeoutMs);
+
+      child.stdout.on('data', (buf) => {
+        const text = buf.toString('utf8');
+        if (stdout.length < 64000) stdout += text;
+        const idx = text.lastIndexOf(marker);
+        const visible = idx !== -1 ? text.slice(0, idx).replace(/\\r?\\n$/, '') : text;
+        if (visible && ws && ws.readyState === 1) {
+          streamed = true;
+          ws.send(JSON.stringify({ type: 'terminal:chunk', stream: 'stdout', text: visible }));
+        }
+      });
+
+      child.stderr.on('data', (buf) => {
+        const text = buf.toString('utf8');
+        if (stderr.length < 32000) stderr += text;
+        if (text.trim() && ws && ws.readyState === 1) {
+          streamed = true;
+          ws.send(JSON.stringify({ type: 'terminal:chunk', stream: 'stderr', text }));
+        }
+      });
+
+      child.on('error', (err) => {
+        clearTimeout(timer);
+        resolve({ ok: false, output: '', error: err.message });
+      });
+
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        const idx = stdout.lastIndexOf(marker);
+        let cleanOut = stdout;
+        let nextCwd = workDir;
+        if (idx !== -1) {
+          cleanOut = stdout.slice(0, idx).replace(/\\r?\\n$/, '');
+          const after = stdout.slice(idx + marker.length).trim().split(/\\r?\\n/)[0];
+          if (after) nextCwd = after.trim();
+        }
+        const exitCode = timedOut ? 124 : (typeof code === 'number' ? code : 0);
+        resolve({
+          ok: exitCode === 0,
+          output: JSON.stringify({
+            stdout: cleanOut,
+            stderr: timedOut ? (stderr + '\\nCommand timed out.').trim() : stderr,
+            exitCode,
+            cwd: nextCwd,
+            streamed,
+          }),
+          ...(exitCode !== 0 && stderr ? { error: stderr.trim() } : {}),
+        });
+      });
+    });
+  }
+
   if (action === 'shell' && typeof args.command === 'string') {
     const parts = args.command.match(/"[^"]*"|'[^']*'|\\S+/g)?.map((s) => s.replace(/^['"]|['"]$/g, '')) ?? [];
     if (!parts.length) return { ok: false, output: '', error: 'Empty command' };
     return run(parts[0], parts.slice(1));
   }
+
   return { ok: false, output: '', error: 'Unsupported action: ' + action };
 }
 
@@ -249,7 +674,7 @@ function connect() {
   const ws = new WebSocket(endpoint);
   let pingTimer;
   ws.addEventListener('open', () => {
-    console.log('[Nexus Bridge] Connected to Eva.');
+    console.log('[Nexus Bridge] Connected to Eva (' + platform + '). Waiting for allowlist sync...');
     pingTimer = setInterval(() => {
       if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'bridge:ping' }));
     }, 20000);
@@ -257,9 +682,15 @@ function connect() {
   ws.addEventListener('message', async (ev) => {
     try {
       const msg = JSON.parse(String(ev.data));
+      if (msg.type === 'allowlist:sync') {
+        syncedFolders = Array.isArray(msg.folders) ? msg.folders : [];
+        syncedApps = Array.isArray(msg.apps) ? msg.apps : [];
+        console.log('[Nexus Bridge] Allowlist synced:', syncedFolders.filter((f) => f.enabled).length, 'folders,', syncedApps.length, 'app policies');
+        return;
+      }
       if (msg.type === 'device:exec' && msg.commandId) {
-        console.log('[Nexus Bridge] Executing:', msg.action, msg.args);
-        const res = await executeAction(msg.action, msg.args);
+        console.log('[Nexus Bridge] Executing:', msg.action);
+        const res = await executeAction(msg.action, msg.args, ws);
         ws.send(JSON.stringify({ type: 'device:result', commandId: msg.commandId, ...res }));
       }
     } catch (e) {
@@ -278,6 +709,15 @@ function connect() {
 
 connect();
 `
+}
+
+/**
+ * Generates a real one-line Windows PowerShell command that downloads and launches
+ * the Nexus Companion Bridge with the newly issued pairing token.
+ */
+export function buildPowerShellPairCommand(origin: string, pairingToken: string): string {
+  const runnerUrl = `${origin.replace(/\/$/, '')}/api/devices/runner`
+  return `irm "${runnerUrl}" -OutFile "$env:TEMP\\nexus-companion.mjs"; $env:NEXUS_DEVICE_TOKEN="${pairingToken}"; node "$env:TEMP\\nexus-companion.mjs"`
 }
 
 /**

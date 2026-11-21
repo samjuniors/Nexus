@@ -4,6 +4,7 @@ import dynamic from 'next/dynamic'
 import { motion } from 'motion/react'
 import {
   Brain,
+  CalendarCheck2,
   CalendarClock,
   FolderOpen,
   GitBranch,
@@ -16,6 +17,7 @@ import {
   Shield,
   ShieldCheck,
   Smartphone,
+  Terminal,
   Users,
   Wrench,
   X,
@@ -28,6 +30,8 @@ import { MobileControlPanel } from '@/components/agent/mobile-control-panel'
 import { AgentIdentityPanel } from '@/components/agent/agent-identity-panel'
 import { PermissionsPanel } from '@/components/agent/permissions-panel'
 import { DevicesPanel } from '@/components/agent/devices-panel'
+import { GoogleWorkspacePanel } from '@/components/agent/google-workspace-panel'
+import { TerminalPanel } from '@/components/agent/terminal-panel'
 import { cn } from '@/lib/utils'
 
 function SplitLoader() {
@@ -58,6 +62,8 @@ const SPLIT_TABS: { mode: SplitMode; label: string; icon: typeof Globe }[] = [
   { mode: 'reasoning', label: 'Reasoning', icon: GitBranch },
   { mode: 'self_heal', label: 'Self-Heal', icon: ShieldCheck },
   { mode: 'browser', label: 'Browser', icon: Globe },
+  { mode: 'terminal', label: 'Terminal', icon: Terminal },
+  { mode: 'google_workspace', label: 'Google', icon: CalendarCheck2 },
   { mode: 'mobile', label: 'Mobile', icon: Smartphone },
   { mode: 'identity', label: 'Inbox', icon: Mail },
   { mode: 'permissions', label: 'Permissions', icon: Shield },
@@ -160,6 +166,8 @@ export function WorkspaceSplitStage({
         {splitMode === 'reasoning' && <ReasoningPanel />}
         {splitMode === 'self_heal' && <SelfHealPanel />}
         {splitMode === 'browser' && <LiveBrowserPanel />}
+        {splitMode === 'terminal' && <TerminalPanel />}
+        {splitMode === 'google_workspace' && <GoogleWorkspacePanel />}
         {splitMode === 'mobile' && <MobileControlPanel />}
         {splitMode === 'identity' && <AgentIdentityPanel />}
         {splitMode === 'permissions' && <PermissionsPanel />}

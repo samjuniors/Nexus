@@ -35,13 +35,14 @@ const VALID_SPLITS = new Set<SplitMode>([
  * Renders dynamic interactive popups spawned by Eva via `app_control({ action: 'open_popup' })`.
  */
 export function EvaDynamicPopup() {
+  const layoutMode = useEvaControl((s) => s.layoutMode)
   const popups = useEvaControl((s) => s.popups)
   const dismissPopup = useEvaControl((s) => s.dismissPopup)
   const openSplit = useEvaControl((s) => s.openSplit)
   const browserAction = useEvaControl((s) => s.browserAction)
   const setTab = useApp((s) => s.setTab)
 
-  if (popups.length === 0) return null
+  if (layoutMode === 'focus' || popups.length === 0) return null
 
   return (
     <div

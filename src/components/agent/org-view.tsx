@@ -1073,7 +1073,7 @@ export function OrgView() {
 
       {/* Hire / Create Modal */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto border-white/10 bg-zinc-950 sm:max-w-xl">
+        <DialogContent className="max-h-[90vh] overflow-y-auto border-border bg-card sm:max-w-xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-base">
               <Building2 className="h-4 w-4 text-primary" />

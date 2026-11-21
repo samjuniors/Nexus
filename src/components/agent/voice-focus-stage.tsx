@@ -38,6 +38,7 @@ import { CoucouBot } from '@/components/coucou/coucou-bot'
 import { VisionPreviewStrip } from '@/components/agent/vision-preview-pip'
 import { AnimatedCaptionText } from '@/components/agent/animated-caption-text'
 import { VoiceVisualizerAura } from '@/components/agent/voice-visualizer-aura'
+import { VoiceStagePresenter } from '@/components/agent/voice-stage-presenter'
 import { MaterialBottomSheet } from '@/components/agent/material-bottom-sheet'
 import { useEva } from '@/components/agent/eva-provider'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
@@ -53,7 +54,12 @@ import { GAZE_TRACKING_MODE_OPTIONS } from '@/lib/agent/camera-gaze'
 import {
   computeSubtitleFadeMs,
   extractActiveSubtitleCue,
+  extractAudioSyncedSubtitleCue,
 } from '@/lib/agent/subtitle-engine'
+import {
+  isTopicChangeTurn,
+  isVoiceDismissIntent,
+} from '@/lib/agent/voice-stage-types'
 import { useViewportTier } from '@/lib/agent/responsive-layout'
 import { triggerHaptic } from '@/lib/platform/android-bridge'
 import { OUTFIT_SELECTIONS, type OutfitSelection } from '@/lib/coucou/wardrobe'
@@ -73,13 +79,16 @@ const VOICE_MOOD_PRESETS: readonly EvaEmotionId[] = [
 
 const SUBTITLE_DEMO_PHRASES = [
   'How are you doing today?',
-  "I'm Eva — looking right at you and ready to help.",
+  "I'm Eva — synced live to my spoken voice.",
+  'Ask me to show the date, weather, or an image anytime.',
 ]
 
 interface ActiveSubtitleState {
   id: string
   speaker: 'Eva' | 'You' | 'System'
   text: string
+  previous?: string | null
+  phraseProgress?: number
   live: boolean
   isWhisper?: boolean
   isThinking?: boolean
@@ -185,6 +194,9 @@ export function VoiceFocusStage({
   const setCaptionAnimationStyle = useEvaControl((s) => s.setCaptionAnimationStyle)
   const voiceVisualizerStyle = useEvaControl((s) => s.voiceVisualizerStyle)
   const setVoiceVisualizerStyle = useEvaControl((s) => s.setVoiceVisualizerStyle)
+  const voiceStageCard = useEvaControl((s) => s.voiceStageCard)
+  const dismissVoiceStageCard = useEvaControl((s) => s.dismissVoiceStageCard)
+  const toggleVoiceStageCardPinned = useEvaControl((s) => s.toggleVoiceStageCardPinned)
 
   const [greetSeq, setGreetSeq] = useState(0)
   const [stageSettingsOpen, setStageSettingsOpen] = useState(false)
@@ -193,15 +205,22 @@ export function VoiceFocusStage({
   const [sendingFallback, setSendingFallback] = useState(false)
   const [subtitleFaded, setSubtitleFaded] = useState(false)
   const [heldSubtitle, setHeldSubtitle] = useState<ActiveSubtitleState | null>(null)
-  const [demoSubtitle, setDemoSubtitle] = useState<string | null>(null)
+  const [demoStep, setDemoStep] = useState<number | null>(null)
   const [subtitleReplaySeq, setSubtitleReplaySeq] = useState(0)
+  const [evaPhraseFloor, setEvaPhraseFloor] = useState<{ turnSeq: number; index: number }>({
+    turnSeq: -1,
+    index: 0,
+  })
   const settingsPopoverRef = useRef<HTMLDivElement>(null)
   const fallbackInputRef = useRef<HTMLInputElement>(null)
   const demoTimersRef = useRef<number[]>([])
   const lastEvaCueRef = useRef<ActiveSubtitleState | null>(null)
   const heldTimerRef = useRef<number | null>(null)
+  const cardPresentedAtRef = useRef<number>(0)
+  const lastCheckedTopicTranscriptRef = useRef<string>('')
   const { isCompact } = useViewportTier()
   const sendTask = useApp((s) => s.sendTask)
+  const isPresenting = Boolean(voiceStageCard)
 
   const voiceBlockedOrError =
     voice.status === 'error' ||
@@ -280,41 +299,125 @@ export function VoiceFocusStage({
     }
   }, [])
 
+  // Track presentation timestamp & Escape dismissal for active Voice Stage Card
+  useEffect(() => {
+    if (!voiceStageCard) {
+      cardPresentedAtRef.current = 0
+      lastCheckedTopicTranscriptRef.current = ''
+      return
+    }
+    cardPresentedAtRef.current = Date.now()
+    lastCheckedTopicTranscriptRef.current = voice.liveInputTranscript.trim()
+  }, [voiceStageCard?.id])
+
+  useEffect(() => {
+    if (!voiceStageCard || stageSettingsOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') dismissVoiceStageCard()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [voiceStageCard, stageSettingsOpen, dismissVoiceStageCard])
+
+  // Dismiss Voice Stage Card automatically on spoken close commands ("close it", "hide that")
+  // or when the user begins a fresh substantive turn on a new topic (unless pinned).
+  useEffect(() => {
+    if (!voiceStageCard) return
+    const input = voice.liveInputTranscript.trim()
+    if (!input || input === lastCheckedTopicTranscriptRef.current) return
+
+    if (isVoiceDismissIntent(input)) {
+      lastCheckedTopicTranscriptRef.current = input
+      dismissVoiceStageCard()
+      return
+    }
+
+    // Wait until the user finishes speaking or has a full sentence after the card has been shown >= 2.2s
+    const elapsedSincePresent = Date.now() - cardPresentedAtRef.current
+    if (
+      !voiceStageCard.pinned &&
+      elapsedSincePresent >= 2200 &&
+      !voice.isUserSpeaking &&
+      isTopicChangeTurn(input, voiceStageCard)
+    ) {
+      lastCheckedTopicTranscriptRef.current = input
+      dismissVoiceStageCard()
+    }
+  }, [voiceStageCard, voice.liveInputTranscript, voice.isUserSpeaking, dismissVoiceStageCard])
+
   const triggerSubtitleDemo = () => {
     demoTimersRef.current.forEach((id) => window.clearTimeout(id))
     demoTimersRef.current = []
     if (!captionsEnabled) setCaptionsEnabled(true)
     setStageSettingsOpen(false)
     setSubtitleFaded(false)
-    setDemoSubtitle(SUBTITLE_DEMO_PHRASES[0])
+    setDemoStep(0)
     setSubtitleReplaySeq((n) => n + 1)
 
     const t1 = window.setTimeout(() => {
-      setDemoSubtitle(SUBTITLE_DEMO_PHRASES[1])
+      setDemoStep(1)
       setSubtitleReplaySeq((n) => n + 1)
-    }, 2400)
+    }, 2200)
     const t2 = window.setTimeout(() => {
-      setDemoSubtitle(null)
-    }, 5800)
-    demoTimersRef.current = [t1, t2]
+      setDemoStep(2)
+      setSubtitleReplaySeq((n) => n + 1)
+    }, 4800)
+    const t3 = window.setTimeout(() => {
+      setDemoStep(null)
+    }, 8000)
+    demoTimersRef.current = [t1, t2, t3]
   }
 
-  const subtitleMaxChars = isCompact ? 48 : 70
+  const subtitleMaxChars = isCompact ? 50 : 72
   const isVoiceThinking = voice.agentState === 'thinking' || voice.status === 'connecting'
 
-  // Retain Eva's final spoken phrase briefly across turn_complete so mobile users
+  // Compute Eva's real-time audio-synchronized subtitle cue (current + faded previous phrase + word syncProgress)
+  const activeEvaFloor =
+    evaPhraseFloor.turnSeq === voice.outputTurnSeq ? evaPhraseFloor.index : 0
+  const trimmedOutputTranscript = voice.liveOutputTranscript.trim()
+  const syncedEvaCue = trimmedOutputTranscript
+    ? extractAudioSyncedSubtitleCue(trimmedOutputTranscript, {
+        elapsedSec: voice.outputAudioElapsedSec,
+        totalScheduledSec: voice.outputAudioTotalSec,
+        speechStartSec: voice.outputSpeechStartSec,
+        speechEndSec: voice.outputSpeechEndSec,
+        isTurnComplete: voice.outputTurnComplete,
+        minPhraseIndex: activeEvaFloor,
+        maxChars: subtitleMaxChars,
+      })
+    : null
+  const evaCueText = syncedEvaCue?.current ?? ''
+  const evaCuePrevious = syncedEvaCue?.previous ?? null
+  const evaCueIndex = syncedEvaCue?.phraseIndex ?? -1
+  const evaCueProgress = syncedEvaCue?.phraseProgress
+
+  // Keep monotonic phrase floor per turn so subtitles never jump backward as new sentences stream in
+  useEffect(() => {
+    if (!trimmedOutputTranscript || evaCueIndex < 0) {
+      setEvaPhraseFloor((prev) =>
+        prev.turnSeq === voice.outputTurnSeq && prev.index === 0
+          ? prev
+          : { turnSeq: voice.outputTurnSeq, index: 0 }
+      )
+      return
+    }
+    setEvaPhraseFloor((prev) => {
+      if (prev.turnSeq === voice.outputTurnSeq && evaCueIndex <= prev.index) return prev
+      return { turnSeq: voice.outputTurnSeq, index: evaCueIndex }
+    })
+  }, [trimmedOutputTranscript, evaCueIndex, voice.outputTurnSeq])
+
+  // Retain Eva's final spoken phrase briefly after audio playback drains so users
   // can finish reading the last words before captions gently return to Listening…
   useEffect(() => {
-    const trimmedOut = voice.liveOutputTranscript.trim()
-    if (trimmedOut) {
-      const cue = extractActiveSubtitleCue(trimmedOut, { maxChars: subtitleMaxChars })
-      if (cue.current) {
-        lastEvaCueRef.current = {
-          id: `eva:${cue.phraseIndex}`,
-          speaker: 'Eva',
-          text: cue.current,
-          live: true,
-        }
+    if (evaCueText) {
+      lastEvaCueRef.current = {
+        id: `eva:${voice.outputTurnSeq}:${evaCueIndex}`,
+        speaker: 'Eva',
+        text: evaCueText,
+        previous: evaCuePrevious,
+        phraseProgress: 1,
+        live: true,
       }
       if (heldTimerRef.current) {
         window.clearTimeout(heldTimerRef.current)
@@ -324,9 +427,15 @@ export function VoiceFocusStage({
       return
     }
 
-    // Live output just cleared (turn_complete) — hold the last spoken phrase for a natural reading window
-    if (lastEvaCueRef.current && voice.isActive && !voice.liveInputTranscript.trim() && !voice.isUserSpeaking && !isVoiceThinking) {
-      const toHold = { ...lastEvaCueRef.current, live: false }
+    // Live output just cleared after audio drained — hold the last spoken phrase for a natural reading window
+    if (
+      lastEvaCueRef.current &&
+      voice.isActive &&
+      !voice.liveInputTranscript.trim() &&
+      !voice.isUserSpeaking &&
+      !isVoiceThinking
+    ) {
+      const toHold = { ...lastEvaCueRef.current, live: false, phraseProgress: 1 }
       lastEvaCueRef.current = null
       setHeldSubtitle(toHold)
       if (heldTimerRef.current) window.clearTimeout(heldTimerRef.current)
@@ -337,12 +446,14 @@ export function VoiceFocusStage({
       }, holdMs)
     }
   }, [
-    voice.liveOutputTranscript,
+    evaCueText,
+    evaCuePrevious,
+    evaCueIndex,
+    voice.outputTurnSeq,
     voice.liveInputTranscript,
     voice.isActive,
     voice.isUserSpeaking,
     isVoiceThinking,
-    subtitleMaxChars,
   ])
 
   // Clear held subtitle immediately when user starts talking, thinking begins, or voice stops
@@ -362,27 +473,27 @@ export function VoiceFocusStage({
     }
   }, [])
 
-  // Phrase-by-phrase cinema subtitle derivation:
-  // Key strictly by speaker + phraseIndex (NEVER embed `cue.current`) so streamed tokens
+  // Audio-synced 2-line cinema subtitle derivation:
+  // Key strictly by speaker + turn + phraseIndex (NEVER embed raw `cue.current`) so streamed tokens
   // flow smoothly in-place without unmounting/flickering on every word!
   const rawSubtitle: ActiveSubtitleState | null = useMemo(() => {
-    if (demoSubtitle) {
+    if (demoStep !== null) {
       return {
-        id: `demo:${demoSubtitle}`,
+        id: `demo:${demoStep}`,
         speaker: 'Eva',
-        text: demoSubtitle,
+        text: SUBTITLE_DEMO_PHRASES[demoStep] ?? '',
+        previous: demoStep > 0 ? SUBTITLE_DEMO_PHRASES[demoStep - 1] : null,
         live: true,
       }
     }
-    if (voice.liveOutputTranscript.trim()) {
-      const cue = extractActiveSubtitleCue(voice.liveOutputTranscript, { maxChars: subtitleMaxChars })
-      if (cue.current) {
-        return {
-          id: `eva:${cue.phraseIndex}`,
-          speaker: 'Eva',
-          text: cue.current,
-          live: true,
-        }
+    if (evaCueText) {
+      return {
+        id: `eva:${voice.outputTurnSeq}:${evaCueIndex}`,
+        speaker: 'Eva',
+        text: evaCueText,
+        previous: evaCuePrevious,
+        phraseProgress: evaCueProgress,
+        live: true,
       }
     }
     if (voice.liveInputTranscript.trim()) {
@@ -392,6 +503,7 @@ export function VoiceFocusStage({
           id: `you:${cue.phraseIndex}`,
           speaker: 'You',
           text: cue.current,
+          previous: cue.previous,
           live: true,
         }
       }
@@ -471,8 +583,12 @@ export function VoiceFocusStage({
       isWhisper: true,
     }
   }, [
-    demoSubtitle,
-    voice.liveOutputTranscript,
+    demoStep,
+    evaCueText,
+    evaCuePrevious,
+    evaCueIndex,
+    evaCueProgress,
+    voice.outputTurnSeq,
     voice.liveInputTranscript,
     heldSubtitle,
     voice.isActive,
@@ -675,242 +791,351 @@ export function VoiceFocusStage({
       {/* Floating corner Camera/Screen PiP + actionable camera permission error banner */}
       <VisionPreviewStrip vision={vision} variant="floating" />
 
-      {/* Center Stage: Voice Visualizer Aura + Borderless Coucou looking toward user */}
-      <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-2">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.96 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.22 }}
-          className="flex flex-col items-center"
-        >
-          <div className="relative flex h-64 w-64 items-center justify-center sm:h-72 sm:w-72">
-            <VoiceVisualizerAura
-              style={voiceVisualizerStyle}
-              accentColor={emotion.accentHex}
-              intensity={visualizerIntensity}
-              isSpeaking={voice.isSpeaking}
-              isThinking={isVoiceThinking}
-              isListening={voice.isActive && !voice.muted && !voice.isSpeaking && !isVoiceThinking}
-              compact={isCompact}
-              size={isCompact ? 286 : 308}
-            />
-
-            <button
-              type="button"
-              onClick={handleCharacterTap}
-              aria-label={
-                wake.sleepMode
-                  ? 'Wake Eva'
-                  : voice.isActive
-                    ? voice.muted
-                      ? 'Unmute microphone'
-                      : 'Mute microphone'
-                    : 'Tap to talk to Eva'
-              }
-              style={characterShadow ? { filter: characterShadow } : undefined}
-              className={cn(
-                'group relative z-10 flex h-56 w-56 cursor-pointer items-center justify-center border-0 bg-transparent ring-0 outline-none focus-visible:rounded-3xl focus-visible:ring-2 focus-visible:ring-sky-500/60',
-                wake.sleepMode && 'opacity-80'
-              )}
-            >
-              <CoucouBot
-                expression={evaExpression}
-                emotion={emotion.id}
-                archetype="eva"
-                outfit={coucouOutfit}
-                greetSeq={greetSeq + cameraGreetSeq}
-                dancing={coucouDancing || mediaPlaying}
-                isSpeaking={voice.isSpeaking}
-                speakingLevel={speakingLevel}
-                visionActive={vision.anyActive}
-                earListening={senses.ears.status === 'active'}
-                handsActive={senses.hands.status === 'active'}
-                handTracking={handTracking}
-                gazeOverride={vision.founderGaze}
-                size={212}
-                interactive={false}
-                trackGaze
-                label={`Eva companion (${emotion.label}, ${EYE_EXPRESSION_LABELS[evaExpression]})`}
-              />
-            </button>
-          </div>
-
-          {/* Active physical hand-tracking task readout when tools or file ops run */}
-          {handTracking.active && (
-            <div
-              data-voice-hand-status="1"
-              className="mt-1 flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground"
-            >
-              <Hand className="h-3 w-3 shrink-0" style={{ color: handTracking.accentHex }} />
-              <span className="font-medium text-foreground">{handTracking.label}</span>
-              {handTracking.targetLabel && (
-                <>
-                  <span className="opacity-45">·</span>
-                  <span className="max-w-[200px] truncate">{handTracking.targetLabel}</span>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* Mobile (< lg): zero idle chrome — only show gaze status subtly when camera eye is actively on */}
-          {vision.cameraActive && (
-            <div className="mt-1 flex items-center justify-center text-[11.5px] text-sky-500 lg:hidden">
-              <span>{gazeStatusText}</span>
-            </div>
-          )}
-
-          {/* Desktop (>= lg): Emotion & Feeling Presence Bar */}
-          <div
-            data-voice-emotion-ribbon="1"
-            className="mt-1 hidden flex-col items-center gap-2 text-center lg:flex"
-          >
-            <div className="flex items-center gap-2 text-xs">
-              <Heart className="h-3.5 w-3.5" style={{ color: emotion.accentHex }} />
-              <span className="font-semibold text-foreground">{emotion.label}</span>
-              <span className="text-muted-foreground">·</span>
-              <span className="text-muted-foreground">
-                {vision.cameraActive && vision.founderGaze?.present
-                  ? gazeStatusText
-                  : emotion.reason}
-              </span>
-            </div>
-
-            <div
-              role="group"
-              aria-label="Eva feeling tone"
-              className="flex flex-wrap items-center justify-center gap-1"
+      {/* Center Stage: Spatial Choreography — Coucou Hero Center OR Top-Left Docked Companion + Visual Stage Card */}
+      <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-center px-4 py-2 sm:px-6">
+        {/* Top-Left Docked Coucou Companion when presenting a visual card */}
+        <AnimatePresence>
+          {isPresenting && (
+            <motion.div
+              key="coucou-corner-dock"
+              data-coucou-docked="1"
+              initial={{ opacity: 0, scale: 0.78, x: 24, y: 24 }}
+              animate={{ opacity: 1, scale: 1, x: 0, y: 0 }}
+              exit={{ opacity: 0, scale: 0.82, x: 18, y: 18 }}
+              transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+              className="absolute top-2 left-3 z-20 flex items-center gap-2 lg:top-4 lg:left-5"
             >
               <button
                 type="button"
-                onClick={() => setManualEmotion(null)}
-                aria-pressed={manualEmotion === null}
-                className={cn(
-                  'inline-flex h-6 items-center gap-1 rounded-md border px-2 text-[10.5px] font-medium whitespace-nowrap transition-colors',
-                  manualEmotion === null
-                    ? 'border-foreground/30 bg-foreground/10 text-foreground'
-                    : 'border-border/70 text-muted-foreground hover:bg-muted hover:text-foreground'
-                )}
+                onClick={handleCharacterTap}
+                aria-label={
+                  wake.sleepMode
+                    ? 'Wake Eva'
+                    : voice.isActive
+                      ? voice.muted
+                        ? 'Unmute microphone'
+                        : 'Mute microphone'
+                      : 'Tap to talk to Eva'
+                }
+                className="relative flex h-[76px] w-[76px] cursor-pointer items-center justify-center rounded-2xl border border-border/60 bg-card/75 shadow-md backdrop-blur-md transition-transform active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/60 sm:h-[84px] sm:w-[84px]"
               >
-                <Sparkles className="h-2.5 w-2.5" />
-                <span>Auto</span>
-              </button>
-              {VOICE_MOOD_PRESETS.map((id) => {
-                const meta = EVA_EMOTIONS[id]
-                const active = emotion.id === id
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    data-voice-mood={id}
-                    onClick={() => setManualEmotion(manualEmotion === id ? null : id)}
-                    aria-pressed={active}
-                    className={cn(
-                      'inline-flex h-6 items-center gap-1.5 rounded-md border px-2 text-[10.5px] font-medium whitespace-nowrap transition-colors',
-                      active
-                        ? 'border-foreground/30 bg-muted text-foreground'
-                        : 'border-border/70 text-muted-foreground hover:bg-muted/70 hover:text-foreground'
-                    )}
-                  >
-                    <span
-                      className="h-1.5 w-1.5 rounded-full"
-                      style={{ backgroundColor: meta.accentHex }}
-                    />
-                    <span>{meta.shortLabel}</span>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-
-          {/* Compact live Reasoning Chain pulse when Eva's Hands are working */}
-          {latestChain && latestNode && (
-            <button
-              type="button"
-              onClick={() => openReasoningForChain(latestChain.id)}
-              className={cn(
-                'mt-3 max-w-md items-center gap-2 rounded-lg border border-border/80 bg-card/70 px-3 py-1.5 text-left text-[11.5px] text-muted-foreground transition-colors hover:border-sky-500/40 hover:text-foreground',
-                latestChain.status === 'active' ? 'inline-flex' : 'hidden lg:inline-flex'
-              )}
-            >
-              <Hand className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-              <span className="truncate">
-                <span className="font-medium text-foreground">{latestNode.title}</span>
-                {latestChain.correctionCount > 0
-                  ? ` · ${latestChain.correctionCount} self-corrected`
-                  : ''}
-              </span>
-            </button>
-          )}
-        </motion.div>
-      </div>
-
-      {/* Borderless Cinema-Style Live Subtitles — Fixed height prevents vertical stage jump on mobile */}
-      <div className="relative z-10 mx-auto flex h-[86px] w-full max-w-xl shrink-0 flex-col items-center justify-center px-5 pb-2 sm:h-[90px] sm:px-6 lg:pb-3">
-        <AnimatePresence mode="wait" initial={false}>
-          {captionsEnabled && visibleSubtitle && (
-            <motion.section
-              key={visibleSubtitle.id}
-              data-voice-captions="1"
-              data-subtitle-borderless="1"
-              aria-live="polite"
-              aria-label="Live voice subtitles"
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -3 }}
-              transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
-              className="flex w-full flex-col items-center justify-center bg-transparent text-center"
-            >
-              {!visibleSubtitle.isWhisper && (
-                <div className="mb-1 flex items-center justify-center gap-1.5">
-                  <SpeechCadenceDots
-                    active={
-                      visibleSubtitle.live &&
-                      (voice.isSpeaking || voice.isUserSpeaking || Boolean(demoSubtitle))
-                    }
-                    color={visibleSubtitle.speaker === 'You' ? '#38bdf8' : emotion.accentHex}
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-75">
+                  <VoiceVisualizerAura
+                    style={voiceVisualizerStyle}
+                    accentColor={emotion.accentHex}
+                    intensity={visualizerIntensity}
+                    isSpeaking={voice.isSpeaking}
+                    isThinking={isVoiceThinking}
+                    isListening={voice.isActive && !voice.muted && !voice.isSpeaking && !isVoiceThinking}
+                    compact
+                    size={96}
                   />
-                  <span className="font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/80">
-                    {visibleSubtitle.speaker}
+                </div>
+                <div className="relative z-10">
+                  <CoucouBot
+                    expression={evaExpression}
+                    emotion={emotion.id}
+                    archetype="eva"
+                    outfit={coucouOutfit}
+                    greetSeq={greetSeq + cameraGreetSeq}
+                    dancing={coucouDancing || mediaPlaying}
+                    isSpeaking={voice.isSpeaking}
+                    speakingLevel={speakingLevel}
+                    visionActive={vision.anyActive}
+                    earListening={senses.ears.status === 'active'}
+                    handsActive={senses.hands.status === 'active'}
+                    handTracking={handTracking}
+                    gazeOverride={vision.founderGaze}
+                    size={62}
+                    interactive={false}
+                    trackGaze
+                    label={`Eva companion docked (${emotion.label})`}
+                  />
+                </div>
+              </button>
+              <div className="hidden flex-col text-left sm:flex">
+                <span className="text-xs font-semibold text-foreground">Eva</span>
+                <span className="font-mono text-[10.5px] text-muted-foreground">
+                  {voice.isSpeaking
+                    ? 'Speaking'
+                    : isVoiceThinking
+                      ? 'Thinking'
+                      : voice.muted
+                        ? 'Muted'
+                        : voice.isActive
+                          ? 'Listening'
+                          : emotion.shortLabel}
+                </span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Visual Presentation Card OR Full Center Coucou Hero */}
+        <AnimatePresence mode="wait" initial={false}>
+          {isPresenting && voiceStageCard ? (
+            <div
+              key={`stage-card-slot-${voiceStageCard.id}`}
+              className="flex w-full flex-1 flex-col items-center justify-center pt-[82px] sm:pt-12"
+            >
+              <VoiceStagePresenter
+                card={voiceStageCard}
+                onDismiss={() => dismissVoiceStageCard()}
+                onTogglePin={toggleVoiceStageCardPinned}
+              />
+            </div>
+          ) : (
+            <motion.div
+              key="coucou-center-hero"
+              initial={{ opacity: 0, scale: 0.94 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.88 }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+              className="flex flex-col items-center"
+            >
+              <div className="relative flex h-64 w-64 items-center justify-center sm:h-72 sm:w-72">
+                <VoiceVisualizerAura
+                  style={voiceVisualizerStyle}
+                  accentColor={emotion.accentHex}
+                  intensity={visualizerIntensity}
+                  isSpeaking={voice.isSpeaking}
+                  isThinking={isVoiceThinking}
+                  isListening={voice.isActive && !voice.muted && !voice.isSpeaking && !isVoiceThinking}
+                  compact={isCompact}
+                  size={isCompact ? 286 : 308}
+                />
+
+                <button
+                  type="button"
+                  onClick={handleCharacterTap}
+                  aria-label={
+                    wake.sleepMode
+                      ? 'Wake Eva'
+                      : voice.isActive
+                        ? voice.muted
+                          ? 'Unmute microphone'
+                          : 'Mute microphone'
+                        : 'Tap to talk to Eva'
+                  }
+                  style={characterShadow ? { filter: characterShadow } : undefined}
+                  className={cn(
+                    'group relative z-10 flex h-56 w-56 cursor-pointer items-center justify-center border-0 bg-transparent ring-0 outline-none focus-visible:rounded-3xl focus-visible:ring-2 focus-visible:ring-sky-500/60',
+                    wake.sleepMode && 'opacity-80'
+                  )}
+                >
+                  <CoucouBot
+                    expression={evaExpression}
+                    emotion={emotion.id}
+                    archetype="eva"
+                    outfit={coucouOutfit}
+                    greetSeq={greetSeq + cameraGreetSeq}
+                    dancing={coucouDancing || mediaPlaying}
+                    isSpeaking={voice.isSpeaking}
+                    speakingLevel={speakingLevel}
+                    visionActive={vision.anyActive}
+                    earListening={senses.ears.status === 'active'}
+                    handsActive={senses.hands.status === 'active'}
+                    handTracking={handTracking}
+                    gazeOverride={vision.founderGaze}
+                    size={212}
+                    interactive={false}
+                    trackGaze
+                    label={`Eva companion (${emotion.label}, ${EYE_EXPRESSION_LABELS[evaExpression]})`}
+                  />
+                </button>
+              </div>
+
+              {/* Active physical hand-tracking task readout when tools or file ops run */}
+              {handTracking.active && (
+                <div
+                  data-voice-hand-status="1"
+                  className="mt-1 flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground"
+                >
+                  <Hand className="h-3 w-3 shrink-0" style={{ color: handTracking.accentHex }} />
+                  <span className="font-medium text-foreground">{handTracking.label}</span>
+                  {handTracking.targetLabel && (
+                    <>
+                      <span className="opacity-45">·</span>
+                      <span className="max-w-[200px] truncate">{handTracking.targetLabel}</span>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Mobile (< lg): zero idle chrome — only show gaze status subtly when camera eye is actively on */}
+              {vision.cameraActive && (
+                <div className="mt-1 flex items-center justify-center text-[11.5px] text-sky-500 lg:hidden">
+                  <span>{gazeStatusText}</span>
+                </div>
+              )}
+
+              {/* Desktop (>= lg): Emotion & Feeling Presence Bar */}
+              <div
+                data-voice-emotion-ribbon="1"
+                className="mt-1 hidden flex-col items-center gap-2 text-center lg:flex"
+              >
+                <div className="flex items-center gap-2 text-xs">
+                  <Heart className="h-3.5 w-3.5" style={{ color: emotion.accentHex }} />
+                  <span className="font-semibold text-foreground">{emotion.label}</span>
+                  <span className="text-muted-foreground">·</span>
+                  <span className="text-muted-foreground">
+                    {vision.cameraActive && vision.founderGaze?.present
+                      ? gazeStatusText
+                      : emotion.reason}
                   </span>
                 </div>
-              )}
 
-              {visibleSubtitle.isWhisper ? (
-                <div className="inline-flex items-center justify-center gap-2">
-                  {(visibleSubtitle.isThinking ||
-                    (visibleSubtitle.id === 'listening' && voice.isUserSpeaking)) && (
-                    <SpeechCadenceDots
-                      active={visibleSubtitle.id === 'listening' && voice.isUserSpeaking}
-                      thinking={Boolean(visibleSubtitle.isThinking)}
-                      color={visibleSubtitle.isThinking ? '#8b5cf6' : '#38bdf8'}
-                    />
-                  )}
-                  <p
-                    data-voice-caption-active="1"
-                    data-caption-style={captionAnimationStyle}
+                <div
+                  role="group"
+                  aria-label="Eva feeling tone"
+                  className="flex flex-wrap items-center justify-center gap-1"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setManualEmotion(null)}
+                    aria-pressed={manualEmotion === null}
                     className={cn(
-                      'text-center text-[13.5px] font-normal tracking-tight',
-                      visibleSubtitle.isThinking
-                        ? 'text-violet-500 dark:text-violet-300'
-                        : 'text-muted-foreground/80'
+                      'inline-flex h-6 items-center gap-1 rounded-md border px-2 text-[10.5px] font-medium whitespace-nowrap transition-colors',
+                      manualEmotion === null
+                        ? 'border-foreground/30 bg-foreground/10 text-foreground'
+                        : 'border-border/70 text-muted-foreground hover:bg-muted hover:text-foreground'
                     )}
                   >
-                    {visibleSubtitle.text}
-                  </p>
+                    <Sparkles className="h-2.5 w-2.5" />
+                    <span>Auto</span>
+                  </button>
+                  {VOICE_MOOD_PRESETS.map((id) => {
+                    const meta = EVA_EMOTIONS[id]
+                    const active = emotion.id === id
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        data-voice-mood={id}
+                        onClick={() => setManualEmotion(manualEmotion === id ? null : id)}
+                        aria-pressed={active}
+                        className={cn(
+                          'inline-flex h-6 items-center gap-1.5 rounded-md border px-2 text-[10.5px] font-medium whitespace-nowrap transition-colors',
+                          active
+                            ? 'border-foreground/30 bg-muted text-foreground'
+                            : 'border-border/70 text-muted-foreground hover:bg-muted/70 hover:text-foreground'
+                        )}
+                      >
+                        <span
+                          className="h-1.5 w-1.5 rounded-full"
+                          style={{ backgroundColor: meta.accentHex }}
+                        />
+                        <span>{meta.shortLabel}</span>
+                      </button>
+                    )
+                  })}
                 </div>
-              ) : (
+              </div>
+
+              {/* Compact live Reasoning Chain pulse when Eva's Hands are working */}
+              {latestChain && latestNode && (
+                <button
+                  type="button"
+                  onClick={() => openReasoningForChain(latestChain.id)}
+                  className={cn(
+                    'mt-3 max-w-md items-center gap-2 rounded-lg border border-border/80 bg-card/70 px-3 py-1.5 text-left text-[11.5px] text-muted-foreground transition-colors hover:border-sky-500/40 hover:text-foreground',
+                    latestChain.status === 'active' ? 'inline-flex' : 'hidden lg:inline-flex'
+                  )}
+                >
+                  <Hand className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                  <span className="truncate">
+                    <span className="font-medium text-foreground">{latestNode.title}</span>
+                    {latestChain.correctionCount > 0
+                      ? ` · ${latestChain.correctionCount} self-corrected`
+                      : ''}
+                  </span>
+                </button>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Audio-Synced 2-Line Cinema Subtitles — Zero-wait transition, faded previous phrase above + audio-locked active phrase below */}
+      <div className="relative z-10 mx-auto flex min-h-[104px] w-full max-w-2xl shrink-0 flex-col items-center justify-center px-5 pb-2 sm:min-h-[112px] sm:px-6 lg:pb-3">
+        {captionsEnabled && visibleSubtitle && (
+          <section
+            data-voice-captions="1"
+            data-subtitle-borderless="1"
+            aria-live="polite"
+            aria-label="Live voice subtitles"
+            className="flex w-full flex-col items-center justify-center bg-transparent text-center"
+          >
+            {!visibleSubtitle.isWhisper && (
+              <div className="mb-1 flex items-center justify-center gap-1.5">
+                <SpeechCadenceDots
+                  active={
+                    visibleSubtitle.live &&
+                    (voice.isSpeaking || voice.isUserSpeaking || demoStep !== null)
+                  }
+                  color={visibleSubtitle.speaker === 'You' ? '#38bdf8' : emotion.accentHex}
+                />
+                <span className="font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/80">
+                  {visibleSubtitle.speaker}
+                </span>
+              </div>
+            )}
+
+            {/* Softly faded previous phrase for smooth reading continuity */}
+            {!visibleSubtitle.isWhisper && visibleSubtitle.previous && (
+              <p
+                key={`prev-${visibleSubtitle.id}`}
+                data-voice-caption-previous="1"
+                className="mb-1 line-clamp-1 max-w-xl text-center text-[12.5px] leading-snug text-muted-foreground/55 transition-opacity duration-100 sm:text-[13.5px]"
+              >
+                {visibleSubtitle.previous}
+              </p>
+            )}
+
+            {visibleSubtitle.isWhisper ? (
+              <div className="inline-flex items-center justify-center gap-2">
+                {(visibleSubtitle.isThinking ||
+                  (visibleSubtitle.id === 'listening' && voice.isUserSpeaking)) && (
+                  <SpeechCadenceDots
+                    active={visibleSubtitle.id === 'listening' && voice.isUserSpeaking}
+                    thinking={Boolean(visibleSubtitle.isThinking)}
+                    color={visibleSubtitle.isThinking ? '#8b5cf6' : '#38bdf8'}
+                  />
+                )}
+                <p
+                  data-voice-caption-active="1"
+                  data-caption-style={captionAnimationStyle}
+                  className={cn(
+                    'text-center text-[13.5px] font-normal tracking-tight',
+                    visibleSubtitle.isThinking
+                      ? 'text-violet-500 dark:text-violet-300'
+                      : 'text-muted-foreground/80'
+                  )}
+                >
+                  {visibleSubtitle.text}
+                </p>
+              </div>
+            ) : (
+              <motion.div
+                key={`${visibleSubtitle.id}-${subtitleReplaySeq}`}
+                initial={{ opacity: 0.45, y: 2 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.08, ease: 'easeOut' }}
+                className="flex w-full justify-center"
+              >
                 <AnimatedCaptionText
                   text={visibleSubtitle.text}
                   styleMode={captionAnimationStyle}
                   replayKey={`${visibleSubtitle.id}-${subtitleReplaySeq}`}
+                  syncProgress={visibleSubtitle.phraseProgress}
                   accentColor={visibleSubtitle.speaker === 'You' ? '#38bdf8' : emotion.accentHex}
                   data-voice-caption-active="1"
-                  className="line-clamp-2 w-full flex-none text-center text-[15.5px] font-medium leading-[1.35] tracking-tight text-balance text-foreground sm:text-[17px]"
+                  className="w-full max-w-xl flex-none text-center text-[15.5px] font-medium leading-[1.38] tracking-tight text-balance text-foreground sm:text-[17px]"
                 />
-              )}
-            </motion.section>
-          )}
-        </AnimatePresence>
+              </motion.div>
+            )}
+          </section>
+        )}
       </div>
 
       {/* Voice Focus Stage Settings — Material 3 Bottom Sheet on Mobile/Tablet (< lg), Floating Popover on Desktop (>= lg) */}

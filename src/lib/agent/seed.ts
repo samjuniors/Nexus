@@ -526,7 +526,7 @@ export async function ensureSeeded() {
         slug: 'app_control',
         name: 'App UI Self-Control',
         description:
-          'Control Nexus UI visually with animated live cursor: switch tabs, open split panels (browser, identity, permissions, devices, org, artifacts, tools, automations, brain), spawn popups, click buttons, toggle theme. Args: {"action": "navigate_tab"|"open_split"|"close_split"|"open_popup"|"close_popup"|"click_target"|"set_theme", ...}',
+          'Control Nexus UI visually with animated live cursor: switch tabs, open split panels (browser, terminal, google_workspace, mobile, identity, permissions, devices, org, artifacts, tools, automations, brain), spawn popups, click buttons, toggle theme. Args: {"action": "navigate_tab"|"open_split"|"close_split"|"open_popup"|"close_popup"|"click_target"|"set_theme", ...}',
         source: 'builtin',
       },
       {
@@ -541,6 +541,13 @@ export async function ensureSeeded() {
         name: 'Connected Device Control',
         description:
           'List paired Mac/Windows/Linux computers and execute approved host actions (system_info, open_url, open_app, shell) via the Local Companion Bridge. Args: {"action": "list"|"system_info"|"open_url"|"open_app"|"shell", ...}',
+        source: 'builtin',
+      },
+      {
+        slug: 'terminal_exec',
+        name: 'Real Terminal & PowerShell',
+        description:
+          'Run REAL Windows PowerShell (on paired Windows PCs) or host bash/pwsh/sh commands streamed live in the Terminal split panel, and generate real 1-line PowerShell pairing commands for Windows PCs and devices. Args: {"action": "exec"|"status"|"pair_windows"|"set_target"|"interrupt"|"clear", "command"?: string, "target"?: "auto"|"windows_pc"|"host", "shell"?: "powershell"|"pwsh"|"bash"|"sh"}',
         source: 'builtin',
       },
       {
