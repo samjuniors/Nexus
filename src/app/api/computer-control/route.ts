@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { controlBus } from '@/lib/agent/control-bus'
+import { requireCapabilityPermission } from '@/lib/agent/permissions'
 import {
   addAllowedDesktopApp,
   addConnectedFolder,
@@ -16,7 +17,7 @@ import {
   type AppAllowPolicy,
   type FolderAccessMode,
 } from '@/lib/agent/computer-control'
-import { listConnectedDevices } from '@/lib/agent/device-bridge'
+import { DESKTOP_CAPABILITIES, listConnectedDevices } from '@/lib/agent/device-bridge'
 
 export const dynamic = 'force-dynamic'
 
@@ -132,6 +133,30 @@ export async function POST(req: Request) {
 
     // ---- Live Windows Companion Bridge Quick Actions ----
     if (action === 'capture_windows_screen' || action === 'windows_action') {
+      const requested = action === 'windows_action' ? String(body.bridgeAction ?? '').trim() : 'screen_capture'
+      if (!DESKTOP_CAPABILITIES.includes(requested)) {
+        return NextResponse.json({ ok: false, error: 'Unsupported desktop command' }, { status: 400 })
+      }
+      // A UI request is not an authorization. Require the server-side owner
+      // capability gate before interacting with a paired desktop computer.
+      const permission = await requireCapabilityPermission({
+        capability: 'desktop_bridge',
+        actionSummary: 'Paired desktop action: ' + requested,
+        actor: 'Nexus owner',
+      })
+      if (!permission.allowed) {
+        return NextResponse.json({ ok: false, error: permission.reason || 'Desktop control denied' }, { status: 403 })
+      }
+      if (requested === 'shell' || requested === 'powershell') {
+        const shellPermission = await requireCapabilityPermission({
+          capability: 'workspace_shell',
+          actionSummary: 'Execute a command on the paired desktop',
+          actor: 'Nexus owner',
+        })
+        if (!shellPermission.allowed) {
+          return NextResponse.json({ ok: false, error: shellPermission.reason || 'Remote shell denied' }, { status: 403 })
+        }
+      }
       const devices = await listConnectedDevices()
       const onlineDesktop = devices.find(
         (d) =>
@@ -169,13 +194,25 @@ export async function POST(req: Request) {
         : {}) as Record<string, unknown>
 
       // Enforce Connected Folder & App Allowlist server-side before dispatching!
-      if (['list_folder', 'read_file', 'write_file', 'move_file'].includes(bridgeAction)) {
+      if (['list_folder', 'read_file', 'write_file', 'move_file', 'batch_rename'].includes(bridgeAction)) {
         const folders = await listConnectedFolders()
+        if (bridgeAction === 'batch_rename') {
+          // Batch rename uses a variable set of paths: defer until per-path validation is proven.
+          return NextResponse.json({ ok: false, error: 'Batch rename requires individual path authorization and is temporarily disabled.' }, { status: 403 })
+        }
         const targetPath = String(bridgeArgs.path ?? bridgeArgs.from ?? '')
         const op = bridgeAction === 'write_file' || bridgeAction === 'move_file' ? 'write' : 'read'
         const guard = evaluateFolderAccess(targetPath, op, folders)
         if (!guard.allowed) {
           return NextResponse.json({ ok: false, error: guard.reason }, { status: 403 })
+        }
+        if (bridgeAction === 'move_file') {
+          // Validate both sides, not merely the original file location.
+          const destination = String(bridgeArgs.to ?? bridgeArgs.destination ?? '')
+          const dest = evaluateFolderAccess(destination, 'write', folders)
+          if (!dest.allowed) {
+            return NextResponse.json({ ok: false, error: dest.reason }, { status: 403 })
+          }
         }
       }
 
