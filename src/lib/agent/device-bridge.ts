@@ -54,7 +54,7 @@ const MOBILE_CAPABILITIES = [
   'android_notifications',
 ]
 
-const DESKTOP_CAPABILITIES = [
+export const DESKTOP_CAPABILITIES = [
   'open_url',
   'open_app',
   'shell',
