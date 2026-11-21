@@ -169,6 +169,7 @@ export interface MobileFramePayload {
 
 export interface PermissionRequestPayload {
   requestId: string
+  actionHash: string
   capability: string
   title: string
   description: string
@@ -407,9 +408,13 @@ class NexusControlBus {
     })
   }
 
-  resolvePermission(requestId: string, decision: PermissionDecision): PermissionRequestPayload | null {
+  getPendingPermission(requestId: string): PermissionRequestPayload | null {
+    return this.pendingPermissions.get(requestId)?.request ?? null
+  }
+
+  resolvePermission(requestId: string, decision: PermissionDecision, actionHash: string): PermissionRequestPayload | null {
     const entry = this.pendingPermissions.get(requestId)
-    if (!entry) return null
+    if (!entry || !/^[a-f0-9]{64}$/.test(actionHash) || entry.request.actionHash !== actionHash) return null
     clearTimeout(entry.timer)
     this.pendingPermissions.delete(requestId)
     this.broadcast({
