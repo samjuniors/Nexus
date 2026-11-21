@@ -136,10 +136,11 @@ server.on('upgrade', (req, socket, head) => {
               const msg = JSON.parse(String(raw)) as {
                 type?: string
                 requestId?: string
+                actionHash?: string
                 decision?: 'always' | 'once' | 'deny'
               }
-              if (msg.type === 'permission:respond' && msg.requestId && msg.decision) {
-                void resolvePermissionDecision(msg.requestId, msg.decision)
+              if (msg.type === 'permission:respond' && msg.requestId && msg.actionHash && msg.decision) {
+                void resolvePermissionDecision(msg.requestId, msg.decision, msg.actionHash)
               }
             } catch {
               /* ignore malformed frames */
