@@ -68,6 +68,7 @@ function createOwnerGateway({ env = process.env, port = 3000 } = {}) {
   const macKey = crypto.randomBytes(32);
   const failures = new Map();
   const revoked = new Set();
+  const activeOwnerSockets = new Map();
 
   function requestOrigin(req) {
     const host = String(req.headers.host || '').toLowerCase();
@@ -180,7 +181,16 @@ function createOwnerGateway({ env = process.env, port = 3000 } = {}) {
       send(res, 403, '{"error":"Forbidden"}'); return;
     }
     const session = parseCookie(req.headers.cookie, COOKIE);
-    if (sessionIsValid(session)) revoked.add(session.split('.')[0]);
+    if (sessionIsValid(session)) {
+      const sessionId = session.split('.')[0];
+      revoked.add(sessionId);
+      // Logout invalidates existing privileged WebSockets, not only future requests.
+      for (const socket of activeOwnerSockets.get(sessionId) || []) {
+        try { if (typeof socket.terminate === 'function') socket.terminate(); else socket.close(4001, 'Owner signed out'); }
+        catch { /* socket may already be closed */ }
+      }
+      activeOwnerSockets.delete(sessionId);
+    }
     send(res, 303, '', 'text/plain; charset=utf-8', {
       Location: '/access',
       'Set-Cookie': COOKIE + '=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' +
@@ -223,11 +233,40 @@ function createOwnerGateway({ env = process.env, port = 3000 } = {}) {
     return isAuthenticated(req);
   }
 
+  function registerOwnerSocket(ws, req) {
+    if (!ownerToken) return; // Direct-loopback development mode only.
+    const cookie = parseCookie(req.headers.cookie, COOKIE);
+    if (!sessionIsValid(cookie)) {
+      ws.close(4003, 'Owner session not valid');
+      return;
+    }
+    const [sessionId, expiry] = cookie.split('.');
+    let set = activeOwnerSockets.get(sessionId);
+    if (!set) { set = new Set(); activeOwnerSockets.set(sessionId, set); }
+    set.add(ws);
+    const timeout = setTimeout(() => {
+      try { if (typeof ws.terminate === 'function') ws.terminate(); else ws.close(4001, 'Owner session expired'); }
+      catch { /* socket closed */ }
+    }, Math.max(0, Number(expiry) - Date.now()));
+    if (typeof timeout.unref === 'function') timeout.unref();
+    const cleanup = () => {
+      clearTimeout(timeout);
+      const current = activeOwnerSockets.get(sessionId);
+      if (current) {
+        current.delete(ws);
+        if (!current.size) activeOwnerSockets.delete(sessionId);
+      }
+    };
+    ws.once('close', cleanup);
+    ws.once('error', cleanup);
+  }
+
   return {
     bindHost,
     requiresOwnerToken: Boolean(ownerToken),
     guardHttp,
     guardUpgrade,
+    registerOwnerSocket,
   };
 }
 
