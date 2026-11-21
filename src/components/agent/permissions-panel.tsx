@@ -15,7 +15,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
-import type { PermissionPolicy } from '@/lib/agent/permissions'
+import { requiresSingleUseApproval, type PermissionPolicy } from '@/lib/agent/permissions'
 import {
   DEFAULT_WINDOWS_FOLDER_PRESETS,
   type AppAllowPolicy,
@@ -191,7 +191,7 @@ export function PermissionsPanel() {
                   aria-label={`Permission policy for ${grant.title}`}
                   className="grid grid-cols-3 overflow-hidden rounded-md border border-border bg-background"
                 >
-                  {POLICIES.map((opt) => {
+                  {POLICIES.filter((opt) => !(opt.value === 'always' && requiresSingleUseApproval(grant.capability))).map((opt) => {
                     const active = grant.policy === opt.value
                     return (
                       <button
