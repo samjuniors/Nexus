@@ -79,7 +79,10 @@ export async function createPairedDevice(name: string, platform = 'macos'): Prom
   pairingToken: string
 }> {
   const cleanName = name.trim().slice(0, 60) || (platform === 'android' ? 'Android Phone' : platform === 'ios' ? 'iPhone' : 'My Computer')
-  const cleanPlatform = ['macos', 'windows', 'linux', 'android', 'ios'].includes(platform) ? platform : 'unknown'
+  if (!['macos', 'windows', 'linux', 'android', 'ios'].includes(platform)) {
+    throw new Error('Device pairing requires a supported and explicit platform')
+  }
+  const cleanPlatform = platform
   const isMobile = cleanPlatform === 'android' || cleanPlatform === 'ios'
   const capabilities = isMobile ? MOBILE_CAPABILITIES : DESKTOP_CAPABILITIES
   const pairingToken = `nxs_${crypto.randomBytes(20).toString('hex')}`
