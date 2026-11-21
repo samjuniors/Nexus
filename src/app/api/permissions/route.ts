@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import {
   isValidCapability,
   isValidPolicy,
+  requiresSingleUseApproval,
   listPermissionAudit,
   listPermissionGrants,
   resolvePermissionDecision,
@@ -60,6 +61,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: 'Invalid capability or policy' }, { status: 400 })
     }
 
+    if (policy === 'always' && requiresSingleUseApproval(capability)) {
+      return NextResponse.json({ ok: false, error: 'Sensitive capabilities require action-by-action approval' }, { status: 400 })
+    }
     const updated = await setPermissionPolicy(capability, policy)
     const [grants, audit] = await Promise.all([listPermissionGrants(), listPermissionAudit(30)])
     return NextResponse.json({ ok: true, grant: updated, grants, audit })
