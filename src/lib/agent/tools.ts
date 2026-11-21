@@ -8,11 +8,7 @@ import { controlBus } from '@/lib/agent/control-bus'
 import { liveBrowser } from '@/lib/agent/browser-manager'
 import { requireCapabilityPermission } from '@/lib/agent/permissions'
 import { verifyActionHash } from '@/lib/agent/action-binding'
-import {
-  buildPowerShellPairCommand,
-  createPairedDevice,
-  listConnectedDevices,
-} from '@/lib/agent/device-bridge'
+import { listConnectedDevices } from '@/lib/agent/device-bridge'
 import { terminalManager } from '@/lib/agent/terminal-manager'
 import type { TerminalShellKind, TerminalTarget } from '@/lib/agent/terminal-types'
 import {
@@ -2228,12 +2224,14 @@ export async function executeTool(
       case 'app_control': {
         const action = str(args.action).trim()
         if (!action) return { ok: false, summary: 'Missing action', raw: 'Error: app_control requires "action".' }
+        const uiBinding = { actionName: 'app_ui.' + action, target: 'nexus_ui', payload: args }
         const perm = await requireCapabilityPermission({
           capability: 'app_ui',
           actionSummary: `UI control: ${action}${args.tab ? ` (${str(args.tab)})` : args.mode ? ` (${str(args.mode)})` : ''}`,
           details: 'Allows Eva to navigate panels, open split-screen views, spawn popups, and glide her animated cursor.',
+          ...uiBinding,
         })
-        if (!perm.allowed) {
+        if (!perm.allowed || !verifyActionHash(perm.actionHash, uiBinding)) {
           return {
             ok: false,
             summary: 'App UI permission declined',
@@ -2865,6 +2863,15 @@ export async function executeTool(
           if (!sessionId) {
             return { ok: false, summary: 'Missing sessionId for rollback', raw: 'Error: sessionId is required.' }
           }
+          const rollbackBinding = { actionName: 'self_heal.rollback', target: sessionId, payload: args }
+          const rollbackPermission = await requireCapabilityPermission({
+            capability: 'self_code_edit',
+            actionSummary: 'Rollback self-heal snapshot: ' + sessionId,
+            ...rollbackBinding,
+          })
+          if (!rollbackPermission.allowed || !verifyActionHash(rollbackPermission.actionHash, rollbackBinding)) {
+            return { ok: false, summary: 'Self-heal rollback not approved', raw: rollbackPermission.reason ?? 'Approval required' }
+          }
           const res = await rollbackSelfHealSession(sessionId)
           controlBus.broadcastUiCommand({ command: 'open_split', mode: 'self_heal', title: 'Self-Heal Studio' })
           return {
@@ -2876,6 +2883,7 @@ export async function executeTool(
         }
 
         // Mutating actions ('patch' or 'auto_heal') require one-time self_code_edit permission
+        const repairBinding = { actionName: 'self_heal.' + action, target: str(args.path || 'nexus_source'), payload: args }
         const perm = await requireCapabilityPermission({
           capability: 'self_code_edit',
           actionSummary:
@@ -2885,8 +2893,9 @@ export async function executeTool(
           details: Array.isArray(args.edits)
             ? (args.edits as { path?: string }[]).map((e) => e.path).filter(Boolean).join(', ')
             : str(args.path) || undefined,
+          ...repairBinding,
         })
-        if (!perm.allowed) {
+        if (!perm.allowed || !verifyActionHash(perm.actionHash, repairBinding)) {
           return {
             ok: false,
             summary: 'Self-healing code permission declined',
@@ -3007,30 +3016,10 @@ export async function executeTool(
         }
 
         if (action === 'pair_windows') {
-          const deviceName = str(args.deviceName, 'Windows PC').trim() || 'Windows PC'
-          const platform = str(args.platform, 'windows').trim() || 'windows'
-          const origin =
-            process.env.NEXT_PUBLIC_APP_URL ||
-            process.env.APP_URL ||
-            `http://localhost:${process.env.PORT || 3000}`
-          const { device, pairingToken } = await createPairedDevice(deviceName, platform)
-          const psCmd = buildPowerShellPairCommand(origin, pairingToken)
-          terminalManager.pushSystemNotice(
-            `Eva generated a real Windows PowerShell pairing command for "${device.name}":\n${psCmd}`
-          )
-          controlBus.broadcastUiCommand({ command: 'refresh_state', scopes: ['devices'] })
-          const raw = [
-            `Paired device entry created: ${device.name} (id=${device.id}, platform=${device.platform})`,
-            `One-line Windows PowerShell command (run on your Windows PC to connect live):`,
-            psCmd,
-            `Once running, your Windows PC appears online and Eva can run real Windows PowerShell directly on it.`,
-          ].join('\n')
-          return {
-            ok: true,
-            summary: `Generated PowerShell pairing command for ${device.name}`,
-            raw,
-            display: { kind: 'code', code: psCmd, output: `Pairing token issued for ${device.name}. Run in Windows PowerShell to connect.`, ok: true },
-          }
+          // Do not expose pairing tokens or executable pairing commands to the LLM.
+          // Pairing remains available through the authenticated owner Devices UI.
+          controlBus.broadcastUiCommand({ command: 'open_split', mode: 'devices', title: 'Connected Devices' })
+          return { ok: true, summary: 'Open private device pairing UI', raw: 'Pair a device in Nexus Devices with owner approval. Pairing credentials are not delivered to the agent.' }
         }
 
         // Default: exec a real OS shell / PowerShell command
@@ -3057,19 +3046,36 @@ export async function executeTool(
               requestedShell === 'pwsh' ||
               terminalManager.getSnapshot().target === 'windows_pc'))
 
+        const terminalBinding = {
+          actionName: 'terminal.exec',
+          target: willUseRemoteDesktop ? str(args.deviceId || onlineDesktop?.id) : 'host',
+          payload: { command, requestedTarget, requestedShell, cwd: args.cwd, timeoutMs: args.timeoutMs },
+        }
         const perm = await requireCapabilityPermission({
           capability: willUseRemoteDesktop ? 'desktop_bridge' : 'workspace_shell',
           actionSummary: `Run ${willUseRemoteDesktop ? 'Windows PowerShell' : 'Terminal'} command: ${truncate(command, 90)}`,
           details: willUseRemoteDesktop
             ? `Real Windows PowerShell execution on ${onlineDesktop?.name ?? 'paired Windows PC'}`
             : `Real host shell command in ${terminalManager.getSnapshot().cwd}`,
+          ...terminalBinding,
         })
-        if (!perm.allowed) {
+        if (!perm.allowed || !verifyActionHash(perm.actionHash, terminalBinding)) {
           return {
             ok: false,
             summary: `Permission declined for terminal command`,
             raw: perm.reason ?? 'User declined terminal execution permission.',
             display: { kind: 'text', text: perm.reason ?? 'Permission declined.' },
+          }
+        }
+
+        if (willUseRemoteDesktop) {
+          const shellPermission = await requireCapabilityPermission({
+            capability: 'workspace_shell',
+            actionSummary: 'Authorize remote shell command: ' + truncate(command, 90),
+            ...terminalBinding,
+          })
+          if (!shellPermission.allowed || !verifyActionHash(shellPermission.actionHash, terminalBinding)) {
+            return { ok: false, summary: 'Remote shell permission declined', raw: shellPermission.reason ?? 'Approval required' }
           }
         }
 
