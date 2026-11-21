@@ -12,7 +12,10 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset",
-    "test:desktop-permissions": "node --test electron/media-permissions.test.cjs"
+    "test:desktop-permissions": "node --test electron/media-permissions.test.cjs",
+    "test:security-gateway": "node --test security/owner-gateway.test.cjs",
+    "test:security": "node --test security/owner-gateway.test.cjs electron/media-permissions.test.cjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@google/genai": "^3.4.0",
