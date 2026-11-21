@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { controlBus } from '@/lib/agent/control-bus'
 import { requireCapabilityPermission } from '@/lib/agent/permissions'
+import { verifyActionHash } from '@/lib/agent/action-binding'
 import {
   addAllowedDesktopApp,
   addConnectedFolder,
@@ -139,12 +140,14 @@ export async function POST(req: Request) {
       }
       // A UI request is not an authorization. Require the server-side owner
       // capability gate before interacting with a paired desktop computer.
+      const actionBinding = { actionName: 'desktop.' + requested, target: String(body.deviceId ?? 'auto'), payload: body }
       const permission = await requireCapabilityPermission({
         capability: 'desktop_bridge',
         actionSummary: 'Paired desktop action: ' + requested,
         actor: 'Nexus owner',
+        ...actionBinding,
       })
-      if (!permission.allowed) {
+      if (!permission.allowed || !verifyActionHash(permission.actionHash, actionBinding)) {
         return NextResponse.json({ ok: false, error: permission.reason || 'Desktop control denied' }, { status: 403 })
       }
       if (requested === 'shell' || requested === 'powershell') {
@@ -152,8 +155,9 @@ export async function POST(req: Request) {
           capability: 'workspace_shell',
           actionSummary: 'Execute a command on the paired desktop',
           actor: 'Nexus owner',
+          ...actionBinding,
         })
-        if (!shellPermission.allowed) {
+        if (!shellPermission.allowed || !verifyActionHash(shellPermission.actionHash, actionBinding)) {
           return NextResponse.json({ ok: false, error: shellPermission.reason || 'Remote shell denied' }, { status: 403 })
         }
       }
