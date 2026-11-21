@@ -976,7 +976,7 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'respond', requestId, decision, actionHash: pending.actionHash }),
       })
-      if (!res.ok) return
+      if (!res.ok) { await get().refreshPermissions(); return }
       const data = (await res.json()) as {
         grants?: PermissionGrantDTO[]
         audit?: PermissionAuditDTO[]
