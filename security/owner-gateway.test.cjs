@@ -139,3 +139,21 @@ test('logout revokes active session and login limits repeated attempts', async (
   for (let i = 0; i < 6; i++) assert.equal((await login(g, { token: 'wrong' })).status, 200);
   assert.equal((await login(g, { token: OWNER_TOKEN })).status, 429);
 });
+
+test('logout terminates already-authenticated control and Live sockets', async () => {
+  const g = gateway({ NODE_ENV: 'production', NEXUS_OWNER_TOKEN: OWNER_TOKEN });
+  const cookie = (await login(g)).headers['Set-Cookie'].split(';')[0];
+  let terminated = 0;
+  const socket = {
+    once() {},
+    terminate() { terminated++; },
+    close() {},
+  };
+  g.registerOwnerSocket(socket, request({ path: '/api/control', cookie, origin: 'http://localhost:3000' }));
+  const revoked = await hit(g, {
+    path: '/access/logout', method: 'POST', cookie, origin: 'http://localhost:3000',
+  });
+  assert.equal(revoked.status, 303);
+  assert.equal(terminated, 1);
+  assert.equal(g.guardUpgrade(request({ path: '/api/control', cookie, origin: 'http://localhost:3000' }), '/api/control'), false);
+});
