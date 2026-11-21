@@ -49,3 +49,8 @@ Start read-only: inventory project structure, identify AI Studio preview/runtime
 ## Release warning
 
 The existing draft CI run on the earlier branch revision failed without readable steps or logs; this is **not a code pass**. Future iterations must prove all gates with recorded commands/output. Do not mark Nexus finished or production ready solely because an AI Studio preview works.
+
+
+## Source migration ledger and recovery
+
+Review docs/migrations/SAMJUNIORSOS_PORT_LEDGER.md before asking AI Studio to change architecture. Nexus now has an offline-only SQLite backup manifest tool documented in docs/recovery/OFFLINE_SQLITE_BACKUP.md; do not invoke it on a live service or run destructive restore steps as part of AI Studio's build. Before a first real deployment, run the included synthetic tests, validate external credentials remain private, and test native Windows separately. The prompt above is scoped to review and incremental implementation, not automatic production publication.
