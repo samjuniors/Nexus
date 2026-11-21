@@ -105,6 +105,7 @@ server.on('upgrade', (req, socket, head) => {
     }
     if (url.pathname === '/api/live') {
       wss.handleUpgrade(req, socket, head, async (ws) => {
+        ownerGateway.registerOwnerSocket(ws, req)
         try {
           const { handleLiveSocket } = await import('./src/lib/agent/live-session')
           await handleLiveSocket(ws, req)
@@ -121,11 +122,16 @@ server.on('upgrade', (req, socket, head) => {
     }
     if (url.pathname === '/api/control') {
       wss.handleUpgrade(req, socket, head, async (ws) => {
+        ownerGateway.registerOwnerSocket(ws, req)
         try {
           const { controlBus } = await import('./src/lib/agent/control-bus')
           const { resolvePermissionDecision } = await import('./src/lib/agent/permissions')
           controlBus.registerUiClient(ws)
           ws.on('message', (raw) => {
+            if (!ownerGateway.guardUpgrade(req, '/api/control')) {
+              ws.terminate()
+              return
+            }
             try {
               const msg = JSON.parse(String(raw)) as {
                 type?: string
