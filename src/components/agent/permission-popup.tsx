@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { Check, CheckCheck, ShieldAlert, X } from 'lucide-react'
 import { MochiEyes } from '@/components/agent/mochi-eyes'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
-import { requiresSingleUseApproval } from '@/lib/agent/permissions'
+import { requiresSingleUseApproval } from '@/lib/agent/permission-policy'
 import { cn } from '@/lib/utils'
 
 /**
