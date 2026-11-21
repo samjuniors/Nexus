@@ -223,10 +223,23 @@ app.whenReady().then(() => {
 
   // Windows Alt+Space (macOS Option+Space): capture active screen & open Screen Awareness HUD
   globalShortcut.register(SHORTCUTS.screenAwareness, async () => {
-    const capture = await capturePrimaryScreenFrame().catch(() => ({ ok: false }))
     focusMainWindow()
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('nexus:hotkey-screen-awareness', capture)
+    const win = mainWindow
+    if (!win || win.isDestroyed()) return
+    const choice = await dialog.showMessageBox(win, {
+      type: 'question',
+      title: 'Eva Screen Awareness',
+      message: 'Capture the primary screen once?',
+      detail: 'The snapshot can include passwords, messages and notifications. Cancel to avoid capturing.',
+      buttons: ['Cancel', 'Capture once'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    }).catch(() => ({ response: 0 }))
+    if (choice.response !== 1 || win !== mainWindow || win.isDestroyed()) return
+    const capture = await capturePrimaryScreenFrame().catch(() => ({ ok: false }))
+    if (win === mainWindow && !win.isDestroyed()) {
+      win.webContents.send('nexus:hotkey-screen-awareness', capture)
     }
   })
 
