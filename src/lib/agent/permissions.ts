@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { db } from '@/lib/db'
 import { computeActionHash } from '@/lib/agent/action-binding'
+import { requiresSingleUseApproval } from '@/lib/agent/permission-policy'
+export { requiresSingleUseApproval } from '@/lib/agent/permission-policy'
 import { controlBus, type PermissionDecision } from '@/lib/agent/control-bus'
 
 export type CapabilityKey =
@@ -72,15 +74,6 @@ export const CAPABILITY_SPECS: CapabilitySpec[] = [
     risk: 'high',
   },
 ]
-
-const SINGLE_USE_CAPABILITIES = new Set<CapabilityKey>([
-  'self_install', 'mobile_control', 'workspace_shell', 'desktop_bridge', 'self_code_edit',
-])
-
-/** Consequential capabilities must not silently inherit an unlimited old Always grant. */
-export function requiresSingleUseApproval(capability: string): boolean {
-  return SINGLE_USE_CAPABILITIES.has(capability as CapabilityKey)
-}
 
 const SPEC_BY_KEY = new Map<CapabilityKey, CapabilitySpec>(
   CAPABILITY_SPECS.map((s) => [s.capability, s])
