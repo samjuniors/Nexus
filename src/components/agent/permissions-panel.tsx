@@ -15,7 +15,8 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
-import { requiresSingleUseApproval, type PermissionPolicy } from '@/lib/agent/permissions'
+import { requiresSingleUseApproval } from '@/lib/agent/permission-policy'
+import type { PermissionPolicy } from '@/lib/agent/permissions'
 import {
   DEFAULT_WINDOWS_FOLDER_PRESETS,
   type AppAllowPolicy,
