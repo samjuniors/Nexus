@@ -41,3 +41,8 @@ This file applies to Claude Code, ChatGPT, Codex, Antigravity and any other codi
 - Production packaging, release gates and UI regression must be validated before Nexus becomes the primary product.
 
 Use docs/HANDOFF_2026-11-21.md for the current implementation handoff and revalidate live GitHub before continuing.
+
+
+## Latest migration state
+
+Read docs/migrations/SAMJUNIORSOS_PORT_LEDGER.md before selecting features to port. The Node/TypeScript action-hash, client-safe high-risk policy metadata, exact-action server/tool authorization, offline-only backup and AI Studio handoff have been committed to the draft PR, but their new unit tests and full build have not yet run in a real Node environment. Never claim that a source port or an AI Studio preview is production acceptance.
