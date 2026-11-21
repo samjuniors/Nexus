@@ -14,9 +14,12 @@
     "db:reset": "prisma migrate reset",
     "test:desktop-permissions": "node --test electron/media-permissions.test.cjs",
     "test:security-gateway": "node --test security/owner-gateway.test.cjs",
-    "test:security": "node --test security/owner-gateway.test.cjs electron/media-permissions.test.cjs && node --import tsx --test src/lib/agent/trusted-origin.test.ts",
+    "test:security": "node --test security/owner-gateway.test.cjs electron/media-permissions.test.cjs && node --import tsx --test src/lib/agent/action-binding.test.ts src/lib/agent/trusted-origin.test.ts",
     "typecheck": "tsc --noEmit",
-    "test:security-origin": "node --import tsx --test src/lib/agent/trusted-origin.test.ts"
+    "test:security-origin": "node --import tsx --test src/lib/agent/trusted-origin.test.ts",
+    "test:recovery": "node --test scripts/offline-backup.test.mjs",
+    "db:backup:offline": "node scripts/offline-backup.mjs backup",
+    "db:backup:verify": "node scripts/offline-backup.mjs verify"
   },
   "dependencies": {
     "@google/genai": "^3.4.0",
