@@ -7,7 +7,6 @@ const {
   dialog,
   globalShortcut,
   ipcMain,
-  session,
   shell,
 } = require('electron')
 const { execFile } = require('node:child_process')
