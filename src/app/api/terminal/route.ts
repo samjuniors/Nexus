@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { terminalManager } from '@/lib/agent/terminal-manager'
 import { requireCapabilityPermission } from '@/lib/agent/permissions'
+import { getTrustedNexusOrigin } from '@/lib/agent/trusted-origin'
 import {
   buildPowerShellPairCommand,
   createPairedDevice,
@@ -68,12 +69,7 @@ export async function POST(request: Request) {
     if (action === 'pair_windows') {
       const permission = await requireCapabilityPermission({ capability: 'desktop_bridge', actionSummary: 'Pair a Windows computer for terminal access', actor: 'Nexus owner' })
       if (!permission.allowed) return NextResponse.json({ ok: false, error: permission.reason || 'Desktop pairing was denied' }, { status: 403 })
-      const url = new URL(request.url)
-      const fwdProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim()
-      const fwdHost = request.headers.get('x-forwarded-host')?.split(',')[0]?.trim()
-      const host = fwdHost || request.headers.get('host')?.trim() || url.host
-      const proto = fwdProto ? `${fwdProto}:` : url.protocol
-      const origin = `${proto}//${host}`
+      const origin = getTrustedNexusOrigin(request)
       const name = (body.deviceName ?? 'Windows PC').trim() || 'Windows PC'
       const platform = body.platform === 'macos' || body.platform === 'linux' ? body.platform : 'windows'
       const { device, pairingToken } = await createPairedDevice(name, platform)
