@@ -31,6 +31,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       action?: string
       requestId?: string
+      actionHash?: string
       decision?: string
       capability?: string
       policy?: string
@@ -43,7 +44,11 @@ export async function POST(request: Request) {
       if (!requestId || !['always', 'once', 'deny'].includes(decision)) {
         return NextResponse.json({ ok: false, error: 'Invalid requestId or decision' }, { status: 400 })
       }
-      const res = await resolvePermissionDecision(requestId, decision)
+      const actionHash = String(body.actionHash ?? '')
+      if (!/^[a-f0-9]{64}$/.test(actionHash)) {
+        return NextResponse.json({ ok: false, error: 'Missing action approval fingerprint' }, { status: 400 })
+      }
+      const res = await resolvePermissionDecision(requestId, decision, actionHash)
       const [grants, audit] = await Promise.all([listPermissionGrants(), listPermissionAudit(30)])
       return NextResponse.json({ ok: res.ok, decision: res.decision, grants, audit })
     }
