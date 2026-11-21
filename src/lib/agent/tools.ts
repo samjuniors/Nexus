@@ -7,6 +7,7 @@ import { chatText, getZAI } from '@/lib/agent/zai'
 import { controlBus } from '@/lib/agent/control-bus'
 import { liveBrowser } from '@/lib/agent/browser-manager'
 import { requireCapabilityPermission } from '@/lib/agent/permissions'
+import { verifyActionHash } from '@/lib/agent/action-binding'
 import {
   buildPowerShellPairCommand,
   createPairedDevice,
@@ -1198,13 +1199,16 @@ export async function executeTool(
           (program === 'git' && /^(push|reset|clean|checkout\s--)/.test(argv.slice(1).join(' '))) ||
           (program === 'curl' && /-X\s*(POST|PUT|DELETE|PATCH)|--data|-d\s|-T\s/.test(command))
 
-        if (isDestructive && args.confirm !== true) {
+        if (isWrite || isDestructive) {
+          // LLM-supplied args.confirm can never authorize an OS command.
+          const actionBinding = { actionName: 'workspace.shell', target: WORKSPACE_DIR, payload: { command, argv } }
           const perm = await requireCapabilityPermission({
             capability: 'workspace_shell',
             actionSummary: `Run shell command: ${truncate(command, 90)}`,
-            details: `Destructive-tier command inside workspace directory`,
+            details: 'Write-capable command inside the workspace directory',
+            ...actionBinding,
           })
-          if (!perm.allowed) {
+          if (!perm.allowed || !verifyActionHash(perm.actionHash, actionBinding)) {
             return {
               ok: false,
               summary: `Permission required: ${truncate(command, 80)}`,
@@ -2000,6 +2004,7 @@ export async function executeTool(
 
       case 'browser_control': {
         const action = str(args.action, 'snapshot').toLowerCase()
+        const browserBinding = { actionName: 'browser.' + action, target: 'live_browser', payload: args }
         const perm = await requireCapabilityPermission({
           capability: 'browser_control',
           actionSummary:
@@ -2011,8 +2016,9 @@ export async function executeTool(
                   ? `Open live browser at ${truncate(str(args.url), 80)}`
                   : `Browser action "${action}"${args.selector ? ` on ${str(args.selector)}` : ''}`,
           details: 'Streams a live Playwright Chromium window or embedded media player inside the split-screen panel.',
+          ...browserBinding,
         })
-        if (!perm.allowed) {
+        if (!perm.allowed || !verifyActionHash(perm.actionHash, browserBinding)) {
           return {
             ok: false,
             summary: 'Browser control permission declined',
@@ -2414,12 +2420,14 @@ export async function executeTool(
         const slug = str(args.slug).trim()
         if (!slug) return { ok: false, summary: 'Missing slug', raw: 'Error: provide "slug" of the plugin, skill, tool, or MCP server.' }
 
+        const extensionBinding = { actionName: 'extensions.' + action, target: slug, payload: args }
         const perm = await requireCapabilityPermission({
           capability: 'self_install',
           actionSummary: `${action.replace(/_/g, ' ')}: ${slug}`,
           details: 'Allows Eva to self-install or configure plugins, skills, tools, and MCP servers autonomously.',
+          ...extensionBinding,
         })
-        if (!perm.allowed) {
+        if (!perm.allowed || !verifyActionHash(perm.actionHash, extensionBinding)) {
           return {
             ok: false,
             summary: 'Self-install permission declined',
@@ -2586,6 +2594,7 @@ export async function executeTool(
         }
 
         // Per-App Allowlist strict guard
+        const desktopBinding = { actionName: 'desktop.' + action, target: target.id, payload: args }
         if (action === 'open_app') {
           const apps = await listAllowedDesktopApps()
           const appName = str(args.app)
@@ -2604,9 +2613,10 @@ export async function executeTool(
               capability: 'desktop_bridge',
               actionSummary: `Launch app "${appName}" on ${target.name}`,
               details: JSON.stringify(args).slice(0, 180),
+              ...desktopBinding,
             })
             automationSession.clearAwaitingApproval()
-            if (!appPerm.allowed) {
+            if (!appPerm.allowed || !verifyActionHash(appPerm.actionHash, desktopBinding)) {
               return {
                 ok: false,
                 summary: `Launch declined for ${appName}`,
@@ -2620,8 +2630,9 @@ export async function executeTool(
             capability: 'desktop_bridge',
             actionSummary: `${action} on ${target.name} (${target.platform})`,
             details: JSON.stringify(args).slice(0, 180),
+            ...desktopBinding,
           })
-          if (!perm.allowed) {
+          if (!perm.allowed || !verifyActionHash(perm.actionHash, desktopBinding)) {
             return {
               ok: false,
               summary: 'Desktop bridge permission declined',
@@ -2737,12 +2748,14 @@ export async function executeTool(
         const action = str(args.action, 'status').toLowerCase()
 
         if (action !== 'status' && action !== 'list_apps') {
+          const mobileBinding = { actionName: 'mobile.' + action, target: str(args.deviceId) || 'mobile_device', payload: args }
           const perm = await requireCapabilityPermission({
             capability: 'mobile_control',
             actionSummary: `Android / Mobile takeover: ${action}${str(args.goal || args.app || args.target || args.setting) ? ` (${str(args.goal || args.app || args.target || args.setting).slice(0, 60)})` : ''}`,
             details: JSON.stringify(args).slice(0, 200),
+            ...mobileBinding,
           })
-          if (!perm.allowed) {
+          if (!perm.allowed || !verifyActionHash(perm.actionHash, mobileBinding)) {
             return {
               ok: false,
               summary: 'Mobile takeover permission declined',
