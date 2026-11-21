@@ -135,6 +135,11 @@ export async function handleDeviceBridgeSocket(ws: WebSocket, req: IncomingMessa
   }
 
   const platformParam = (url.searchParams.get('platform') ?? device.platform).trim() || device.platform
+  if (platformParam !== device.platform) {
+    // Never allow an Android pairing token to declare itself a desktop shell device.
+    ws.close(4003, 'Device platform does not match its pairing record')
+    return
+  }
   const capabilities =
     platformParam === 'android' || platformParam === 'ios'
       ? MOBILE_CAPABILITIES
@@ -211,7 +216,7 @@ export async function handleDeviceBridgeSocket(ws: WebSocket, req: IncomingMessa
           ok: Boolean(msg.ok),
           output: String(msg.output ?? ''),
           error: msg.error ? String(msg.error) : undefined,
-        })
+        }, device.id, ws)
       } else if (msg.type === 'terminal:chunk' && typeof msg.text === 'string') {
         terminalManager.appendRemoteChunk({
           deviceId: device.id,
