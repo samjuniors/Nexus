@@ -56,3 +56,8 @@ No connected workstation was available. Prior mocked V8 checks for 11 owner gate
 - npm run build
 
 No real secrets, production DB or live credentials are needed for these scripted fixture checks.
+
+
+## CI status at handoff
+
+The current-branch [GitHub Actions run #105](https://github.com/samjuniors/Nexus/actions/runs/44907828876) is **failure**, but the API exposed no job steps and log content was unavailable (BlobNotFound). Treat it as blocked or unverified, not a failed unit assertion and not a passed build. No Windows PC was connected for local verification.
