@@ -2607,7 +2607,8 @@ export async function executeTool(
               display: { kind: 'text', text: `Blocked by Allowed Apps policy: ${appName}` },
             }
           }
-          if (evalRes.policy === 'ask') {
+          // An Allowed App preset is not an authorization for an AI-initiated launch.
+          if (evalRes.policy !== 'deny') {
             automationSession.setAwaitingApproval(`Launch ${appName} on ${target.name}`)
             const appPerm = await requireCapabilityPermission({
               capability: 'desktop_bridge',
@@ -2639,6 +2640,19 @@ export async function executeTool(
               raw: perm.reason ?? 'Permission declined for device_control.',
               display: { kind: 'text', text: perm.reason ?? 'Permission declined.' },
             }
+          }
+        }
+
+        // Remote commands can execute arbitrary code. An app/device grant does not
+        // implicitly approve shell access: require the workspace_shell capability too.
+        if (action === 'shell' || action === 'powershell') {
+          const shellPermission = await requireCapabilityPermission({
+            capability: 'workspace_shell',
+            actionSummary: 'Paired device shell: ' + action,
+            ...desktopBinding,
+          })
+          if (!shellPermission.allowed || !verifyActionHash(shellPermission.actionHash, desktopBinding)) {
+            return { ok: false, summary: 'Remote shell permission declined', raw: shellPermission.reason ?? 'Denied by workspace shell gate' }
           }
         }
 
