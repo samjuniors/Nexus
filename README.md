@@ -98,3 +98,12 @@ Run the targeted security tests with `npm run test:security`; the full acceptanc
 ## Current selective port
 
 See [the Nexus vs SamjuniorsOS audit](docs/audits/NEXUS_VS_SAMJUNIORSOS_2026-11-21.md) and the [Nexus draft PR](https://github.com/samjuniors/Nexus/pull/1). It imports only bounded native consent/security patterns, not the SamjuniorsOS UI or private data.
+
+
+## Migration and build handoffs
+
+- [SamjuniorsOS → Nexus selective port ledger](docs/migrations/SAMJUNIORSOS_PORT_LEDGER.md)
+- [Google AI Studio Build handoff](docs/AI_STUDIO_BUILD_HANDOFF.md)
+- [Offline-only SQLite backup safety](docs/recovery/OFFLINE_SQLITE_BACKUP.md)
+
+This is a reviewed migration draft, not a finished distribution. The security and recovery fixture commands are `npm run test:security` and `npm run test:recovery`; neither substitutes for live Windows, Android or server acceptance.
