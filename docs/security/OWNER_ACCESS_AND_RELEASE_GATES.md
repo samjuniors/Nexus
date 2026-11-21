@@ -61,3 +61,7 @@ This hardening branch changes code and example configuration only. It does **not
 - Nexus audit: `docs/audits/NEXUS_VS_SAMJUNIORSOS_2026-11-21.md`
 - Future Nerve Core plan: `docs/architecture/NERVE_CORE_FUTURE_INTEGRATION.md`
 - Primary branch: `audit/samjuniorsos-selective-port-20261121` (draft PR #1).
+
+## CI incident (2026-11-21)
+
+The draft-branch security workflow [run #34](https://github.com/samjuniors/Nexus/actions/runs/44906238469) completed with a **failure** conclusion, but GitHub's job API exposed no executed steps and log retrieval returned BlobNotFound. This is **not** a verified code-test failure or a verified runner/billing failure. Treat all CI acceptance gates as **NOT VERIFIED** until a readable job log and commands can be rerun.
