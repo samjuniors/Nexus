@@ -966,13 +966,15 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
   },
 
   respondPermission: async (requestId, decision) => {
+    const pending = get().pendingPermissions.find((p) => p.requestId === requestId)
+    if (!pending?.actionHash) return // fail closed on stale or legacy permission requests
     // Optimistically remove from active queue
     get().removePendingPermission(requestId)
     try {
       const res = await fetch('/api/permissions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'respond', requestId, decision }),
+        body: JSON.stringify({ action: 'respond', requestId, decision, actionHash: pending.actionHash }),
       })
       if (!res.ok) return
       const data = (await res.json()) as {
