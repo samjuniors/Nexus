@@ -70,3 +70,9 @@ The port retains Nexus's UI, portable brain, Android app, and current data; **no
 8. Only then conduct side-by-side measured evaluation: task success, response latency, cold boot, memory recall correctness, audio uptime, idle CPU/RAM, startup recovery and security regression. Choose the successor after evidence, not repository age or file count.
 
 **Human decision:** Retain both repositories. Nexus is the *candidate future base*, not an automatically approved replacement for SamjuniorsOS.
+
+## 2026-11-21 follow-on security implementation delta
+
+A subsequent **unmerged** draft-branch implementation adds a loopback-only owner gateway, production owner-session cookie and exact host/origin validation, login throttling, owner-authenticated WebSockets, capability checks on direct browser/mobile/terminal/desktop APIs, device receipt/socket binding, an Android↔desktop platform escalation block, non-destructive database push, fixed Caddy upstream, and a new CI workflow. Full details and remaining P0 gates are in [OWNER_ACCESS_AND_RELEASE_GATES.md](../security/OWNER_ACCESS_AND_RELEASE_GATES.md). The original baseline findings above remain historically accurate for Nexus main at commit 4e5e871; do not interpret them as a claim the draft changes are merged, deployed, or runtime-verified.
+
+The user's explicit Nerve Core decision is a **future, separate integration**, documented in [NERVE_CORE_FUTURE_INTEGRATION.md](../architecture/NERVE_CORE_FUTURE_INTEGRATION.md); no Nerve Core code/memory is copied.
