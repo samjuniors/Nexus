@@ -11,7 +11,8 @@
     "db:push": "prisma db push --accept-data-loss",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
-    "db:reset": "prisma migrate reset"
+    "db:reset": "prisma migrate reset",
+    "test:desktop-permissions": "node --test electron/media-permissions.test.cjs"
   },
   "dependencies": {
     "@google/genai": "^3.4.0",
