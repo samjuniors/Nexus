@@ -1,3 +1,4 @@
+import { computeActionHash } from '@/lib/agent/action-binding'
 import fs from 'fs'
 import path from 'path'
 import { GoogleGenAI } from '@google/genai'
@@ -1038,6 +1039,7 @@ Rules:
         const approval = await controlBus.waitForPermission(
           {
             requestId: reqId,
+            actionHash: computeActionHash({ actionName: `browser.${decision.action}`, target: current.url, payload: decision }),
             capability: 'browser_control',
             title: 'Approve Sensitive Browser Action',
             description: 'Eva paused before executing a sensitive step in the isolated workspace.',
