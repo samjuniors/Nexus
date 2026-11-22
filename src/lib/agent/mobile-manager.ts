@@ -292,7 +292,7 @@ function buildInteractiveElements(state: InternalMobileState): MobileElementHint
       ...state.threads.map((t, i) => ({
         id: `thread-${t.id}`,
         label: `Chat: ${t.contact}`,
-        kind: 'item',
+        kind: 'item' as const,
         x: 540,
         y: 440 + i * 210,
       })),
