@@ -45,7 +45,7 @@ test('rejects non-finite and non-JSON arguments, circular objects and unsafe key
 })
 
 test('rejects oversized payloads and excessively deep nesting', () => {
-  assert.throws(() => computeActionHash({ actionName: 'a', payload: 'x'.repeat(130_000) }), /maximum size/)
+  assert.throws(() => computeActionHash({ actionName: 'a', payload: 'x'.repeat(140_000) }), /maximum size/)
   let payload: unknown = 1
   for (let i = 0; i < 40; i++) payload = [payload]
   assert.throws(() => computeActionHash({ actionName: 'a', payload }), /depth limit/)
