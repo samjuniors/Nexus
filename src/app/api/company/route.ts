@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import {
@@ -155,6 +156,7 @@ export async function POST(req: NextRequest) {
       }
       const employee = await db.aiEmployee.create({
         data: {
+          slug: `byoa_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 48)}_${randomUUID().slice(0, 8)}`,
           name: name.slice(0, 60),
           title: String(body.title ?? 'External BYOA Runtime Agent').slice(0, 80),
           department: String(body.department ?? 'External Runtimes').slice(0, 48),
@@ -191,7 +193,7 @@ export async function POST(req: NextRequest) {
     if (action === 'run_all_heartbeats') {
       const employees = await db.aiEmployee.findMany({ where: { status: 'active' } })
       const state = loadCompanyState()
-      const results = []
+      const results: Awaited<ReturnType<typeof runAgentHeartbeat>>[] = []
       for (const emp of employees) {
         const cfg = state.agentConfigs[emp.id]
         if (cfg && !cfg.heartbeatEnabled) continue
