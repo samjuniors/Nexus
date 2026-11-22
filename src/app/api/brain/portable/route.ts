@@ -24,13 +24,14 @@ export interface PortableBrainBundle {
   }>
   entities: Array<{
     name: string
-    type: string
+    type?: string // accepted from older portable bundles; not stored by the current schema
     variants?: string
     origin?: string
   }>
   edges: Array<{
     fromName: string
     toName: string
+    relation?: string
     kind: string
     weight?: number
   }>
@@ -74,18 +75,18 @@ export async function GET() {
       })),
       entities: entities.map((e) => ({
         name: e.name,
-        type: e.type,
         variants: e.variants,
         origin: e.origin,
       })),
       edges: edges
         .map((ed) => {
-          const fromName = entityNameById.get(ed.fromId)
-          const toName = entityNameById.get(ed.toId)
+          const fromName = entityNameById.get(ed.sourceId)
+          const toName = entityNameById.get(ed.targetId)
           if (!fromName || !toName) return null
           return {
             fromName,
             toName,
+            relation: ed.relation,
             kind: ed.kind,
             weight: ed.weight,
           }
@@ -159,7 +160,6 @@ export async function POST(req: NextRequest) {
         const created = await db.memoryEntity.create({
           data: {
             name,
-            type: String(ent.type ?? 'concept'),
             variants: typeof ent.variants === 'string' ? ent.variants : '[]',
             origin: String(ent.origin ?? 'portable_import'),
           },
@@ -172,18 +172,20 @@ export async function POST(req: NextRequest) {
     let edgesImported = 0
     if (Array.isArray(body.edges)) {
       const existingEdges = await db.memoryEdge.findMany()
-      const edgeKeys = new Set(existingEdges.map((e) => `${e.fromId}:${e.toId}:${e.kind}`))
+      const edgeKeys = new Set(existingEdges.map((e) => `${e.sourceId}:${e.targetId}:${e.relation}:${e.kind}`))
       for (const ed of body.edges) {
         const fromId = entityIdByLower.get(String(ed.fromName ?? '').toLowerCase())
         const toId = entityIdByLower.get(String(ed.toName ?? '').toLowerCase())
+        const relation = String(ed.relation ?? 'relates-to')
         const kind = String(ed.kind ?? 'INFERRED')
         if (!fromId || !toId || fromId === toId) continue
-        const key = `${fromId}:${toId}:${kind}`
+        const key = `${fromId}:${toId}:${relation}:${kind}`
         if (edgeKeys.has(key)) continue
         await db.memoryEdge.create({
           data: {
-            fromId,
-            toId,
+            sourceId: fromId,
+            targetId: toId,
+            relation,
             kind,
             weight: Number(ed.weight ?? 1),
           },
