@@ -31,9 +31,7 @@ export function MaterialBottomNav() {
     ? 'more'
     : splitOpen && splitMode === 'mobile'
       ? 'android'
-      : activeTab === 'agent'
-        ? 'chat'
-        : 'more'
+      : 'more'
 
   const items: {
     id: M3NavDest
