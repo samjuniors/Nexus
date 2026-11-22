@@ -139,7 +139,8 @@ server.on('upgrade', (req, socket, head) => {
                 actionHash?: string
                 decision?: 'always' | 'once' | 'deny'
               }
-              if (msg.type === 'permission:respond' && msg.requestId && msg.actionHash && ['always', 'once', 'deny'].includes(String(msg.decision))) {
+              if (msg.type === 'permission:respond' && msg.requestId && msg.actionHash &&
+                  (msg.decision === 'always' || msg.decision === 'once' || msg.decision === 'deny')) {
                 void resolvePermissionDecision(msg.requestId, msg.decision, msg.actionHash)
               }
             } catch {
