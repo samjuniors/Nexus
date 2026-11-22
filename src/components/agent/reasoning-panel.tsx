@@ -13,6 +13,7 @@ import {
   RefreshCw,
   RotateCcw,
   ShieldCheck,
+  Smartphone,
   Target,
   Trash2,
   Workflow,
@@ -33,6 +34,12 @@ const KIND_META: Record<
     icon: Target,
     accent: 'text-sky-600 dark:text-sky-400',
     lineColor: 'border-sky-500/35 bg-sky-500/10',
+  },
+  action: {
+    label: 'Action',
+    icon: GitBranch,
+    accent: 'text-indigo-600 dark:text-indigo-400',
+    lineColor: 'border-indigo-500/35 bg-indigo-500/10',
   },
   decision: {
     label: 'Decision',
@@ -61,6 +68,7 @@ const KIND_META: Record<
 }
 
 const SOURCE_META: Record<ReasoningChain['source'], { label: string; icon: typeof Globe }> = {
+  mobile_autopilot: { label: 'Mobile Autopilot', icon: Smartphone },
   browser_autopilot: { label: 'Browser Autopilot', icon: Globe },
   mission: { label: 'Mission', icon: Workflow },
   voice_live: { label: 'Voice Action', icon: Mic },
