@@ -694,6 +694,7 @@ export async function autoHireForTask(
     } else if (hired.length < maxNewHires) {
       const created = await db.aiEmployee.create({
         data: {
+          slug: `agent_${bp.key.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')}`,
           name: bp.name,
           title: bp.title,
           department: bp.department,
@@ -718,7 +719,6 @@ export async function autoHireForTask(
                 slug,
                 name: `${bp.name} (Auto-Hired Bot)`,
                 description: `Delegate to ${bp.name}: ${bp.role}`,
-                argSpec: '{ task: string }',
                 source: 'org_bot',
                 enabled: true,
               },
