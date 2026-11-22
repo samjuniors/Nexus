@@ -42,14 +42,14 @@ Session authentication answers **who** can request an action. It does not automa
 - `/api/terminal` execution requires `workspace_shell`, with additional `desktop_bridge` approval for explicit Windows target.
 - `/api/computer-control` desktop command dispatch requires `desktop_bridge`; shell/Powershell also requires `workspace_shell`.
 - A registered desktop command list is enforced. File move source *and* destination are checked against connected folders. Batch rename is temporarily disabled pending per-item validation.
-- Pending UI approvals travel through authenticated `/api/control`; approvals on that socket are **still pending payload-binding, replay, and actor-scoping hardening**.
+- Pending UI approvals travel through authenticated `/api/control` and carry a SHA-256 action/target/payload fingerprint; the owner response must match that exact fingerprint. Replay/idempotency and actor-scoping review remain outstanding.
 
 ## Known blockers — do not call this a release
 
-1. **P0: Trust and action binding.** Apply cryptographically bound per-action permission receipts, one execution authority, audit integrity and fail-closed storage, following SamjuniorsOS governance concepts but adapting to Nexus Next.js. Current persistent `always` grants and best-effort audit are weaker.
+1. **P0: Trust, replay and audit.** Per-action SHA-256 action/target/payload approval binding and single-use policy for high-risk capabilities are implemented. Still independently verify expiry, replay/idempotency, actor scoping, one execution authority, audit integrity and fail-closed storage. Review remaining persistent `always` grants for low-risk scopes.
 2. **P0: Companion filesystem.** Existing generated companion scripts perform lexical path checks. Verify *real filesystem* resolution, symlink/junction escapes and atomic write/race resistance before claiming remote file writes secure. Review remote command shell policy.
 3. **P0: Network/device.** Independent security test of pairing-token replay, session hijack, expired/revoked tokens, WebSocket message quotas, spoofed command results, and platform escalation. Check WebView cookie behavior and direct TLS proxy deployment.
-4. **P1: Runtime validation.** Run `npm run test:security`, `npm run typecheck`, `npm run lint`, `npm run build`, Electron media and Windows keyboard/microphone/screen tests, Android functional tests, and independent review.
+4. **P1: Runtime validation.** GitHub Actions run #130 passed `npm run test:security`, `npm run test:recovery`, `npm run typecheck`, `npm run lint` and `npm run build` on Ubuntu/Node 22. Native Electron media and Windows keyboard/microphone/screen tests, Android physical-device/WebView tests and independent review are still required.
 5. **P1: Deploy setup.** Document and prove the full reverse proxy with TLS, forward headers, security headers, and service restarts. Do not trust client-provided forwarded headers for origin/auth decisions.
 
 ### No secret or database migration
@@ -62,6 +62,6 @@ This hardening branch changes code and example configuration only. It does **not
 - Future Nerve Core plan: `docs/architecture/NERVE_CORE_FUTURE_INTEGRATION.md`
 - Primary branch: `audit/samjuniorsos-selective-port-20261121` (draft PR #1).
 
-## CI incident (2026-11-21)
+## CI verification (2026-11-22)
 
-The draft-branch security workflow [run #34](https://github.com/samjuniors/Nexus/actions/runs/44906238469) completed with a **failure** conclusion, but GitHub's job API exposed no executed steps and log retrieval returned BlobNotFound. This is **not** a verified code-test failure or a verified runner/billing failure. Treat all CI acceptance gates as **NOT VERIFIED** until a readable job log and commands can be rerun.
+The earlier run #34 had unavailable logs and is superseded. Current branch HEAD `d0aa4a078d2f3bb52d4e5fb89f3c25f51a9fa364` passed [GitHub Actions run #130](https://github.com/samjuniors/Nexus/actions/runs/44981448975), including dependency install, Prisma generation, security tests, recovery tests, typecheck, lint and production build. This does not replace native Windows/Android acceptance or independent security review.
