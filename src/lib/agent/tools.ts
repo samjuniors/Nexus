@@ -2606,23 +2606,21 @@ export async function executeTool(
             }
           }
           // An Allowed App preset is not an authorization for an AI-initiated launch.
-          if (evalRes.policy !== 'deny') {
-            automationSession.setAwaitingApproval(`Launch ${appName} on ${target.name}`)
+          automationSession.setAwaitingApproval(`Launch ${appName} on ${target.name}`)
             const appPerm = await requireCapabilityPermission({
               capability: 'desktop_bridge',
               actionSummary: `Launch app "${appName}" on ${target.name}`,
               details: JSON.stringify(args).slice(0, 180),
               ...desktopBinding,
             })
-            automationSession.clearAwaitingApproval()
-            if (!appPerm.allowed || !verifyActionHash(appPerm.actionHash, desktopBinding)) {
+          automationSession.clearAwaitingApproval()
+          if (!appPerm.allowed || !verifyActionHash(appPerm.actionHash, desktopBinding)) {
               return {
                 ok: false,
                 summary: `Launch declined for ${appName}`,
                 raw: appPerm.reason ?? `User declined launching ${appName}.`,
                 display: { kind: 'text', text: appPerm.reason ?? 'App launch declined.' },
               }
-            }
           }
         } else {
           const perm = await requireCapabilityPermission({
