@@ -32,7 +32,7 @@ export interface SelfHealPatchFile {
 
 export interface SelfHealStep {
   id: string
-  phase: 'diagnose' | 'snapshot' | 'patch' | 'verify' | 'rollback' | 'complete' | 'error'
+  phase: 'diagnose' | 'brain' | 'snapshot' | 'patch' | 'verify' | 'rollback' | 'complete' | 'error'
   label: string
   detail?: string
   timestamp: string
@@ -44,6 +44,21 @@ export interface SelfHealVerification {
   output: string
   durationMs: number
   checkedAt: string
+}
+
+export interface SelfHealBrainContext {
+  recalledCount: number
+  coreLoaded: boolean
+  recalledSummaries: string[]
+  learnedLesson?: string
+}
+
+export interface SelfHealCapabilityUpgrade {
+  kind: 'skill' | 'recommendation'
+  name: string
+  slug?: string
+  description: string
+  applied: boolean
 }
 
 export interface SelfHealSession {
@@ -59,6 +74,9 @@ export interface SelfHealSession {
   canRollback: boolean
   rolledBackAt?: string
   summary?: string
+  attemptsUsed?: number
+  brainContext?: SelfHealBrainContext
+  capabilityUpgrade?: SelfHealCapabilityUpgrade
   createdAt: string
   updatedAt: string
 }
@@ -85,12 +103,21 @@ export interface SelfHealEditInput {
   summary?: string
 }
 
+export interface ParsedTscDiagnostic {
+  file: string
+  line: number
+  col: number
+  code: string
+  message: string
+}
+
 const WORKSPACE_ROOT = process.cwd()
 const SNAPSHOT_DIR = path.join(WORKSPACE_ROOT, '.nexus-snapshots')
 
 const ALLOWED_ROOT_PREFIXES = ['src/', 'brain/', 'public/', 'prisma/']
 const ALLOWED_ROOT_FILES = new Set(['package.json', 'next.config.ts'])
 const BLOCKED_SEGMENTS = new Set(['.git', '.next', 'node_modules', '.nexus-snapshots'])
+const BLOCKED_EXTENSIONS = new Set(['.db', '.sqlite', '.sqlite3', '.pem', '.key', '.p12'])
 
 /** Validates and resolves a workspace-relative path with strict guardrails against traversal or secrets. */
 export function resolveSafeAppPath(relPath: string): { abs: string; rel: string } {
@@ -101,6 +128,10 @@ export function resolveSafeAppPath(relPath: string): { abs: string; rel: string 
   const baseName = path.posix.basename(clean).toLowerCase()
   if (baseName === '.env' || baseName.startsWith('.env.')) {
     throw new Error(`Protected environment file cannot be modified: "${clean}"`)
+  }
+  const ext = path.posix.extname(baseName)
+  if (BLOCKED_EXTENSIONS.has(ext)) {
+    throw new Error(`Protected binary or key file cannot be modified: "${clean}"`)
   }
   const parts = clean.split('/')
   if (parts.some((p) => BLOCKED_SEGMENTS.has(p))) {
@@ -209,6 +240,10 @@ class SelfHealManager {
       steps: s.steps.map((st) => ({ ...st })),
       patches: s.patches.map((p) => ({ ...p })),
       verification: s.verification ? { ...s.verification } : null,
+      brainContext: s.brainContext
+        ? { ...s.brainContext, recalledSummaries: [...s.brainContext.recalledSummaries] }
+        : undefined,
+      capabilityUpgrade: s.capabilityUpgrade ? { ...s.capabilityUpgrade } : undefined,
     }
   }
 
@@ -374,7 +409,7 @@ export async function inspectAppCode(input: {
     const target = input.path ? resolveSafeAppPath(input.path) : { abs: path.join(WORKSPACE_ROOT, 'src'), rel: 'src' }
     const results: string[] = []
     const walk = async (dirAbs: string, relBase: string, depth: number) => {
-      if (depth > 3 || results.length >= 120) return
+      if (depth > 4 || results.length >= 240) return
       const entries = await fs.readdir(dirAbs, { withFileTypes: true }).catch(() => [])
       for (const entry of entries) {
         if (BLOCKED_SEGMENTS.has(entry.name) || entry.name.startsWith('.')) continue
@@ -384,7 +419,7 @@ export async function inspectAppCode(input: {
         } else {
           results.push(nextRel)
         }
-        if (results.length >= 120) break
+        if (results.length >= 240) break
       }
     }
     await walk(target.abs, target.rel, 0)
@@ -402,17 +437,18 @@ export async function inspectAppCode(input: {
       const { stdout } = await execFileAsync(
         'grep',
         [
-          '-rn',
+          '-rni',
           '--exclude-dir=node_modules',
           '--exclude-dir=.next',
           '--exclude-dir=.git',
           '-F',
+          '--',
           query,
           searchRoot,
         ],
         { cwd: WORKSPACE_ROOT, timeout: 10_000, maxBuffer: 512 * 1024 }
       )
-      const lines = stdout.split('\n').filter(Boolean).slice(0, 50)
+      const lines = stdout.split('\n').filter(Boolean).slice(0, 60)
       return {
         ok: true,
         output: lines.length > 0 ? lines.join('\n') : `No matches found for "${query}" in ${searchRoot}.`,
@@ -443,6 +479,164 @@ export async function inspectAppCode(input: {
   }
 }
 
+/**
+ * Parses `tsc --noEmit` output into structured file/line diagnostics so Eva can
+ * jump directly to broken lines instead of reading only the top of a file.
+ */
+export function parseTscDiagnostics(output: string): ParsedTscDiagnostic[] {
+  const results: ParsedTscDiagnostic[] = []
+  const re = /^((?:src|brain|prisma)\/[^\s(:]+)\((\d+),(\d+)\):\s+error\s+(TS\d+):\s+(.+)$/gm
+  let match: RegExpExecArray | null
+  while ((match = re.exec(output)) !== null) {
+    results.push({
+      file: match[1],
+      line: Number(match[2]),
+      col: Number(match[3]),
+      code: match[4],
+      message: match[5].trim(),
+    })
+  }
+  return results
+}
+
+const STOP_WORDS = new Set([
+  'error', 'typeerror', 'referenceerror', 'syntaxerror', 'cannot', 'reading', 'undefined',
+  'properties', 'property', 'issue', 'issues', 'related', 'failed', 'failing', 'failure',
+  'broken', 'working', 'please', 'should', 'would', 'could', 'about', 'there', 'their',
+  'where', 'which', 'something', 'anything', 'nothing', 'smart', 'smarter', 'agent',
+  'agentic', 'solution', 'button', 'screen', 'using', 'while', 'after', 'before', 'still',
+  'needs', 'doesn', 'unable', 'check', 'build', 'app', 'code', 'make', 'more', 'with',
+  'from', 'that', 'this', 'have', 'been', 'into', 'when', 'what', 'only', 'also', 'just',
+])
+
+/**
+ * Extracts high-signal technical terms & identifiers from a bug report or stack trace,
+ * filtering out generic English stop words that cause noisy or empty grep matches.
+ */
+export function extractSearchTerms(text: string, viewName?: string): string[] {
+  const ranked: string[] = []
+  const seen = new Set<string>()
+  const push = (term: string) => {
+    const clean = term.trim()
+    const key = clean.toLowerCase()
+    if (clean.length < 3 || STOP_WORDS.has(key) || seen.has(key)) return
+    seen.add(key)
+    ranked.push(clean)
+  }
+
+  if (viewName) push(viewName)
+
+  // Prefer camelCase / PascalCase / snake_case / kebab-case code identifiers first
+  const codeTokens = text.match(/\b(?:[a-z]+[A-Z][A-Za-z0-9]*|[A-Z][a-z]+[A-Z][A-Za-z0-9]*|[a-zA-Z]+_[a-zA-Z0-9_]+|[a-z]+-[a-z0-9-]+)\b/g) ?? []
+  for (const tok of codeTokens) push(tok)
+
+  // Next, domain nouns/verbs (length >= 4)
+  const words = text.match(/\b[A-Za-z][A-Za-z0-9]{3,}\b/g) ?? []
+  for (const w of words) push(w)
+
+  return ranked.slice(0, 6)
+}
+
+/**
+ * Resilient, `$`-safe search/replace matcher:
+ * 1. Exact substring match (preferred)
+ * 2. LF/CRLF normalized match
+ * 3. Unique whitespace-trimmed line-block match (tolerant of minor indentation/trailing space drift)
+ * Uses index slicing instead of `String.prototype.replace` so `$&`, `$1`, `$'` in code never corrupt output.
+ */
+export function applyTargetReplacement(
+  source: string,
+  target: string,
+  replacement: string
+): { ok: true; after: string; strategy: 'exact' | 'crlf' | 'trimmed_lines' } | { ok: false; reason: string } {
+  if (!target) {
+    return { ok: false, reason: 'Target snippet is empty.' }
+  }
+
+  // Tier 1: Exact match
+  const exactIdx = source.indexOf(target)
+  if (exactIdx !== -1) {
+    return {
+      ok: true,
+      after: source.slice(0, exactIdx) + replacement + source.slice(exactIdx + target.length),
+      strategy: 'exact',
+    }
+  }
+
+  // Tier 2: Line-ending normalized match (CRLF <-> LF)
+  const usesCrlf = source.includes('\r\n')
+  const normSource = source.replace(/\r\n/g, '\n')
+  const normTarget = target.replace(/\r\n/g, '\n')
+  const normReplacement = replacement.replace(/\r\n/g, '\n')
+  const normIdx = normSource.indexOf(normTarget)
+  if (normIdx !== -1) {
+    const patched =
+      normSource.slice(0, normIdx) + normReplacement + normSource.slice(normIdx + normTarget.length)
+    return {
+      ok: true,
+      after: usesCrlf ? patched.replace(/\n/g, '\r\n') : patched,
+      strategy: 'crlf',
+    }
+  }
+
+  // Tier 3: Unique trimmed-line block match (handles indentation drift without risking wrong locations)
+  const srcLines = normSource.split('\n')
+  const tgtLines = normTarget.split('\n')
+  // Strip leading/trailing blank lines from target block for cleaner matching
+  while (tgtLines.length > 1 && tgtLines[0].trim() === '') tgtLines.shift()
+  while (tgtLines.length > 1 && tgtLines[tgtLines.length - 1].trim() === '') tgtLines.pop()
+
+  const trimmedTgt = tgtLines.map((l) => l.trim())
+  if (trimmedTgt.length > 0 && trimmedTgt.some((l) => l.length > 0)) {
+    const matchStarts: number[] = []
+    for (let i = 0; i <= srcLines.length - trimmedTgt.length; i++) {
+      let matched = true
+      for (let j = 0; j < trimmedTgt.length; j++) {
+        if (srcLines[i + j].trim() !== trimmedTgt[j]) {
+          matched = false
+          break
+        }
+      }
+      if (matched) matchStarts.push(i)
+    }
+
+    if (matchStarts.length === 1) {
+      const startLine = matchStarts[0]
+      const origIndent = srcLines[startLine].match(/^[ \t]*/)?.[0] ?? ''
+      const tgtIndent = tgtLines[0].match(/^[ \t]*/)?.[0] ?? ''
+      const repLines = normReplacement.split('\n').map((line) => {
+        if (!line.trim()) return ''
+        if (tgtIndent && line.startsWith(tgtIndent)) {
+          return origIndent + line.slice(tgtIndent.length)
+        }
+        return line
+      })
+      const merged = [
+        ...srcLines.slice(0, startLine),
+        ...repLines,
+        ...srcLines.slice(startLine + trimmedTgt.length),
+      ].join('\n')
+      return {
+        ok: true,
+        after: usesCrlf ? merged.replace(/\n/g, '\r\n') : merged,
+        strategy: 'trimmed_lines',
+      }
+    }
+
+    if (matchStarts.length > 1) {
+      return {
+        ok: false,
+        reason: `Target snippet matched ${matchStarts.length} locations (ambiguous). Include more surrounding lines.`,
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    reason: 'Target snippet not found in file. Inspect the exact line window before patching.',
+  }
+}
+
 /** Runs TypeScript typecheck (and optional targeted test file) to verify app health. */
 export async function verifyAppBuild(opts?: {
   testFile?: string
@@ -454,8 +648,8 @@ export async function verifyAppBuild(opts?: {
   try {
     const { stdout, stderr } = await execFileAsync(tscBin, ['--noEmit'], {
       cwd: WORKSPACE_ROOT,
-      timeout: 45_000,
-      maxBuffer: 1024 * 1024,
+      timeout: 90_000,
+      maxBuffer: 2 * 1024 * 1024,
     })
     let combined = [stdout, stderr].filter(Boolean).join('\n').trim()
 
@@ -465,8 +659,8 @@ export async function verifyAppBuild(opts?: {
       const tsxBin = path.join(WORKSPACE_ROOT, 'node_modules', '.bin', 'tsx')
       const testRes = await execFileAsync(tsxBin, ['--test', rel], {
         cwd: WORKSPACE_ROOT,
-        timeout: 30_000,
-        maxBuffer: 512 * 1024,
+        timeout: 45_000,
+        maxBuffer: 1024 * 1024,
       })
       combined = [combined, testRes.stdout, testRes.stderr].filter(Boolean).join('\n').trim()
     }
@@ -484,7 +678,7 @@ export async function verifyAppBuild(opts?: {
     return {
       ok: false,
       command,
-      output: out.slice(0, 3500) || 'Verification failed.',
+      output: out.slice(0, 4500) || 'Verification failed.',
       durationMs: Date.now() - started,
       checkedAt: new Date().toISOString(),
     }
@@ -495,7 +689,7 @@ export async function verifyAppBuild(opts?: {
  * Snapshot-first atomic patch engine:
  * 1. Validates all paths against guardrails
  * 2. Saves immutable pre-patch snapshot of every file
- * 3. Applies surgical search/replace or full writes
+ * 3. Applies resilient, `$`-safe surgical search/replace or full writes
  * 4. Generates clean unified diffs
  * 5. Runs `tsc --noEmit` verification (auto-rolling back on failure if requested)
  */
@@ -565,12 +759,11 @@ export async function applySelfHealPatch(input: {
         if (!edit.target) {
           throw new Error(`Edit for "${rel}" in replace mode requires a non-empty target snippet.`)
         }
-        if (!before.includes(edit.target)) {
-          throw new Error(
-            `Target snippet not found in "${rel}". Read the exact lines first before patching.`
-          )
+        const replaced = applyTargetReplacement(before, edit.target, edit.replacement ?? '')
+        if (!replaced.ok) {
+          throw new Error(`Patch target mismatch in "${rel}": ${replaced.reason}`)
         }
-        after = before.replace(edit.target, edit.replacement ?? '')
+        after = replaced.after
       } else {
         if (typeof edit.content !== 'string') {
           throw new Error(`Edit for "${rel}" in write mode requires content.`)
@@ -668,7 +861,7 @@ export async function applySelfHealPatch(input: {
     return {
       ok: false,
       session: selfHealManager.getSession(session.id)!,
-      error: `TypeScript verification failed and snapshot was automatically restored:\n${verification.output.slice(0, 1200)}`,
+      error: `TypeScript verification failed and snapshot was automatically restored:\n${verification.output.slice(0, 1400)}`,
     }
   }
 
@@ -684,7 +877,7 @@ export async function applySelfHealPatch(input: {
   return {
     ok: false,
     session: selfHealManager.getSession(session.id)!,
-    error: verification.output.slice(0, 1200),
+    error: verification.output.slice(0, 1400),
   }
 }
 
@@ -716,8 +909,205 @@ export async function rollbackSelfHealSession(
 }
 
 /**
- * End-to-end autonomous diagnosis + repair loop triggered from Error Boundaries,
- * runtime error interceptors, or the Self-Heal split panel prompt bar.
+ * Loads Portable GBrain context (Core Memory truths + relevant prior repair lessons +
+ * active agent capability inventory) to make self-healing genuinely smarter over time.
+ */
+async function loadPortableBrainForHeal(query: string): Promise<{
+  coreText: string
+  recalledBlock: string
+  capabilitiesBlock: string
+  meta: SelfHealBrainContext
+}> {
+  try {
+    const [{ coreMemoryBlock, gbrainStore, recordRetrievalFor }, { db }] = await Promise.all([
+      import('@/lib/agent/gbrain-store'),
+      import('@/lib/db'),
+    ])
+
+    const [coreText, allMemories, tools, skills] = await Promise.all([
+      coreMemoryBlock().catch(() => ''),
+      gbrainStore().listMemories(160).catch(() => []),
+      db.tool.findMany({ where: { enabled: true }, select: { slug: true, name: true }, take: 30 }).catch(() => []),
+      db.skill.findMany({ where: { enabled: true }, select: { slug: true, name: true, description: true }, take: 24 }).catch(() => []),
+    ])
+
+    const terms = extractSearchTerms(query).map((t) => t.toLowerCase())
+    const scored = allMemories
+      .map((m) => {
+        const hay = `${m.content} ${m.truth ?? ''} ${m.type}`.toLowerCase()
+        let score = m.type === 'lesson' ? 1.5 : 0
+        for (const t of terms) {
+          if (hay.includes(t)) score += 2
+        }
+        if (hay.includes('self-heal') || hay.includes('self_heal') || hay.includes('repair')) {
+          score += 1
+        }
+        return { mem: m, score }
+      })
+      .filter((x) => x.score > 1)
+      .sort((a, b) => b.score - a.score || b.mem.importance - a.mem.importance)
+      .slice(0, 6)
+
+    // Record retrieval attribution & light up live GBrain trace
+    for (const item of scored.slice(0, 3)) {
+      void recordRetrievalFor(item.mem.id, `self-heal: ${query.slice(0, 60)}`)
+    }
+
+    const recalledSummaries = scored.map(
+      ({ mem }) => `[${mem.type}] ${(mem.truth || mem.content).slice(0, 140)}`
+    )
+
+    const capabilitiesBlock = [
+      tools.length > 0 ? `Active Tools (${tools.length}): ${tools.map((t) => t.slug).join(', ')}` : '',
+      skills.length > 0
+        ? `Active Skills (${skills.length}): ${skills.map((s) => `${s.slug} (${s.name})`).join(', ')}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n')
+
+    return {
+      coreText: coreText.slice(0, 1600),
+      recalledBlock: recalledSummaries.join('\n'),
+      capabilitiesBlock: capabilitiesBlock.slice(0, 1400),
+      meta: {
+        recalledCount: scored.length,
+        coreLoaded: Boolean(coreText.trim()),
+        recalledSummaries,
+      },
+    }
+  } catch {
+    return {
+      coreText: '',
+      recalledBlock: '',
+      capabilitiesBlock: '',
+      meta: { recalledCount: 0, coreLoaded: false, recalledSummaries: [] },
+    }
+  }
+}
+
+/** Saves a durable procedural repair lesson into Portable GBrain so future runs learn from it. */
+async function consolidateSelfHealLesson(lesson: string): Promise<string | undefined> {
+  const clean = lesson.trim().slice(0, 420)
+  if (!clean) return undefined
+  try {
+    const { saveMemoryGbrain } = await import('@/lib/agent/gbrain-store')
+    await saveMemoryGbrain({
+      content: `Self-Heal Lesson: ${clean}`,
+      type: 'lesson',
+      kind: 'procedural',
+      importance: 7,
+    })
+    return clean
+  } catch {
+    return undefined
+  }
+}
+
+/** Optionally persists a safe reusable Skill capability in SQLite when Eva identifies a capability gap. */
+async function applySafeSkillUpgrade(upgrade?: {
+  kind?: string
+  name?: string
+  slug?: string
+  description?: string
+  prompt?: string
+}): Promise<SelfHealCapabilityUpgrade | undefined> {
+  if (!upgrade?.name || !upgrade?.description) return undefined
+  const name = upgrade.name.trim().slice(0, 80)
+  const description = upgrade.description.trim().slice(0, 220)
+  if (upgrade.kind === 'skill' && upgrade.prompt && upgrade.prompt.trim().length >= 20) {
+    const slug = (upgrade.slug || name)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_|_$/g, '')
+      .slice(0, 48)
+    if (slug) {
+      try {
+        const { db } = await import('@/lib/db')
+        await db.skill.upsert({
+          where: { slug },
+          create: {
+            slug,
+            name,
+            description,
+            category: 'self_heal',
+            icon: 'sparkles',
+            prompt: upgrade.prompt.trim().slice(0, 2000),
+            enabled: true,
+          },
+          update: {
+            name,
+            description,
+            prompt: upgrade.prompt.trim().slice(0, 2000),
+            enabled: true,
+          },
+        })
+        return { kind: 'skill', name, slug, description, applied: true }
+      } catch {
+        /* fallback to recommendation */
+      }
+    }
+  }
+  return { kind: 'recommendation', name, description, applied: false }
+}
+
+/**
+ * Reads focused line windows around specific line numbers (plus imports header) so Eva
+ * sees the actual defective code even inside 1,500+ line files.
+ */
+async function readFocusedFileContext(
+  relPath: string,
+  focusLines: number[],
+  maxChars = 7500
+): Promise<string | null> {
+  try {
+    const { abs, rel } = resolveSafeAppPath(relPath)
+    const raw = await fs.readFile(abs, 'utf8')
+    const allLines = raw.split('\n')
+
+    const windows: Array<[number, number]> = []
+    if (focusLines.length === 0) {
+      windows.push([1, Math.min(allLines.length, 240)])
+    } else {
+      // Always include top imports/types header (1..40)
+      windows.push([1, Math.min(allLines.length, 40)])
+      const sorted = Array.from(new Set(focusLines.filter((n) => n >= 1))).sort((a, b) => a - b)
+      for (const ln of sorted.slice(0, 3)) {
+        const start = Math.max(1, ln - 55)
+        const end = Math.min(allLines.length, ln + 85)
+        windows.push([start, end])
+      }
+    }
+
+    // Merge overlapping windows cleanly
+    windows.sort((a, b) => a[0] - b[0])
+    const merged: Array<[number, number]> = []
+    for (const w of windows) {
+      const last = merged[merged.length - 1]
+      if (last && w[0] <= last[1] + 5) {
+        last[1] = Math.max(last[1], w[1])
+      } else {
+        merged.push([w[0], w[1]])
+      }
+    }
+
+    const sections = merged.map(([start, end]) => {
+      const body = allLines
+        .slice(start - 1, end)
+        .map((line, i) => `${start + i}: ${line}`)
+        .join('\n')
+      return `// ${rel} (lines ${start}-${end} of ${allLines.length})\n${body}`
+    })
+
+    return sections.join('\n// ...\n').slice(0, maxChars)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * End-to-end autonomous diagnosis + Portable Brain + multi-iteration repair loop
+ * triggered from Error Boundaries, runtime error interceptors, agent tools, or Self-Heal Studio.
  */
 export async function runAutonomousSelfHeal(input: {
   trigger: SelfHealTrigger
@@ -743,174 +1133,364 @@ export async function runAutonomousSelfHeal(input: {
   })
 
   try {
-    // 1. Collect candidate source files from stack trace or workspace search
-    const candidateFiles = new Set<string>()
-    if (input.targetFileHint) {
-      try {
-        candidateFiles.add(resolveSafeAppPath(input.targetFileHint).rel)
-      } catch {
-        /* ignore invalid hint */
-      }
-    }
+    // 1. Consult Portable GBrain (Core Memory truths + past repair lessons + active capabilities)
+    const brainBundle = await loadPortableBrainForHeal(
+      `${input.errorMessage} ${input.viewName ?? ''} ${input.targetFileHint ?? ''}`
+    )
+    selfHealManager.updateSession(session.id, { brainContext: brainBundle.meta })
+    selfHealManager.appendStep(
+      session.id,
+      {
+        phase: 'brain',
+        label: `Consulted Portable GBrain (${brainBundle.meta.recalledCount} relevant memor${brainBundle.meta.recalledCount === 1 ? 'y' : 'ies'})`,
+        detail:
+          brainBundle.meta.recalledSummaries[0] ||
+          (brainBundle.meta.coreLoaded ? 'Core identity & architecture truths loaded.' : 'Fresh diagnostic context.'),
+      },
+      'diagnosing'
+    )
 
-    const combinedText = `${input.errorMessage}\n${input.stack ?? ''}`
-    const pathMatches = combinedText.match(/\b(?:src|brain)\/[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx)\b/g) ?? []
-    for (const m of pathMatches) {
-      try {
-        candidateFiles.add(resolveSafeAppPath(m).rel)
-      } catch {
-        /* skip */
-      }
-    }
-
-    // If no direct file paths in stack, search by viewName or distinctive identifier
-    if (candidateFiles.size === 0) {
-      const searchHint =
-        input.viewName ||
-        (input.errorMessage.match(/[A-Za-z_][A-Za-z0-9_]{4,}/g) ?? []).find(
-          (w) => !['Error', 'TypeError', 'Cannot', 'reading', 'undefined', 'properties'].includes(w)
-        ) ||
-        ''
-      if (searchHint) {
-        const res = await inspectAppCode({ mode: 'search', query: searchHint })
-        const lines = res.output.split('\n').slice(0, 12)
-        for (const l of lines) {
-          const filePart = l.split(':')[0]
-          if (filePart && filePart.startsWith('src/')) candidateFiles.add(filePart)
-        }
-      }
-    }
-
-    // Also run baseline typecheck to surface any concrete compiler diagnostics
+    // 2. Run baseline typecheck first to surface any real compiler diagnostics immediately
     const baselineCheck = await verifyAppBuild()
-    if (!baselineCheck.ok) {
-      const tsMatches = baselineCheck.output.match(/\b(?:src|brain)\/[A-Za-z0-9_./-]+\.tsx?\b/g) ?? []
-      for (const m of tsMatches.slice(0, 4)) candidateFiles.add(m)
-    }
+    const baselineDiags = baselineCheck.ok ? [] : parseTscDiagnostics(baselineCheck.output)
 
-    const filesToRead = Array.from(candidateFiles).slice(0, 3)
-    const fileContexts: string[] = []
-    for (const rel of filesToRead) {
+    // Track candidate files + focused line numbers per file
+    const focusMap = new Map<string, number[]>()
+    const addCandidate = (rawPath: string, line?: number) => {
       try {
-        const readRes = await inspectAppCode({ mode: 'read', path: rel, startLine: 1, endLine: 220 })
-        fileContexts.push(readRes.output.slice(0, 6500))
+        const { rel } = resolveSafeAppPath(rawPath)
+        const existing = focusMap.get(rel) ?? []
+        if (line && line > 0) existing.push(line)
+        focusMap.set(rel, existing)
       } catch {
-        /* ignore unreadable */
+        /* ignore out-of-scope paths */
       }
     }
+
+    if (input.targetFileHint) addCandidate(input.targetFileHint)
+
+    // Parse file:line references from errorMessage & stack
+    const combinedText = `${input.errorMessage}\n${input.stack ?? ''}`
+    const pathLineRe = /\b((?:src|brain)\/[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx))(?::(\d+))?/g
+    let pm: RegExpExecArray | null
+    while ((pm = pathLineRe.exec(combinedText)) !== null) {
+      addCandidate(pm[1], pm[2] ? Number(pm[2]) : undefined)
+    }
+
+    // Include compiler error locations directly
+    for (const d of baselineDiags.slice(0, 8)) {
+      addCandidate(d.file, d.line)
+    }
+
+    // Multi-keyword intelligent search across src/ (filtering English stop words)
+    const terms = extractSearchTerms(input.errorMessage, input.viewName)
+    if (focusMap.size < 3 && terms.length > 0) {
+      for (const term of terms.slice(0, 3)) {
+        const res = await inspectAppCode({ mode: 'search', query: term })
+        for (const line of res.output.split('\n').slice(0, 10)) {
+          const m = line.match(/^((?:src|brain)\/[^:]+):(\d+):/)
+          if (m) addCandidate(m[1], Number(m[2]))
+        }
+        if (focusMap.size >= 4) break
+      }
+    }
+
+    // LLM-assisted File Locator pass if plain-English request yielded too few specific files
+    if (focusMap.size === 0 || (!baselineDiags.length && !input.targetFileHint && focusMap.size < 2)) {
+      try {
+        const [srcList, brainList] = await Promise.all([
+          inspectAppCode({ mode: 'list', path: 'src' }),
+          inspectAppCode({ mode: 'list', path: 'brain' }),
+        ])
+        const allFiles = `${srcList.output}\n${brainList.output}`.slice(0, 7000)
+        const locateRaw = await chatText(
+          [
+            {
+              role: 'system',
+              content:
+                'You are a senior Next.js/TypeScript codebase navigator. Given a bug report or feature request and the repository file list, pick the 1 to 4 most relevant file paths to inspect. Reply ONLY with JSON: {"files":["src/..."],"keywords":["optionalSymbolToGrep"]}.',
+            },
+            {
+              role: 'user',
+              content: `REQUEST:\n${input.errorMessage}\n\nVIEW: ${input.viewName ?? '(none)'}\n\nFILES:\n${allFiles}`,
+            },
+          ],
+          { maxTokens: 450 }
+        )
+        const located = extractJson<{ files?: string[]; keywords?: string[] }>(locateRaw)
+        for (const f of (located?.files ?? []).slice(0, 4)) {
+          addCandidate(f)
+        }
+        for (const kw of (located?.keywords ?? []).slice(0, 2)) {
+          const res = await inspectAppCode({ mode: 'search', query: kw })
+          for (const line of res.output.split('\n').slice(0, 6)) {
+            const m = line.match(/^((?:src|brain)\/[^:]+):(\d+):/)
+            if (m) addCandidate(m[1], Number(m[2]))
+          }
+        }
+      } catch {
+        /* non-fatal locator fallback */
+      }
+    }
+
+    const buildFileContexts = async (): Promise<{ files: string[]; blocks: string[] }> => {
+      const files = Array.from(focusMap.keys()).slice(0, 5)
+      const blocks: string[] = []
+      for (const rel of files) {
+        const ctx = await readFocusedFileContext(rel, focusMap.get(rel) ?? [], 6800)
+        if (ctx) blocks.push(ctx)
+      }
+      return { files, blocks }
+    }
+
+    let currentContexts = await buildFileContexts()
 
     reasoningChain.addNode(chain.id, {
       kind: 'observation',
-      title: `Inspected ${filesToRead.length} candidate file(s) & ran baseline typecheck`,
-      detail: filesToRead.join(', ') || baselineCheck.output.slice(0, 180),
+      title: `Inspected ${currentContexts.files.length} focused file(s) & baseline typecheck (${baselineCheck.ok ? 'PASS' : `${baselineDiags.length} TS error(s)`})`,
+      detail: currentContexts.files.join(', ') || baselineCheck.output.slice(0, 200),
       actor: 'Eva',
       tool: 'self_heal_code',
     })
 
-    // 2. Ask server-side LLM to synthesize a minimal, surgical search/replace patch
-    const rawPlan = await chatText(
-      [
-        {
-          role: 'system',
-          content: `You are Eva's Autonomous Self-Healing Engineer inside Nexus Agent OS (Next.js App Router + strict TypeScript).
-Analyze the error and the exact source files provided. Produce a minimal, surgical search/replace patch to fix the root cause without breaking existing functionality.
-Reply ONLY with minified JSON:
-{"diagnosis":"short root cause","edits":[{"path":"src/...","mode":"replace","target":"EXACT existing substring","replacement":"new substring","summary":"what changed"}]}
-If no code edit is required (for example, the codebase already typechecks cleanly and no concrete defective lines are shown), return {"diagnosis":"...","edits":[]}.`,
-        },
-        {
-          role: 'user',
-          content: `ERROR / REQUEST:\n${input.errorMessage}\n\nSTACK:\n${(input.stack ?? '(none)').slice(0, 1600)}\n\nBASELINE TYPECHECK (${baselineCheck.ok ? 'PASS' : 'FAIL'}):\n${baselineCheck.output.slice(0, 1200)}\n\nSOURCE FILES:\n${fileContexts.join('\n\n---\n\n') || '(no matching files found)'}`,
-        },
-      ],
-      { temperature: 0.15, maxTokens: 1600 }
-    )
+    // 3. Multi-Iteration Autonomous Repair + Self-Correction Loop (up to 3 attempts)
+    const MAX_ATTEMPTS = 3
+    let lastErrorFeedback = ''
+    let lastDiagnosis = ''
+    let attemptsUsed = 0
 
-    const parsed = extractJson<{
-      diagnosis?: string
-      edits?: SelfHealEditInput[]
-    }>(rawPlan)
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      attemptsUsed = attempt
+      selfHealManager.updateSession(session.id, { attemptsUsed })
 
-    const diagnosis = parsed?.diagnosis || 'Diagnostic scan completed.'
-    const edits = Array.isArray(parsed?.edits) ? parsed.edits : []
+      const rawPlan = await chatText(
+        [
+          {
+            role: 'system',
+            content: `You are Eva's Smart Autonomous Self-Healing Engineer inside Nexus Agent OS (Next.js App Router + strict TypeScript + Portable GBrain).
+Your mission: diagnose the issue deeply using the Portable Brain context, active capabilities, TypeScript diagnostics, and exact line-numbered source files, then produce a minimal, surgical, type-safe repair.
 
-    if (edits.length === 0) {
-      selfHealManager.updateSession(session.id, {
-        verification: baselineCheck,
-        summary: diagnosis,
-      })
-      selfHealManager.appendStep(
-        session.id,
-        {
-          phase: 'complete',
-          label: 'Diagnostic complete — no unsafe blind edit applied',
-          detail: diagnosis,
-        },
-        baselineCheck.ok ? 'verified' : 'failed'
+CRITICAL RULES:
+1. For "replace" edits, copy "target" VERBATIM from the source file lines shown (WITHOUT line-number prefixes like "42: "). Include 2–4 unique lines of surrounding context so matching is unambiguous.
+2. Never introduce TypeScript errors, missing imports, or broken schema fields.
+3. If the request is a capability/intelligence upgrade (not a broken code line) OR can be enhanced with a reusable Skill, you may include "capabilityUpgrade":{"kind":"skill","name":"...","slug":"...","description":"...","prompt":"detailed reusable agent instructions..."}.
+4. Always provide a concise "brainLesson" summarizing the root cause & fix so Eva remembers it permanently in her Portable Brain.
+5. Reply ONLY with valid JSON:
+{"diagnosis":"clear root cause & solution","edits":[{"path":"src/...","mode":"replace","target":"EXACT code block without line numbers","replacement":"fixed code block","summary":"what changed"}],"capabilityUpgrade":null,"brainLesson":"concise reusable engineering lesson"}`,
+          },
+          {
+            role: 'user',
+            content: [
+              `ATTEMPT: ${attempt} of ${MAX_ATTEMPTS}`,
+              `ERROR / REQUEST:\n${input.errorMessage}`,
+              input.stack ? `STACK:\n${input.stack.slice(0, 1600)}` : '',
+              brainBundle.coreText ? `PORTABLE BRAIN CORE TRUTHS:\n${brainBundle.coreText}` : '',
+              brainBundle.recalledBlock ? `RECALLED BRAIN LESSONS:\n${brainBundle.recalledBlock}` : '',
+              brainBundle.capabilitiesBlock ? `ACTIVE CAPABILITIES:\n${brainBundle.capabilitiesBlock}` : '',
+              `BASELINE TYPECHECK (${baselineCheck.ok ? 'PASS' : 'FAIL'}):\n${baselineCheck.output.slice(0, 1800)}`,
+              lastErrorFeedback
+                ? `PREVIOUS ATTEMPT FAILED — FIX THIS EXACT ERROR ON ATTEMPT ${attempt}:\n${lastErrorFeedback.slice(0, 2000)}`
+                : '',
+              `SOURCE FILES:\n${currentContexts.blocks.join('\n\n---\n\n') || '(no matching files found)'}`,
+            ]
+              .filter(Boolean)
+              .join('\n\n'),
+          },
+        ],
+        { maxTokens: 4096, thinkingLevel: 'medium' }
       )
-      reasoningChain.completeChain(chain.id, {
-        ok: baselineCheck.ok,
-        verificationDetail: diagnosis,
+
+      const parsed = extractJson<{
+        diagnosis?: string
+        edits?: SelfHealEditInput[]
+        capabilityUpgrade?: {
+          kind?: string
+          name?: string
+          slug?: string
+          description?: string
+          prompt?: string
+        } | null
+        brainLesson?: string
+      }>(rawPlan)
+
+      const diagnosis = parsed?.diagnosis?.trim() || 'Diagnostic analysis completed.'
+      lastDiagnosis = diagnosis
+      const edits = Array.isArray(parsed?.edits)
+        ? parsed.edits.filter((e) => e && typeof e.path === 'string' && (e.mode === 'replace' || e.mode === 'write'))
+        : []
+
+      // Handle no-code-edit outcomes cleanly (capability upgrade or verified diagnostic)
+      if (edits.length === 0) {
+        if (!baselineCheck.ok && attempt < MAX_ATTEMPTS) {
+          lastErrorFeedback = `Baseline TypeScript check has ${baselineDiags.length} error(s) that must be fixed:\n${baselineCheck.output.slice(0, 1500)}`
+          selfHealManager.appendStep(
+            session.id,
+            {
+              phase: 'diagnose',
+              label: `Attempt ${attempt} produced no patch — retrying with compiler diagnostics`,
+              detail: diagnosis,
+            },
+            'diagnosing'
+          )
+          continue
+        }
+
+        const capUpgrade = parsed?.capabilityUpgrade
+          ? await applySafeSkillUpgrade(parsed.capabilityUpgrade)
+          : undefined
+        const learned = await consolidateSelfHealLesson(
+          parsed?.brainLesson || `${diagnosis} (codebase typecheck ${baselineCheck.ok ? 'passing' : 'needs follow-up'})`
+        )
+
+        const updatedBrain: SelfHealBrainContext = {
+          ...brainBundle.meta,
+          learnedLesson: learned,
+        }
+
+        const healthyOrUpgraded = baselineCheck.ok || Boolean(capUpgrade?.applied)
+        selfHealManager.updateSession(session.id, {
+          verification: baselineCheck,
+          brainContext: updatedBrain,
+          capabilityUpgrade: capUpgrade,
+          attemptsUsed,
+          summary: capUpgrade?.applied
+            ? `${diagnosis} — Added reusable "${capUpgrade.name}" skill & saved lesson to Portable Brain.`
+            : diagnosis,
+        })
+        selfHealManager.appendStep(
+          session.id,
+          {
+            phase: 'complete',
+            label: capUpgrade?.applied
+              ? `Capability upgraded: ${capUpgrade.name}`
+              : baselineCheck.ok
+                ? 'Diagnostics passed — codebase verified healthy'
+                : 'Diagnostic complete — manual follow-up needed',
+            detail: diagnosis,
+          },
+          healthyOrUpgraded ? 'verified' : 'failed'
+        )
+        reasoningChain.completeChain(chain.id, {
+          ok: healthyOrUpgraded,
+          verificationDetail: diagnosis,
+          actor: 'Eva',
+        })
+        return {
+          ok: healthyOrUpgraded,
+          session: selfHealManager.getSession(session.id)!,
+          message: capUpgrade?.applied
+            ? `${diagnosis} (Enabled new "${capUpgrade.name}" skill and saved lesson to Portable Brain.)`
+            : diagnosis,
+        }
+      }
+
+      reasoningChain.addNode(chain.id, {
+        kind: 'decision',
+        title: `Attempt ${attempt}/${MAX_ATTEMPTS}: Patching ${edits.map((e) => e.path).join(', ')}`,
+        detail: diagnosis,
         actor: 'Eva',
+        tool: 'self_heal_code',
       })
-      return {
-        ok: baselineCheck.ok,
-        session: selfHealManager.getSession(session.id)!,
-        message: diagnosis,
+
+      const patchRes = await applySelfHealPatch({
+        sessionId: session.id,
+        trigger: input.trigger,
+        title,
+        errorContext: input.errorMessage,
+        edits,
+        verify: true,
+        autoRollbackOnFail: true,
+      })
+
+      if (patchRes.ok) {
+        const capUpgrade = parsed?.capabilityUpgrade
+          ? await applySafeSkillUpgrade(parsed.capabilityUpgrade)
+          : undefined
+        const learned = await consolidateSelfHealLesson(
+          parsed?.brainLesson || `Fixed "${input.errorMessage.slice(0, 90)}" in ${edits.map((e) => e.path).join(', ')}: ${diagnosis}`
+        )
+        const updatedBrain: SelfHealBrainContext = {
+          ...brainBundle.meta,
+          learnedLesson: learned,
+        }
+        selfHealManager.updateSession(session.id, {
+          brainContext: updatedBrain,
+          capabilityUpgrade: capUpgrade,
+          attemptsUsed,
+          summary: `${diagnosis} — Verified across ${patchRes.session.patches.length} file(s) in ${attemptsUsed} attempt${attemptsUsed === 1 ? '' : 's'}.${learned ? ' Lesson saved to Portable Brain.' : ''}`,
+        })
+        if (learned) {
+          selfHealManager.appendStep(session.id, {
+            phase: 'brain',
+            label: 'Consolidated repair lesson into Portable GBrain',
+            detail: learned,
+          })
+        }
+        reasoningChain.completeChain(chain.id, {
+          ok: true,
+          verificationDetail: patchRes.session.summary || 'Self-heal patch verified via TypeScript check',
+          actor: 'Eva',
+        })
+        return {
+          ok: true,
+          session: selfHealManager.getSession(session.id)!,
+          message: `${diagnosis} — Patch applied, verified, and saved to Portable Brain.`,
+        }
+      }
+
+      // Attempt failed -> feed exact compiler or target-match error into next self-correction iteration
+      lastErrorFeedback = patchRes.error || 'Patch verification failed.'
+      const nextDiags = parseTscDiagnostics(lastErrorFeedback)
+      for (const d of nextDiags.slice(0, 5)) {
+        addCandidate(d.file, d.line)
+      }
+      for (const e of edits) {
+        addCandidate(e.path)
+      }
+
+      if (attempt < MAX_ATTEMPTS) {
+        reasoningChain.addNode(chain.id, {
+          kind: 'self_correction',
+          title: `Attempt ${attempt} rolled back — self-correcting on attempt ${attempt + 1}/${MAX_ATTEMPTS}`,
+          detail: lastErrorFeedback.slice(0, 260),
+          actor: 'Eva',
+          tool: 'self_heal_code',
+          correction: {
+            whatFailed: lastErrorFeedback.slice(0, 180),
+            pivotStrategy: `Refreshing exact line windows and revising patch on attempt ${attempt + 1}.`,
+          },
+        })
+        selfHealManager.appendStep(
+          session.id,
+          {
+            phase: 'diagnose',
+            label: `Self-correcting (attempt ${attempt + 1}/${MAX_ATTEMPTS})`,
+            detail: lastErrorFeedback.slice(0, 240),
+          },
+          'diagnosing'
+        )
+        currentContexts = await buildFileContexts()
       }
     }
 
-    reasoningChain.addNode(chain.id, {
-      kind: 'decision',
-      title: `Applying surgical patch to ${edits.map((e) => e.path).join(', ')}`,
-      detail: diagnosis,
-      actor: 'Eva',
-      tool: 'self_heal_code',
-    })
-
-    const patchRes = await applySelfHealPatch({
-      sessionId: session.id,
-      trigger: input.trigger,
-      title,
-      errorContext: input.errorMessage,
-      edits,
-      verify: true,
-      autoRollbackOnFail: true,
-    })
-
-    if (patchRes.ok) {
-      reasoningChain.completeChain(chain.id, {
-        ok: true,
-        verificationDetail: patchRes.session.summary || 'Self-heal patch verified via TypeScript check',
-        actor: 'Eva',
-      })
-      return {
-        ok: true,
-        session: patchRes.session,
-        message: `${diagnosis} — Patch applied and verified.`,
-      }
-    }
-
-    reasoningChain.addNode(chain.id, {
-      kind: 'self_correction',
-      title: 'Verification failed — snapshot auto-rolled back cleanly',
-      detail: patchRes.error?.slice(0, 260) || 'Post-patch TypeScript verification failed.',
-      actor: 'Eva',
-      tool: 'self_heal_code',
-      correction: {
-        whatFailed: 'Post-patch TypeScript verification failed.',
-        pivotStrategy: 'Automatically restored pre-patch snapshot so app remains healthy.',
-      },
+    // All attempts exhausted -> leave clean rolled-back state and record failure lesson in Portable Brain
+    const learnedFailure = await consolidateSelfHealLesson(
+      `Self-heal attempt for "${input.errorMessage.slice(0, 80)}" rolled back after ${MAX_ATTEMPTS} attempts: ${lastErrorFeedback.slice(0, 200)}`
+    )
+    selfHealManager.updateSession(session.id, {
+      attemptsUsed,
+      brainContext: { ...brainBundle.meta, learnedLesson: learnedFailure },
+      summary: `${lastDiagnosis || 'Self-heal could not verify automatically'} — Rolled back cleanly after ${attemptsUsed} attempts.`,
     })
     reasoningChain.completeChain(chain.id, {
       ok: false,
-      verificationDetail: patchRes.error?.slice(0, 240) || 'Post-patch TypeScript verification failed.',
+      verificationDetail: lastErrorFeedback.slice(0, 240) || 'Post-patch verification failed after retries.',
       actor: 'Eva',
     })
     return {
       ok: false,
-      session: patchRes.session,
-      message: patchRes.error || 'Patch failed verification and was automatically rolled back.',
+      session: selfHealManager.getSession(session.id)!,
+      message: lastErrorFeedback || 'Patch failed verification after automatic self-correction attempts and was rolled back cleanly.',
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

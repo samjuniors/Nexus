@@ -13,6 +13,7 @@ import {
   RefreshCw,
   RotateCcw,
   ShieldCheck,
+  Smartphone,
   Target,
   Trash2,
   Workflow,
@@ -62,6 +63,7 @@ const KIND_META: Record<
 
 const SOURCE_META: Record<ReasoningChain['source'], { label: string; icon: typeof Globe }> = {
   browser_autopilot: { label: 'Browser Autopilot', icon: Globe },
+  mobile_autopilot: { label: 'Mobile Autopilot', icon: Smartphone },
   mission: { label: 'Mission', icon: Workflow },
   voice_live: { label: 'Voice Action', icon: Mic },
   self_heal: { label: 'Self-Heal', icon: ShieldCheck },

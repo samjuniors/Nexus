@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as {
-      action?: 'verify' | 'inspect' | 'patch' | 'auto_heal' | 'rollback'
+      action?: 'verify' | 'inspect' | 'patch' | 'auto_heal' | 'scan_and_heal' | 'rollback'
       mode?: 'list' | 'search' | 'read'
       path?: string
       query?: string
@@ -97,6 +97,53 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(res, { status: res.ok ? 200 : 422 })
     }
 
+    if (body.action === 'scan_and_heal') {
+      const verification = await verifyAppBuild({ testFile: body.testFile })
+      if (verification.ok) {
+        return NextResponse.json({
+          ok: true,
+          verification,
+          message: `Build scan passed cleanly with 0 TypeScript errors (${verification.durationMs}ms).`,
+        })
+      }
+      const perm = await requireCapabilityPermission({
+        capability: 'self_code_edit',
+        actionSummary: 'Scan & auto-fix TypeScript compiler errors',
+        details: verification.output.slice(0, 220),
+      })
+      if (!perm.allowed) {
+        return NextResponse.json(
+          {
+            ok: false,
+            verification,
+            error: perm.reason || 'Permission denied for self_code_edit',
+          },
+          { status: 403 }
+        )
+      }
+      controlBus.broadcastUiCommand({
+        command: 'open_split',
+        mode: 'self_heal',
+        title: 'Self-Heal Studio',
+      })
+      controlBus.broadcastEvaMood('working', 'Auto-fixing TypeScript errors…', 20_000)
+      const res = await runAutonomousSelfHeal({
+        trigger: body.trigger ?? 'user_request',
+        errorMessage: 'Fix all TypeScript compiler errors reported by tsc --noEmit',
+        stack: verification.output,
+      })
+      controlBus.broadcastEvaMood(
+        res.ok ? 'happy' : 'curious',
+        res.ok ? 'Build healed and verified' : 'Self-heal needs follow-up',
+        2600
+      )
+      return NextResponse.json({
+        ...res,
+        verification: res.session.verification ?? verification,
+        error: res.ok ? undefined : res.message,
+      })
+    }
+
     if (body.action === 'auto_heal') {
       const errMsg = (body.errorMessage ?? '').trim()
       if (!errMsg) {
@@ -121,7 +168,7 @@ export async function POST(req: NextRequest) {
         mode: 'self_heal',
         title: 'Self-Heal Studio',
       })
-      controlBus.broadcastEvaMood('working', 'Diagnosing and repairing code…', 15_000)
+      controlBus.broadcastEvaMood('working', 'Diagnosing and repairing code…', 20_000)
       const res = await runAutonomousSelfHeal({
         trigger: body.trigger ?? 'user_request',
         errorMessage: errMsg,
@@ -134,7 +181,10 @@ export async function POST(req: NextRequest) {
         res.ok ? 'Self-heal verified' : 'Self-heal needs follow-up',
         2600
       )
-      return NextResponse.json(res)
+      return NextResponse.json({
+        ...res,
+        error: res.ok ? undefined : res.message,
+      })
     }
 
     return NextResponse.json({ ok: false, error: 'Invalid self-heal action' }, { status: 400 })

@@ -292,12 +292,12 @@ function buildInteractiveElements(state: InternalMobileState): MobileElementHint
       ...state.threads.map((t, i) => ({
         id: `thread-${t.id}`,
         label: `Chat: ${t.contact}`,
-        kind: 'item',
+        kind: 'item' as const,
         x: 540,
         y: 440 + i * 210,
       })),
-      { id: 'msg-input', label: 'Message composer', kind: 'input', x: 460, y: 2040 },
-      { id: 'msg-send', label: 'Send SMS', kind: 'button', x: 920, y: 2040 },
+      { id: 'msg-input', label: 'Message composer', kind: 'input' as const, x: 460, y: 2040 },
+      { id: 'msg-send', label: 'Send SMS', kind: 'button' as const, x: 920, y: 2040 },
     ]
   }
 
@@ -624,7 +624,7 @@ class MobileTakeoverManager {
       for (let i = 0; i < plan.length; i++) {
         const step = plan[i]
         reasoningChain.addNode(chain.id, {
-          kind: 'action',
+          kind: 'decision',
           title: `Mobile step ${i + 1}: ${step.action}`,
           detail: JSON.stringify(step),
           actor: 'Eva',

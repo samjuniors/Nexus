@@ -1,4 +1,4 @@
-export type ReasoningSource = 'browser_autopilot' | 'mission' | 'voice_live' | 'self_heal'
+export type ReasoningSource = 'browser_autopilot' | 'mobile_autopilot' | 'mission' | 'voice_live' | 'self_heal'
 
 export type ReasoningNodeKind =
   | 'goal'

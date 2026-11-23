@@ -5,8 +5,10 @@ import {
   Activity,
   BadgeCheck,
   Bot,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Circle,
   Cpu,
   FileCheck2,
   FolderKanban,
@@ -15,6 +17,7 @@ import {
   Layers,
   Link2,
   Loader2,
+  Lock,
   Maximize2,
   Minus,
   MousePointerClick,
@@ -30,12 +33,14 @@ import {
   ShieldAlert,
   Sparkles,
   Tag,
+  Target,
   Trash2,
   User,
   Users,
   Waypoints,
   Wrench,
   X,
+  XCircle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -53,6 +58,15 @@ import {
   type GBrainLayoutMode,
   type LaidGBrainNode,
 } from '@/lib/agent/gbrain-layout'
+import {
+  buildMissionOverlayGraph,
+  computeMissionOverlayLayout,
+  MISSION_STATUS_META,
+  selectActiveMissionRun,
+  type LaidMissionNode,
+  type MissionTaskStatus,
+} from '@/lib/agent/gbrain-mission-graph'
+import { useApp } from '@/lib/agent/store'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
 import type { TruthAuditFinding, TruthAuditReport } from '@/lib/agent/brain-truth-audit'
 import type { BrainTraceOperation } from '@/lib/agent/brain-trace'
@@ -60,13 +74,110 @@ import {
   GBrainContextPacksDrawer,
   GBrainTruthAuditDrawer,
 } from '@/components/agent/gbrain-intelligence-drawers'
+import { GBrainMissionInspector } from '@/components/agent/gbrain-mission-inspector'
 import { cn } from '@/lib/utils'
 
-const LAYOUT_OPTIONS: { id: GBrainLayoutMode; label: string; icon: typeof Orbit }[] = [
+type GraphViewMode = GBrainLayoutMode | 'mission'
+
+const LAYOUT_OPTIONS: { id: GraphViewMode; label: string; icon: typeof Orbit }[] = [
   { id: 'clustered', label: 'Clustered', icon: Orbit },
   { id: 'hierarchy', label: 'Hierarchy', icon: GitFork },
   { id: 'force', label: 'Force', icon: Waypoints },
+  { id: 'mission', label: 'Mission', icon: Target },
 ]
+
+const MISSION_STATUS_KEYS: MissionTaskStatus[] = ['done', 'running', 'failed', 'blocked', 'pending']
+
+function MissionRailStatusIcon({ status }: { status: MissionTaskStatus }) {
+  switch (status) {
+    case 'done':
+      return <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500" />
+    case 'running':
+      return <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin text-sky-500" />
+    case 'failed':
+      return <XCircle className="h-3 w-3 shrink-0 text-red-500" />
+    case 'blocked':
+      return <Lock className="h-3 w-3 shrink-0 text-amber-500" />
+    case 'pending':
+      return <Circle className="h-3 w-3 shrink-0 text-muted-foreground" />
+  }
+}
+
+function MissionNodeStatusSvg({
+  status,
+  x,
+  y,
+}: {
+  status: MissionTaskStatus
+  x: number
+  y: number
+}) {
+  const accent = MISSION_STATUS_META[status].accent
+  switch (status) {
+    case 'done':
+      return (
+        <g transform={`translate(${x}, ${y})`} pointerEvents="none">
+          <circle r={6} fill={accent} />
+          <path
+            d="M -2.7 0.2 L -0.7 2.2 L 3 -2"
+            fill="none"
+            stroke="#ffffff"
+            strokeWidth={1.6}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </g>
+      )
+    case 'running':
+      return (
+        <g transform={`translate(${x}, ${y})`} pointerEvents="none">
+          <circle r={6} fill={accent} fillOpacity={0.14} stroke={accent} strokeOpacity={0.35} strokeWidth={1.3} />
+          <path
+            d="M 0 -5.5 A 5.5 5.5 0 0 1 5.5 0"
+            fill="none"
+            stroke={accent}
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            className="motion-safe:animate-spin"
+            style={{ transformOrigin: '0px 0px' }}
+          />
+          <circle r={2} fill={accent} />
+        </g>
+      )
+    case 'failed':
+      return (
+        <g transform={`translate(${x}, ${y})`} pointerEvents="none">
+          <circle r={6} fill={accent} />
+          <path
+            d="M -2.4 -2.4 L 2.4 2.4 M 2.4 -2.4 L -2.4 2.4"
+            fill="none"
+            stroke="#ffffff"
+            strokeWidth={1.6}
+            strokeLinecap="round"
+          />
+        </g>
+      )
+    case 'blocked':
+      return (
+        <g transform={`translate(${x}, ${y})`} pointerEvents="none">
+          <circle r={6} fill={accent} fillOpacity={0.16} stroke={accent} strokeWidth={1.3} />
+          <path
+            d="M -2.6 0 L 2.6 0"
+            fill="none"
+            stroke={accent}
+            strokeWidth={1.8}
+            strokeLinecap="round"
+          />
+        </g>
+      )
+    case 'pending':
+      return (
+        <g transform={`translate(${x}, ${y})`} pointerEvents="none">
+          <circle r={5.2} fill="none" stroke={accent} strokeWidth={1.4} strokeDasharray="2.5 2" />
+        </g>
+      )
+  }
+}
 
 const CATEGORY_ICONS: Record<GBrainCategoryId, typeof Bot> = {
   agents: Bot,
@@ -102,7 +213,8 @@ function truncateText(text: string, max: number): string {
 export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const [graph, setGraph] = useState<GBrainGraphDTO | null>(null)
   const [loading, setLoading] = useState(false)
-  const [layoutMode, setLayoutMode] = useState<GBrainLayoutMode>('clustered')
+  const [layoutMode, setLayoutMode] = useState<GraphViewMode>('clustered')
+  const [showMissionLayer, setShowMissionLayer] = useState(true)
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<GBrainCategoryId | 'all'>('all')
   const [originFilter, setOriginFilter] = useState<OriginFilter>('all')
@@ -140,8 +252,14 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
   const [auditLoading, setAuditLoading] = useState(false)
   const [busyFindingId, setBusyFindingId] = useState<string | null>(null)
 
+  const conversations = useApp((s) => s.conversations)
+  const activeConvId = useApp((s) => s.activeConvId)
+  const runningRunId = useApp((s) => s.runningRunId)
+
   const gbrainInitialPanel = useEvaControl((s) => s.gbrainInitialPanel)
   const brainTraces = useEvaControl((s) => s.brainTraces)
+  const reasoningChains = useEvaControl((s) => s.reasoningChains)
+  const selfHealSessions = useEvaControl((s) => s.selfHealSessions)
   const activePackEntityIds = useEvaControl((s) => s.activePackEntityIds)
   const activePackNames = useEvaControl((s) => s.activePackNames)
   const refreshContextPacks = useEvaControl((s) => s.refreshContextPacks)
@@ -150,6 +268,7 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
 
   const canvasWrapRef = useRef<HTMLDivElement>(null)
   const detailRef = useRef<HTMLDivElement>(null)
+  const missionNodeIdsRef = useRef<Set<string>>(new Set())
   const panRef = useRef<{ startX: number; startY: number; origTx: number; origTy: number } | null>(null)
   const dragNodeRef = useRef<{
     nodeId: string
@@ -251,6 +370,12 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
   const inspect = useCallback(async (nodeId: string) => {
     setSelected(nodeId)
     setRightPanel('inspector')
+    if (missionNodeIdsRef.current.has(nodeId)) {
+      setDetail(null)
+      setDetailLoading(false)
+      detailRef.current?.scrollTo({ top: 0 })
+      return
+    }
     setDetail(null)
     setDetailLoading(true)
     setRenaming('')
@@ -346,32 +471,216 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
     return { visibleNodes: nodes, visibleEdges: edges }
   }, [graph, categorizedNodes, search, categoryFilter, originFilter, edgeFilter])
 
-  // Deterministic card-aware layout calculation
+  // Active Mission Path & Agentic Task DAG (live from active run, self-heal session, or reasoning chain)
+  const activeMissionSelection = useMemo(
+    () => selectActiveMissionRun(conversations, activeConvId, runningRunId),
+    [conversations, activeConvId, runningRunId]
+  )
+
+  const missionGraph = useMemo(
+    () =>
+      buildMissionOverlayGraph({
+        run: activeMissionSelection.run,
+        live: activeMissionSelection.live,
+        reasoningChain: reasoningChains[0] ?? null,
+        selfHealSession: selfHealSessions[0] ?? null,
+        gbrainNodes: categorizedNodes,
+      }),
+    [activeMissionSelection, reasoningChains, selfHealSessions, categorizedNodes]
+  )
+
+  const missionNodeById = useMemo(
+    () => new Map(missionGraph.nodes.map((n) => [n.id, n])),
+    [missionGraph.nodes]
+  )
+
+  useEffect(() => {
+    missionNodeIdsRef.current = new Set(missionGraph.nodes.map((n) => n.id))
+  }, [missionGraph.nodes])
+
+  const showMissionOnCanvas =
+    missionGraph.hasMission && (layoutMode === 'mission' || showMissionLayer)
+
+  // Deterministic card-aware GBrain entity layout
+  const baseLayoutMode: GBrainLayoutMode = layoutMode === 'mission' ? 'clustered' : layoutMode
   const layoutResult = useMemo(
     () =>
-      computeGBrainLayout(visibleNodes, visibleEdges, layoutMode, {
+      computeGBrainLayout(visibleNodes, visibleEdges, baseLayoutMode, {
         width: 1280,
         height: 820,
         cardSpacing: true,
       }),
-    [visibleNodes, visibleEdges, layoutMode]
+    [visibleNodes, visibleEdges, baseLayoutMode]
   )
 
-  const laidNodes: LaidGBrainNode<GBrainNodeDTO & { category: GBrainCategoryId }>[] = useMemo(() => {
-    return layoutResult.nodes.map((item) => {
+  // Deterministic topological DAG layout for the Active Mission Path & Agentic Tasks
+  const missionLayoutResult = useMemo(() => {
+    if (!showMissionOnCanvas) return null
+    return computeMissionOverlayLayout(
+      missionGraph,
+      layoutMode === 'mission' ? null : layoutResult.bounds,
+      layoutMode === 'mission'
+    )
+  }, [showMissionOnCanvas, missionGraph, layoutMode, layoutResult.bounds])
+
+  // In focused 'mission' mode, render only directly bridged GBrain entities cleanly beneath the Mission DAG
+  const { canvasLaidNodes, canvasVisibleEdges, bridgedZone } = useMemo(() => {
+    if (layoutMode === 'mission') {
+      if (!missionLayoutResult?.zone || missionGraph.linkedEntityIds.length === 0) {
+        return {
+          canvasLaidNodes: [] as LaidGBrainNode<GBrainNodeDTO & { category: GBrainCategoryId }>[],
+          canvasVisibleEdges: [] as GBrainGraphDTO['edges'],
+          bridgedZone: null as { x: number; y: number; width: number; height: number; count: number } | null,
+        }
+      }
+      const linkedSet = new Set(missionGraph.linkedEntityIds)
+      const bridgedEntities = categorizedNodes.filter((n) => linkedSet.has(n.id))
+      if (bridgedEntities.length === 0) {
+        return {
+          canvasLaidNodes: [] as LaidGBrainNode<GBrainNodeDTO & { category: GBrainCategoryId }>[],
+          canvasVisibleEdges: [] as GBrainGraphDTO['edges'],
+          bridgedZone: null as { x: number; y: number; width: number; height: number; count: number } | null,
+        }
+      }
+      const z = missionLayoutResult.zone
+      const centerX = z.x + z.width / 2
+      const maxPerRow = 6
+      const gapX = CARD_W + 26
+      const gapY = CARD_H + 26
+      const startY = z.y + z.height + 92
+
+      const placed: LaidGBrainNode<GBrainNodeDTO & { category: GBrainCategoryId }>[] = []
+      bridgedEntities.forEach((ent, idx) => {
+        const row = Math.floor(idx / maxPerRow)
+        const col = idx % maxPerRow
+        const rowCount = Math.min(maxPerRow, bridgedEntities.length - row * maxPerRow)
+        const rowStartX = centerX - ((rowCount - 1) * gapX) / 2
+        const baseX = rowStartX + col * gapX
+        const baseY = startY + row * gapY
+        const ov = nodeOverrides[ent.id]
+        placed.push({
+          node: ent,
+          x: ov ? ov.x : baseX,
+          y: ov ? ov.y : baseY,
+          r: 26,
+          tier: 1,
+          clusterKey: ent.category,
+        })
+      })
+
+      let minX = Infinity
+      let minY = Infinity
+      let maxX = -Infinity
+      let maxY = -Infinity
+      for (const p of placed) {
+        minX = Math.min(minX, p.x - HALF_W)
+        minY = Math.min(minY, p.y - HALF_H)
+        maxX = Math.max(maxX, p.x + HALF_W)
+        maxY = Math.max(maxY, p.y + HALF_H)
+      }
+      const bZone = {
+        x: minX - 24,
+        y: minY - 40,
+        width: maxX - minX + 48,
+        height: maxY - minY + 62,
+        count: placed.length,
+      }
+      const bEdges = (graph?.edges ?? []).filter(
+        (e) => linkedSet.has(e.sourceId) && linkedSet.has(e.targetId)
+      )
+      return {
+        canvasLaidNodes: placed,
+        canvasVisibleEdges: bEdges,
+        bridgedZone: bZone,
+      }
+    }
+
+    const laid = layoutResult.nodes.map((item) => {
       const ov = nodeOverrides[item.node.id]
       return ov ? { ...item, x: ov.x, y: ov.y } : item
     })
-  }, [layoutResult.nodes, nodeOverrides])
+    return {
+      canvasLaidNodes: laid,
+      canvasVisibleEdges: visibleEdges,
+      bridgedZone: null as { x: number; y: number; width: number; height: number; count: number } | null,
+    }
+  }, [
+    layoutMode,
+    missionLayoutResult,
+    missionGraph.linkedEntityIds,
+    categorizedNodes,
+    nodeOverrides,
+    graph?.edges,
+    layoutResult.nodes,
+    visibleEdges,
+  ])
 
-  const byId = useMemo(() => new Map(laidNodes.map((l) => [l.node.id, l])), [laidNodes])
+  const laidMissionNodes: LaidMissionNode[] = useMemo(() => {
+    if (!missionLayoutResult) return []
+    return missionLayoutResult.nodes.map((item) => {
+      const ov = nodeOverrides[item.node.id]
+      return ov ? { ...item, x: ov.x, y: ov.y } : item
+    })
+  }, [missionLayoutResult, nodeOverrides])
+
+  const byId = useMemo(() => new Map(canvasLaidNodes.map((l) => [l.node.id, l])), [canvasLaidNodes])
+  const missionById = useMemo(
+    () => new Map(laidMissionNodes.map((l) => [l.node.id, l])),
+    [laidMissionNodes]
+  )
+  const entityLookup = useMemo(
+    () =>
+      new Map(
+        categorizedNodes.map((n) => [n.id, { id: n.id, name: n.name, category: n.category }])
+      ),
+    [categorizedNodes]
+  )
+
+  const combinedBounds = useMemo(() => {
+    if (layoutMode === 'mission') {
+      if (!missionLayoutResult) return layoutResult.bounds
+      let minX = missionLayoutResult.bounds.minX
+      let minY = missionLayoutResult.bounds.minY
+      let maxX = missionLayoutResult.bounds.maxX
+      let maxY = missionLayoutResult.bounds.maxY
+      if (bridgedZone) {
+        minX = Math.min(minX, bridgedZone.x - 24)
+        minY = Math.min(minY, bridgedZone.y - 24)
+        maxX = Math.max(maxX, bridgedZone.x + bridgedZone.width + 24)
+        maxY = Math.max(maxY, bridgedZone.y + bridgedZone.height + 24)
+      }
+      return {
+        minX,
+        minY,
+        maxX,
+        maxY,
+        width: Math.max(1, maxX - minX),
+        height: Math.max(1, maxY - minY),
+      }
+    }
+
+    if (!showMissionOnCanvas || !missionLayoutResult?.zone) return layoutResult.bounds
+    if (canvasLaidNodes.length === 0) return missionLayoutResult.bounds
+    const minX = Math.min(layoutResult.bounds.minX, missionLayoutResult.bounds.minX)
+    const minY = Math.min(layoutResult.bounds.minY, missionLayoutResult.bounds.minY)
+    const maxX = Math.max(layoutResult.bounds.maxX, missionLayoutResult.bounds.maxX)
+    const maxY = Math.max(layoutResult.bounds.maxY, missionLayoutResult.bounds.maxY)
+    return {
+      minX,
+      minY,
+      maxX,
+      maxY,
+      width: Math.max(1, maxX - minX),
+      height: Math.max(1, maxY - minY),
+    }
+  }, [layoutMode, missionLayoutResult, layoutResult.bounds, bridgedZone, showMissionOnCanvas, canvasLaidNodes.length])
 
   const fitToView = useCallback(() => {
     const el = canvasWrapRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
     if (rect.width < 40 || rect.height < 40) return
-    const b = layoutResult.bounds
+    const b = combinedBounds
     const pad = 44
     const sx = (rect.width - pad * 2) / Math.max(1, b.width)
     const sy = (rect.height - pad * 2) / Math.max(1, b.height)
@@ -383,18 +692,27 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
       tx: rect.width / 2 - cx * scale,
       ty: rect.height / 2 - cy * scale,
     })
-  }, [layoutResult.bounds])
+  }, [combinedBounds])
 
   useEffect(() => {
     if (!open) return
     setNodeOverrides({})
     const raf = requestAnimationFrame(() => fitToView())
     return () => cancelAnimationFrame(raf)
-  }, [open, layoutMode, visibleNodes.length, showDirectory, fitToView])
+  }, [
+    open,
+    layoutMode,
+    visibleNodes.length,
+    showDirectory,
+    showMissionOnCanvas,
+    missionGraph.runId,
+    missionGraph.nodes.length,
+    fitToView,
+  ])
 
   const focusNode = useCallback(
     (nodeId: string) => {
-      const target = byId.get(nodeId)
+      const target = byId.get(nodeId) ?? missionById.get(nodeId)
       const el = canvasWrapRef.current
       if (target && el) {
         const rect = el.getBoundingClientRect()
@@ -407,7 +725,7 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
       }
       void inspect(nodeId)
     },
-    [byId, inspect, view.scale]
+    [byId, missionById, inspect, view.scale]
   )
 
   useEffect(() => {
@@ -455,12 +773,18 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
     const s = new Set<string>()
     if (!activeFocusId) return s
     s.add(activeFocusId)
-    for (const e of visibleEdges) {
+    for (const e of canvasVisibleEdges) {
       if (e.sourceId === activeFocusId) s.add(e.targetId)
       if (e.targetId === activeFocusId) s.add(e.sourceId)
     }
+    if (showMissionOnCanvas) {
+      for (const me of missionGraph.edges) {
+        if (me.sourceId === activeFocusId) s.add(me.targetId)
+        if (me.targetId === activeFocusId) s.add(me.sourceId)
+      }
+    }
     return s
-  }, [activeFocusId, visibleEdges])
+  }, [activeFocusId, canvasVisibleEdges, showMissionOnCanvas, missionGraph.edges])
 
   const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
     e.preventDefault()
@@ -559,6 +883,7 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
 
   if (!open) return null
 
+  const selectedMissionNode = selected ? (missionNodeById.get(selected) ?? null) : null
   const activeCategory: GBrainCategoryId =
     detail?.entity.category ??
     (detail ? classifyGBrainEntity(detail.entity.name, detail.entity.variants) : 'concepts')
@@ -602,6 +927,14 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
             <span>
               {visibleEdges.length}/{graph.stats.edges} edges
             </span>
+            {missionGraph.hasMission && (
+              <>
+                <span>·</span>
+                <span className={MISSION_STATUS_META[missionGraph.nodes[0]?.status ?? 'pending'].textClass}>
+                  {missionGraph.completed}/{missionGraph.total} tasks
+                </span>
+              </>
+            )}
             <span>·</span>
             <span className="text-emerald-600 dark:text-emerald-400">
               {graph.stats.extracted} extracted
@@ -814,6 +1147,39 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
           ))}
         </div>
 
+        <span className="hidden h-4 w-px bg-border sm:inline-block" />
+
+        {/* Active Mission Path Overlay Toggle */}
+        <button
+          type="button"
+          data-gbrain-mission-toggle="1"
+          onClick={() => {
+            if (layoutMode === 'mission') {
+              setLayoutMode('clustered')
+            } else {
+              setShowMissionLayer((v) => !v)
+            }
+          }}
+          aria-pressed={showMissionOnCanvas}
+          title={
+            missionGraph.hasMission
+              ? 'Toggle Active Mission Path & Agentic Tasks layer'
+              : 'No active mission yet — run a task with Eva'
+          }
+          className={cn(
+            'inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium whitespace-nowrap transition-colors',
+            showMissionOnCanvas
+              ? 'border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400'
+              : 'border-border text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+          )}
+        >
+          <Target className="h-3 w-3 shrink-0" />
+          <span>Mission Path</span>
+          <span className="font-mono text-[10px] tabular-nums opacity-80">
+            {missionGraph.hasMission ? `${missionGraph.completed}/${missionGraph.total}` : 'Idle'}
+          </span>
+        </button>
+
         {/* Zoom & Fit Controls */}
         <div className="ml-auto flex items-center gap-1">
           <span className="mr-1 font-mono text-[10.5px] tabular-nums text-muted-foreground">
@@ -896,6 +1262,99 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
             aria-label="GBrain categories"
             className="nice-scroll hidden w-60 shrink-0 flex-col overflow-y-auto border-r border-border bg-sidebar md:flex"
           >
+            {/* Active Mission Sub-Goal Navigator */}
+            <div data-gbrain-mission-rail="1" className="border-b border-border/70 px-3 py-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 text-[11px] font-semibold text-foreground">
+                  <Target className="h-3.5 w-3.5 text-sky-500" />
+                  <span>Active Mission</span>
+                </span>
+                {missionGraph.hasMission && (
+                  <button
+                    type="button"
+                    onClick={() => setLayoutMode(layoutMode === 'mission' ? 'clustered' : 'mission')}
+                    className="font-mono text-[10px] text-sky-600 hover:underline dark:text-sky-400"
+                  >
+                    {layoutMode === 'mission' ? 'All Graph' : 'Focus'}
+                  </button>
+                )}
+              </div>
+
+              {!missionGraph.hasMission ? (
+                <p className="mt-1.5 text-[10.5px] leading-relaxed text-muted-foreground">
+                  No active mission yet — run a task with Eva to trace live sub-goals here.
+                </p>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  <div>
+                    <div className="flex items-center justify-between gap-1.5 text-[10.5px]">
+                      <span
+                        className={cn(
+                          'font-medium',
+                          MISSION_STATUS_META[missionGraph.nodes[0]?.status ?? 'pending'].textClass
+                        )}
+                      >
+                        {missionGraph.phaseLabel}
+                      </span>
+                      <span className="font-mono tabular-nums text-muted-foreground">
+                        {missionGraph.completed}/{missionGraph.total} · {missionGraph.percent}%
+                      </span>
+                    </div>
+                    <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full transition-all duration-300"
+                        style={{
+                          width: `${missionGraph.percent}%`,
+                          backgroundColor:
+                            MISSION_STATUS_META[missionGraph.nodes[0]?.status ?? 'pending'].accent,
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-0.5">
+                    {missionGraph.nodes.map((mn) => (
+                      <button
+                        key={mn.id}
+                        type="button"
+                        onClick={() => {
+                          if (!showMissionOnCanvas) setShowMissionLayer(true)
+                          focusNode(mn.id)
+                        }}
+                        className={cn(
+                          'flex w-full items-center justify-between gap-1.5 rounded-md px-2 py-1 text-left text-[11px] transition-colors',
+                          selected === mn.id
+                            ? 'bg-sky-500/12 font-medium text-sky-600 dark:text-sky-400'
+                            : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+                        )}
+                      >
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          {mn.nodeKind === 'mission_root' ? (
+                            <Target className="h-3 w-3 shrink-0 text-sky-500" />
+                          ) : (
+                            <MissionRailStatusIcon status={mn.status} />
+                          )}
+                          <span className="truncate">
+                            {mn.nodeKind === 'mission_root'
+                              ? mn.title
+                              : `${mn.stepIndex}. ${mn.title}`}
+                          </span>
+                        </span>
+                        <span
+                          className={cn(
+                            'shrink-0 font-mono text-[9.5px]',
+                            MISSION_STATUS_META[mn.status].textClass
+                          )}
+                        >
+                          {mn.statusLabel}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="border-b border-border/60 px-3.5 py-2.5">
               <div className="text-[11px] font-semibold text-foreground">Categories</div>
               <p className="mt-0.5 text-[10.5px] text-muted-foreground">
@@ -976,6 +1435,9 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                             key={item.id}
                             type="button"
                             onClick={() => {
+                              if (layoutMode === 'mission' && !byId.has(item.id)) {
+                                setLayoutMode('clustered')
+                              }
                               if (categoryFilter !== 'all' && categoryFilter !== item.category) {
                                 setCategoryFilter('all')
                               }
@@ -1101,7 +1563,23 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
             <div className="flex flex-1 items-center justify-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" /> Loading categorized knowledge graph…
             </div>
-          ) : laidNodes.length === 0 ? (
+          ) : layoutMode === 'mission' && !missionGraph.hasMission ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+              <Target className="h-7 w-7 text-muted-foreground/50" />
+              <p className="text-xs font-medium text-foreground">No active mission path yet</p>
+              <p className="max-w-sm text-[11.5px] leading-relaxed text-muted-foreground">
+                Run an agentic task with Eva to visualize the live mission path, dynamic sub-goal statuses, and task dependencies here.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => setLayoutMode('clustered')}
+              >
+                View Knowledge Graph
+              </Button>
+            </div>
+          ) : canvasLaidNodes.length === 0 && laidMissionNodes.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
               <Network className="h-7 w-7 text-muted-foreground/50" />
               <p className="text-xs font-medium text-foreground">
@@ -1179,10 +1657,111 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                 >
                   <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#38bdf8" />
                 </marker>
+                {MISSION_STATUS_KEYS.map((st) => (
+                  <marker
+                    key={st}
+                    id={`gbrain-mission-arrow-${st}`}
+                    viewBox="0 0 10 10"
+                    refX="9"
+                    refY="5"
+                    markerWidth="6.5"
+                    markerHeight="6.5"
+                    orient="auto-start-reverse"
+                  >
+                    <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill={MISSION_STATUS_META[st].accent} />
+                  </marker>
+                ))}
               </defs>
               <rect width="100%" height="100%" fill="url(#gbrain-grid)" />
 
               <g transform={`translate(${view.tx}, ${view.ty}) scale(${view.scale})`}>
+                {/* Active Mission Path Zone Container */}
+                {showMissionOnCanvas && missionLayoutResult?.zone && (
+                  <g pointerEvents="none" data-gbrain-mission-zone="1">
+                    <rect
+                      x={missionLayoutResult.zone.x}
+                      y={missionLayoutResult.zone.y}
+                      width={missionLayoutResult.zone.width}
+                      height={missionLayoutResult.zone.height}
+                      rx={14}
+                      fill={MISSION_STATUS_META[missionGraph.nodes[0]?.status ?? 'pending'].accent}
+                      fillOpacity={0.04}
+                      stroke={MISSION_STATUS_META[missionGraph.nodes[0]?.status ?? 'pending'].accent}
+                      strokeOpacity={0.34}
+                      strokeWidth={1.3 / Math.sqrt(Math.max(0.4, view.scale))}
+                    />
+                    <circle
+                      cx={missionLayoutResult.zone.x + 16}
+                      cy={missionLayoutResult.zone.y + 20}
+                      r={4}
+                      fill={MISSION_STATUS_META[missionGraph.nodes[0]?.status ?? 'pending'].accent}
+                    />
+                    <text
+                      x={missionLayoutResult.zone.x + 28}
+                      y={missionLayoutResult.zone.y + 24}
+                      fontSize={12.5}
+                      fontWeight={600}
+                      fill={MISSION_STATUS_META[missionGraph.nodes[0]?.status ?? 'pending'].accent}
+                      opacity={0.96}
+                      className="tracking-tight"
+                    >
+                      Active Mission Path · {missionGraph.phaseLabel}
+                    </text>
+                    <text
+                      x={missionLayoutResult.zone.x + missionLayoutResult.zone.width - 16}
+                      y={missionLayoutResult.zone.y + 24}
+                      textAnchor="end"
+                      fontSize={11}
+                      fill={MISSION_STATUS_META[missionGraph.nodes[0]?.status ?? 'pending'].accent}
+                      opacity={0.82}
+                      className="font-mono"
+                    >
+                      {missionGraph.completed}/{missionGraph.total} tasks · {missionGraph.percent}%
+                      {missionGraph.failed > 0 ? ` · ${missionGraph.failed} failed` : ''}
+                      {missionGraph.blocked > 0 ? ` · ${missionGraph.blocked} blocked` : ''}
+                    </text>
+                  </g>
+                )}
+
+                {/* Linked GBrain Entities Zone (Mission Focused mode) */}
+                {layoutMode === 'mission' && bridgedZone && (
+                  <g pointerEvents="none" data-gbrain-bridged-zone="1">
+                    <rect
+                      x={bridgedZone.x}
+                      y={bridgedZone.y}
+                      width={bridgedZone.width}
+                      height={bridgedZone.height}
+                      rx={14}
+                      fill="#94a3b8"
+                      fillOpacity={0.035}
+                      stroke="#94a3b8"
+                      strokeOpacity={0.26}
+                      strokeWidth={1.2 / Math.sqrt(Math.max(0.4, view.scale))}
+                      strokeDasharray="6 4"
+                    />
+                    <text
+                      x={bridgedZone.x + 16}
+                      y={bridgedZone.y + 22}
+                      fontSize={11.5}
+                      fontWeight={600}
+                      fill="var(--muted-foreground)"
+                      className="tracking-tight"
+                    >
+                      Linked GBrain Entities
+                    </text>
+                    <text
+                      x={bridgedZone.x + bridgedZone.width - 16}
+                      y={bridgedZone.y + 22}
+                      textAnchor="end"
+                      fontSize={10.5}
+                      fill="var(--muted-foreground)"
+                      className="font-mono"
+                    >
+                      {bridgedZone.count} bridged
+                    </text>
+                  </g>
+                )}
+
                 {/* Semantic Category Cluster Zones (Clustered mode) */}
                 {layoutMode === 'clustered' &&
                   layoutResult.clusters.map((cluster) => {
@@ -1272,8 +1851,8 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                     )
                   })}
 
-                {/* Curved Directed Edges */}
-                {visibleEdges.map((e) => {
+                {/* Curved Directed GBrain Knowledge Edges */}
+                {canvasVisibleEdges.map((e) => {
                   const a = byId.get(e.sourceId)
                   const b = byId.get(e.targetId)
                   if (!a || !b) return null
@@ -1346,8 +1925,112 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                   )
                 })}
 
-                {/* Structured Architectural Node Cards */}
-                {laidNodes.map((l) => {
+                {/* Mission Knowledge-Bridge Edges (Agentic Tasks -> GBrain Knowledge Entities) */}
+                {showMissionOnCanvas &&
+                  missionGraph.edges
+                    .filter((me) => me.edgeKind === 'knowledge_bridge')
+                    .map((me) => {
+                      const src = missionById.get(me.sourceId)
+                      const dst = byId.get(me.targetId)
+                      if (!src || !dst) return null
+                      const isHighlighted =
+                        activeFocusId !== null &&
+                        (me.sourceId === activeFocusId || me.targetId === activeFocusId)
+                      const dimmed = activeFocusId !== null && !isHighlighted
+
+                      const sx = src.x
+                      const sy = src.y + src.height / 2
+                      const ex = dst.x
+                      const ey = dst.y - HALF_H
+                      const midY = (sy + ey) / 2
+                      const stroke = isHighlighted ? '#38bdf8' : MISSION_STATUS_META[me.status].accent
+
+                      return (
+                        <g key={me.id} data-mission-edge="knowledge_bridge">
+                          <path
+                            d={`M ${sx} ${sy} C ${sx} ${midY}, ${ex} ${midY}, ${ex} ${ey}`}
+                            fill="none"
+                            stroke={stroke}
+                            strokeOpacity={isHighlighted ? 0.85 : dimmed ? 0.06 : 0.34}
+                            strokeWidth={isHighlighted ? 1.8 : 1.15}
+                            strokeDasharray="4 4"
+                            markerEnd={
+                              isHighlighted
+                                ? 'url(#gbrain-arrow-active)'
+                                : `url(#gbrain-mission-arrow-${me.status})`
+                            }
+                          />
+                        </g>
+                      )
+                    })}
+
+                {/* Mission Dependency DAG Edges (Mission Goal -> Sub-goals -> Downstream Tasks) */}
+                {showMissionOnCanvas &&
+                  missionGraph.edges
+                    .filter((me) => me.edgeKind !== 'knowledge_bridge')
+                    .map((me) => {
+                      const src = missionById.get(me.sourceId)
+                      const dst = missionById.get(me.targetId)
+                      if (!src || !dst) return null
+                      const isHighlighted =
+                        activeFocusId !== null &&
+                        (me.sourceId === activeFocusId || me.targetId === activeFocusId)
+                      const dimmed = activeFocusId !== null && !isHighlighted
+
+                      const sx = src.x + src.width / 2
+                      const sy = src.y
+                      const ex = dst.x - dst.width / 2 - 2
+                      const ey = dst.y
+                      const dx = Math.max(36, Math.abs(ex - sx) * 0.45)
+                      const stroke = MISSION_STATUS_META[me.status].accent
+                      const mx = (sx + ex) / 2
+                      const my = (sy + ey) / 2
+
+                      return (
+                        <g
+                          key={me.id}
+                          data-mission-edge={me.edgeKind}
+                          data-mission-edge-status={me.status}
+                        >
+                          <path
+                            d={`M ${sx} ${sy} C ${sx + dx} ${sy}, ${ex - dx} ${ey}, ${ex} ${ey}`}
+                            fill="none"
+                            stroke={stroke}
+                            strokeOpacity={isHighlighted ? 0.98 : dimmed ? 0.14 : 0.78}
+                            strokeWidth={isHighlighted ? 2.4 : me.status === 'running' ? 2.1 : 1.65}
+                            strokeDasharray={me.status === 'blocked' ? '5 4' : undefined}
+                            markerEnd={`url(#gbrain-mission-arrow-${me.status})`}
+                          />
+                          {isHighlighted && (
+                            <g transform={`translate(${mx}, ${my})`} pointerEvents="none">
+                              <rect
+                                x={-(me.relation.length * 3.4 + 8)}
+                                y={-9}
+                                width={me.relation.length * 6.8 + 16}
+                                height={17}
+                                rx={4}
+                                fill="var(--background)"
+                                stroke={stroke}
+                                strokeOpacity={0.55}
+                                strokeWidth={0.9}
+                              />
+                              <text
+                                y={3}
+                                textAnchor="middle"
+                                fontSize={9.5}
+                                fill="currentColor"
+                                className="font-mono"
+                              >
+                                {me.relation}
+                              </text>
+                            </g>
+                          )}
+                        </g>
+                      )
+                    })}
+
+                {/* Structured Architectural GBrain Entity Node Cards */}
+                {canvasLaidNodes.map((l) => {
                   const isSelected = l.node.id === selected
                   const isHovered = l.node.id === hovered
                   const inNeighborhood = activeFocusId === null || neighborSet.has(l.node.id)
@@ -1511,6 +2194,161 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                     </g>
                   )
                 })}
+
+                {/* Dynamic Active Mission Root & Agentic Task Node Cards */}
+                {showMissionOnCanvas &&
+                  laidMissionNodes.map((l) => {
+                    const isSelected = l.node.id === selected
+                    const isHovered = l.node.id === hovered
+                    const inNeighborhood = activeFocusId === null || neighborSet.has(l.node.id)
+                    const statusMeta = MISSION_STATUS_META[l.node.status]
+                    const hw = l.width / 2
+                    const hh = l.height / 2
+                    const isRoot = l.node.nodeKind === 'mission_root'
+                    const isRunning = l.node.status === 'running'
+                    const maxChars = isRoot ? 24 : 21
+
+                    return (
+                      <g
+                        key={l.node.id}
+                        data-graph-node="1"
+                        data-mission-node="1"
+                        data-mission-kind={l.node.nodeKind}
+                        data-mission-status={l.node.status}
+                        transform={`translate(${l.x}, ${l.y})`}
+                        className="cursor-pointer"
+                        opacity={inNeighborhood ? 1 : 0.25}
+                        onMouseEnter={() => setHovered(l.node.id)}
+                        onMouseLeave={() => setHovered((cur) => (cur === l.node.id ? null : cur))}
+                        onPointerDown={(e) => {
+                          e.stopPropagation()
+                          dragNodeRef.current = {
+                            nodeId: l.node.id,
+                            startClientX: e.clientX,
+                            startClientY: e.clientY,
+                            origX: l.x,
+                            origY: l.y,
+                            moved: false,
+                          }
+                        }}
+                      >
+                        <title>{`${isRoot ? 'Mission Goal' : `Sub-goal #${l.node.stepIndex}`}: ${l.node.description} · Status: ${l.node.statusLabel} · Assignee: ${l.node.assignee} — click to inspect dependencies, drag to arrange`}</title>
+
+                        {/* Dynamic Running Halo */}
+                        {isRunning && (
+                          <rect
+                            x={-hw - 5}
+                            y={-hh - 5}
+                            width={l.width + 10}
+                            height={l.height + 10}
+                            rx={14}
+                            fill="none"
+                            stroke={statusMeta.accent}
+                            strokeWidth={1.6}
+                            strokeDasharray="6 4"
+                            strokeOpacity={0.85}
+                          />
+                        )}
+
+                        {/* Selection / Hover Halo */}
+                        {(isSelected || isHovered) && (
+                          <rect
+                            x={-hw - 4}
+                            y={-hh - 4}
+                            width={l.width + 8}
+                            height={l.height + 8}
+                            rx={13}
+                            fill="none"
+                            stroke={isSelected ? '#38bdf8' : statusMeta.accent}
+                            strokeWidth={isSelected ? 2 : 1.4}
+                            strokeOpacity={0.9}
+                          />
+                        )}
+
+                        {/* Card Surface */}
+                        <rect
+                          x={-hw}
+                          y={-hh}
+                          width={l.width}
+                          height={l.height}
+                          rx={10}
+                          fill="var(--card)"
+                          stroke={
+                            isSelected
+                              ? '#38bdf8'
+                              : l.node.status === 'failed' || l.node.status === 'running'
+                                ? statusMeta.accent
+                                : 'var(--border)'
+                          }
+                          strokeWidth={
+                            isSelected || l.node.status === 'failed' || l.node.status === 'running'
+                              ? 1.5
+                              : 1
+                          }
+                        />
+
+                        {/* Clean horizontal top status accent bar */}
+                        <rect
+                          x={-hw + 12}
+                          y={-hh + 0.5}
+                          width={l.width - 24}
+                          height={2.5}
+                          rx={1.25}
+                          fill={statusMeta.accent}
+                        />
+
+                        {/* Explicit Status Glyph */}
+                        <MissionNodeStatusSvg status={l.node.status} x={-hw + 18} y={-8} />
+
+                        {/* Card Title */}
+                        <text
+                          x={-hw + 32}
+                          y={-4.5}
+                          fontSize={11.5}
+                          fontWeight={600}
+                          fill="var(--foreground)"
+                          className="pointer-events-none select-none"
+                        >
+                          {truncateText(l.node.title, maxChars)}
+                        </text>
+
+                        {/* Explicit unboxed status + assignee + step metadata */}
+                        <text
+                          x={-hw + 14}
+                          y={14}
+                          fontSize={9.5}
+                          fill="var(--muted-foreground)"
+                          className="pointer-events-none select-none font-mono"
+                        >
+                          {isRoot
+                            ? `GOAL · ${l.node.statusLabel} · ${missionGraph.completed}/${missionGraph.total} · ${missionGraph.percent}%`
+                            : `#${l.node.stepIndex} · ${l.node.statusLabel} · ${truncateText(l.node.assignee, 11)}${l.node.toolExecutions.length > 0 ? ` · ${l.node.toolExecutions.length}t` : ''}`}
+                        </text>
+
+                        {/* Compact progress bar along Mission Root bottom */}
+                        {isRoot && (
+                          <g pointerEvents="none">
+                            <rect
+                              x={-hw + 14}
+                              y={hh - 7}
+                              width={l.width - 28}
+                              height={2.5}
+                              rx={1.25}
+                              fill="var(--border)"
+                            />
+                            <rect
+                              x={-hw + 14}
+                              y={hh - 7}
+                              width={((l.width - 28) * missionGraph.percent) / 100}
+                              height={2.5}
+                              rx={1.25}
+                              fill={statusMeta.accent}
+                            />
+                          </g>
+                        )}
+                      </g>
+                    )
+                  })}
               </g>
             </svg>
           )}
@@ -1588,16 +2426,53 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
           {!selected ? (
             <div className="flex flex-1 flex-col items-center justify-center px-6 py-8 text-center">
               <MousePointerClick className="h-5 w-5 text-muted-foreground/60" />
-              <p className="mt-2.5 text-xs font-medium text-foreground">Select any node</p>
+              <p className="mt-2.5 text-xs font-medium text-foreground">Select any node or task</p>
               <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
-                Inspect its category, neighbors, aliases, and indexed memories — or connect it to other entities.
+                Inspect Agentic Task status and dependencies, or explore GBrain entity memories and links.
               </p>
-              {laidNodes.length > 0 && (
+              {missionGraph.hasMission && (
+                <div className="mt-5 w-full space-y-1 text-left">
+                  <div className="font-mono text-[10px] tracking-wide text-muted-foreground">
+                    Active mission sub-goals
+                  </div>
+                  {missionGraph.nodes.slice(0, 5).map((mn) => (
+                    <button
+                      key={mn.id}
+                      type="button"
+                      onClick={() => {
+                        if (!showMissionOnCanvas) setShowMissionLayer(true)
+                        focusNode(mn.id)
+                      }}
+                      className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        {mn.nodeKind === 'mission_root' ? (
+                          <Target className="h-3 w-3 shrink-0 text-sky-500" />
+                        ) : (
+                          <MissionRailStatusIcon status={mn.status} />
+                        )}
+                        <span className="truncate">
+                          {mn.nodeKind === 'mission_root' ? mn.title : `#${mn.stepIndex} ${mn.title}`}
+                        </span>
+                      </span>
+                      <span
+                        className={cn(
+                          'ml-2 shrink-0 font-mono text-[10px]',
+                          MISSION_STATUS_META[mn.status].textClass
+                        )}
+                      >
+                        {mn.statusLabel}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {canvasLaidNodes.length > 0 && (
                 <div className="mt-5 w-full space-y-1 text-left">
                   <div className="font-mono text-[10px] tracking-wide text-muted-foreground">
                     Top connected hubs
                   </div>
-                  {laidNodes
+                  {canvasLaidNodes
                     .slice()
                     .sort((a, b) => b.node.degree - a.node.degree)
                     .slice(0, 6)
@@ -1626,6 +2501,23 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                 </div>
               )}
             </div>
+          ) : selectedMissionNode ? (
+            <GBrainMissionInspector
+              node={selectedMissionNode}
+              mission={missionGraph}
+              entityLookup={entityLookup}
+              onFocusMissionNode={(id) => focusNode(id)}
+              onFocusEntityNode={(id) => {
+                if (layoutMode === 'mission' && !byId.has(id)) {
+                  setLayoutMode('clustered')
+                }
+                focusNode(id)
+              }}
+              onOpenReasoningChain={() => {
+                onOpenChange(false)
+                openReasoningForChain()
+              }}
+            />
           ) : detailLoading || !detail ? (
             <div className="flex flex-1 items-center justify-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" /> Loading entity…

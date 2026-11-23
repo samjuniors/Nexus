@@ -3,10 +3,12 @@
 import { useEffect, useState } from 'react'
 import {
   AlertTriangle,
+  Brain,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Code2,
+  Cpu,
   FileDiff,
   Loader2,
   RefreshCw,
@@ -163,6 +165,47 @@ function SessionDetail({
         {session.errorContext && (
           <div className="mt-2.5 rounded-md border border-border/80 bg-muted/40 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground break-words">
             {session.errorContext}
+          </div>
+        )}
+
+        {(session.brainContext || session.capabilityUpgrade || (session.attemptsUsed ?? 0) > 1) && (
+          <div className="mt-2.5 space-y-2 border-t border-border/70 pt-2.5">
+            <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+              {session.brainContext && (
+                <span className="inline-flex items-center gap-1.5 text-foreground/90">
+                  <Brain className="h-3.5 w-3.5 text-sky-500" />
+                  <span>
+                    Portable Brain: {session.brainContext.recalledCount} recalled
+                    {session.brainContext.coreLoaded ? ' · core active' : ''}
+                  </span>
+                </span>
+              )}
+              {(session.attemptsUsed ?? 0) > 0 && (
+                <span className="inline-flex items-center gap-1 font-mono text-[10.5px] tabular-nums">
+                  <Cpu className="h-3 w-3 text-muted-foreground" />
+                  <span>
+                    {session.attemptsUsed} {session.attemptsUsed === 1 ? 'pass' : 'self-corrected passes'}
+                  </span>
+                </span>
+              )}
+            </div>
+
+            {session.brainContext?.learnedLesson && (
+              <div className="rounded-md border border-sky-500/25 bg-sky-500/6 px-2.5 py-1.5 text-[11px] leading-relaxed text-foreground/90">
+                <span className="font-semibold text-sky-600 dark:text-sky-400">Saved to Portable Brain: </span>
+                <span>{session.brainContext.learnedLesson}</span>
+              </div>
+            )}
+
+            {session.capabilityUpgrade && (
+              <div className="rounded-md border border-emerald-500/25 bg-emerald-500/6 px-2.5 py-1.5 text-[11px] leading-relaxed text-foreground/90">
+                <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                  {session.capabilityUpgrade.applied ? 'Skill Added: ' : 'Capability Note: '}
+                </span>
+                <span className="font-medium">{session.capabilityUpgrade.name}</span>
+                <span className="text-muted-foreground"> — {session.capabilityUpgrade.description}</span>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -340,6 +383,18 @@ export function SelfHealPanel() {
     }
   }
 
+  const handleScanAndFixBuild = async () => {
+    if (busy) return
+    const verify = await runBuildVerify()
+    if (verify && !verify.ok) {
+      await triggerAutoHeal({
+        trigger: 'user_request',
+        errorMessage: 'Fix all TypeScript compiler errors reported by tsc --noEmit',
+        stack: verify.output,
+      })
+    }
+  }
+
   return (
     <div
       data-self-heal-panel="1"
@@ -390,6 +445,17 @@ export function SelfHealPanel() {
             size="sm"
             variant="outline"
             disabled={busy}
+            onClick={() => void handleScanAndFixBuild()}
+            data-self-heal-scan-fix="1"
+            className="h-8 gap-1.5 text-xs"
+          >
+            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 text-sky-500" />}
+            <span>Scan &amp; Fix</span>
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
             onClick={() => void runBuildVerify()}
             data-self-heal-verify="1"
             className="h-8 gap-1.5 text-xs"
@@ -419,7 +485,7 @@ export function SelfHealPanel() {
           <Input
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Describe a bug, runtime error, or app improvement for Eva to patch…"
+            placeholder="Describe a bug, runtime error, or capability upgrade for Eva to patch…"
             aria-label="Describe bug or upgrade for Eva to patch"
             disabled={busy}
             className="h-8 flex-1 text-xs"
@@ -450,10 +516,25 @@ export function SelfHealPanel() {
         {errorText && (
           <div
             role="alert"
-            className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/8 px-3 py-2.5 text-xs text-red-700 dark:text-red-300"
+            className="flex flex-col gap-2 rounded-lg border border-red-500/30 bg-red-500/8 px-3 py-2.5 text-xs text-red-700 dark:text-red-300"
           >
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span className="leading-relaxed break-words">{errorText}</span>
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span className="leading-relaxed break-words">{errorText}</span>
+            </div>
+            {/permission|denied|timed out/i.test(errorText) && policy !== 'always' && (
+              <div className="flex items-center gap-2 pl-5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void updateGrantPolicy('self_code_edit', 'always')}
+                  className="h-7 gap-1.5 border-amber-500/40 text-[11px]"
+                >
+                  <ShieldCheck className="h-3 w-3" />
+                  <span>Enable Allow Always &amp; Retry</span>
+                </Button>
+              </div>
+            )}
           </div>
         )}
 

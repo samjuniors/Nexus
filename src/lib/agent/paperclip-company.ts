@@ -692,8 +692,14 @@ export async function autoHireForTask(
       targetName = already.name
       ensureAgentConfig(state, already.id, { monthlyBudgetUsd: bp.budgetUsd })
     } else if (hired.length < maxNewHires) {
+      const empSlugBase = bp.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 40) || 'ai-employee'
       const created = await db.aiEmployee.create({
         data: {
+          slug: `${empSlugBase}-${Date.now().toString(36)}`,
           name: bp.name,
           title: bp.title,
           department: bp.department,
@@ -718,7 +724,6 @@ export async function autoHireForTask(
                 slug,
                 name: `${bp.name} (Auto-Hired Bot)`,
                 description: `Delegate to ${bp.name}: ${bp.role}`,
-                argSpec: '{ task: string }',
                 source: 'org_bot',
                 enabled: true,
               },
