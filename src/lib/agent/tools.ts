@@ -1122,8 +1122,8 @@ export async function executeTool(
             if (!content) return { ok: false, summary: 'Missing content', raw: 'Error: provide "content".' }
             const abs = safeWorkspacePath(rel)
             if (!abs) return { ok: false, summary: 'Path outside workspace', raw: 'Error: path must stay inside the agent workspace.' }
-            await fs.mkdir(path.dirname(abs), { recursive: true })
-            await fs.writeFile(abs, content, 'utf-8')
+            const saved = await saveWorkspaceFile(rel, Buffer.from(content, 'utf-8'))
+            if (!saved) return { ok: false, summary: 'Path outside workspace', raw: 'Error: workspace paths cannot traverse symbolic links or junctions.' }
             return {
               ok: true,
               summary: `Wrote ${rel} (${content.length} chars)`,

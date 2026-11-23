@@ -144,3 +144,19 @@ describe('GBrain Intelligence: Working Memory Trace, Truth Audit, and Scoped Con
     )
   })
 })
+
+describe('Self-Heal filesystem boundary', () => {
+  it('rejects paths that traverse a directory symlink or Windows junction', async () => {
+    const outside = path.join(process.cwd(), '__self_heal_outside_' + Date.now())
+    const linkName = '__self_heal_link_' + Date.now()
+    const link = path.join(process.cwd(), 'src', linkName)
+    await fs.mkdir(outside, { recursive: true })
+    try {
+      await fs.symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir')
+      assert.throws(() => resolveSafeAppPath('src/' + linkName + '/escape.ts'), /symbolic link or junction/i)
+    } finally {
+      await fs.rm(link, { recursive: true, force: true })
+      await fs.rm(outside, { recursive: true, force: true })
+    }
+  })
+})

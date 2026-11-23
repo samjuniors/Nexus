@@ -65,3 +65,19 @@ This hardening branch changes code and example configuration only. It does **not
 ## CI verification (2026-11-22)
 
 The earlier run #34 had unavailable logs and is superseded. Current branch HEAD `d0aa4a078d2f3bb52d4e5fb89f3c25f51a9fa364` passed [GitHub Actions run #130](https://github.com/samjuniors/Nexus/actions/runs/44981448975), including dependency install, Prisma generation, security tests, recovery tests, typecheck, lint and production build. This does not replace native Windows/Android acceptance or independent security review.
+
+
+## Windows acceptance update (2026-11-23)
+
+- A Windows 11 acceptance clone reproduced a static junction escape in the artifact workspace: a junction below `agent-workspace` allowed read/write operations to reach an outside test fixture. The isolated PR branch now rejects existing symlink/junction components in `workspace.ts`, skips symlink entries during artifact/workspace listing, routes computer-use writes through the guarded save helper, and includes Windows junction regression tests. Self-Heal's path resolver also rejects existing symlink/junction components with a regression test.
+- Windows local results: frozen Bun install, Prisma generation, security suite (including new junction tests), recovery suite (5/5), TypeScript, ESLint (0 errors; 4 warnings), production build, Electron CJS syntax checks, and local HTTP smoke (`/` and `/api/health` both 200) passed.
+- Electron dependency is now `45.4.1` rather than `35.7.5`; `npm audit` for the Electron package reports 0 vulnerabilities. The Electron runtime binary download timed out, so actual Electron startup and native microphone/camera/screen prompts remain NOT RUN.
+- `adb devices -l` found no attached Android device; Android/WebView acceptance remains NOT RUN.
+
+### Remaining filesystem release blockers
+
+1. The generated Companion Bridge's Connected Folders guard still uses lexical path containment. It must reject symlink/junction escapes using actual filesystem resolution before file reads, writes, listings and moves.
+2. The current junction checks reject pre-existing links but do not prove race-free, handle-pinned TOCTOU safety. Do not claim atomic filesystem containment until tested against concurrent link replacement on Windows and POSIX.
+3. Independent security review, replay/idempotency/actor-scope verification, Android physical-device acceptance, native Electron runtime permission acceptance and HTTPS reverse-proxy review remain required.
+
+The Windows results are local acceptance evidence on the isolated clone, not a production approval. PR #1 remains draft and unmerged.
