@@ -4,7 +4,10 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
   applySelfHealPatch,
+  applyTargetReplacement,
   buildUnifiedDiff,
+  extractSearchTerms,
+  parseTscDiagnostics,
   resolveSafeAppPath,
   rollbackSelfHealSession,
 } from './self-heal'
@@ -18,7 +21,7 @@ import {
 } from './brain-context-packs'
 
 describe('Self-Heal path guardrails and unified diff engine', () => {
-  it('allows app source paths and blocks traversal, env secrets, and protected directories', () => {
+  it('allows app source paths and blocks traversal, env secrets, DB binaries, and protected directories', () => {
     const okSrc = resolveSafeAppPath('src/components/agent/self-heal-panel.tsx')
     assert.equal(okSrc.rel, 'src/components/agent/self-heal-panel.tsx')
     assert.equal(resolveSafeAppPath('package.json').rel, 'package.json')
@@ -26,6 +29,8 @@ describe('Self-Heal path guardrails and unified diff engine', () => {
 
     assert.throws(() => resolveSafeAppPath('.env'), /Protected environment file/i)
     assert.throws(() => resolveSafeAppPath('.env.local'), /Protected environment file/i)
+    assert.throws(() => resolveSafeAppPath('prisma/dev.db'), /Protected binary or key file/i)
+    assert.throws(() => resolveSafeAppPath('src/secret.key'), /Protected binary or key file/i)
     assert.throws(() => resolveSafeAppPath('../outside.ts'), /Invalid or unsafe path/i)
     assert.throws(() => resolveSafeAppPath('node_modules/foo/index.js'), /Protected directory/i)
     assert.throws(() => resolveSafeAppPath('.git/config'), /Protected directory/i)
@@ -43,6 +48,53 @@ describe('Self-Heal path guardrails and unified diff engine', () => {
     assert.ok(res.diff.includes('-const b = 2'))
     assert.ok(res.diff.includes('+const b = 20'))
     assert.ok(res.diff.includes('+const b2 = 21'))
+  })
+
+  it('applies resilient $-safe replacements across exact, CRLF, and unique indentation-drifted blocks', () => {
+    // 1. Dollar-sign special sequences ($&, $1, $') must never corrupt replaced source code
+    const dollarSrc = 'const price = "old"\n'
+    const dollarRes = applyTargetReplacement(dollarSrc, '"old"', '`$1 $& $\' ${total}`')
+    assert.equal(dollarRes.ok, true)
+    if (dollarRes.ok) {
+      assert.equal(dollarRes.strategy, 'exact')
+      assert.equal(dollarRes.after, 'const price = `$1 $& $\' ${total}`\n')
+    }
+
+    // 2. Indentation-tolerant unique block match
+    const indentedSrc = 'function demo() {\n    const x = 1\n    return x + 1\n}\n'
+    const fuzzyRes = applyTargetReplacement(
+      indentedSrc,
+      '  const x = 1\n  return x + 1',
+      '  const x = 2\n  return x + 10'
+    )
+    assert.equal(fuzzyRes.ok, true)
+    if (fuzzyRes.ok) {
+      assert.equal(fuzzyRes.strategy, 'trimmed_lines')
+      assert.equal(fuzzyRes.after, 'function demo() {\n    const x = 2\n    return x + 10\n}\n')
+    }
+
+    // 3. Rejects ambiguous duplicate blocks safely
+    const dupSrc = 'const a = 1\nconst a = 1\n'
+    const dupRes = applyTargetReplacement(dupSrc, '  const a = 1', '  const a = 2')
+    assert.equal(dupRes.ok, false)
+  })
+
+  it('parses TypeScript diagnostics and extracts high-signal technical search terms', () => {
+    const sampleTsc = [
+      "src/app/api/brain/portable/route.ts(77,17): error TS2339: Property 'type' does not exist.",
+      "src/lib/agent/mobile-manager.ts(617,9): error TS2322: Type '\"mobile_autopilot\"' is not assignable.",
+    ].join('\n')
+    const diags = parseTscDiagnostics(sampleTsc)
+    assert.equal(diags.length, 2)
+    assert.equal(diags[0].file, 'src/app/api/brain/portable/route.ts')
+    assert.equal(diags[0].line, 77)
+    assert.equal(diags[0].code, 'TS2339')
+    assert.equal(diags[1].line, 617)
+
+    const terms = extractSearchTerms('Issue related to self-healing in gbrainStore when verifyAppBuild fails')
+    assert.ok(terms.includes('gbrainStore'))
+    assert.ok(terms.includes('verifyAppBuild'))
+    assert.ok(!terms.some((t) => t.toLowerCase() === 'issue' || t.toLowerCase() === 'related'))
   })
 
   it('creates automatic backup snapshot on patch and restores original file on rollback', async () => {

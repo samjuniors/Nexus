@@ -1539,17 +1539,26 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
       const data = (await res.json()) as {
         ok?: boolean
         error?: string
+        message?: string
         session?: SelfHealSession
+        verification?: SelfHealVerification
+      }
+      if (data.verification) {
+        set({ selfHealVerifyResult: data.verification })
       }
       if (data.session) {
         get().upsertSelfHealSession(data.session)
         set({ activeSelfHealId: data.session.id })
+        if (data.session.verification) {
+          set({ selfHealVerifyResult: data.session.verification })
+        }
       }
-      if (!data.ok && data.error) {
-        set({ selfHealError: data.error })
+      const errText = data.error ?? (!data.ok ? data.message : undefined)
+      if (!data.ok && errText) {
+        set({ selfHealError: errText })
       }
       void get().refreshSelfHealSessions()
-      return { ok: Boolean(data.ok), error: data.error, session: data.session }
+      return { ok: Boolean(data.ok), error: errText, session: data.session }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       set({ selfHealError: msg })

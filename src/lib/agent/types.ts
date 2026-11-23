@@ -13,6 +13,7 @@ export interface PlanStep {
   description: string
   assignee: string
   uses: string[]
+  dependsOn?: number[]
 }
 
 export interface SubagentDef {

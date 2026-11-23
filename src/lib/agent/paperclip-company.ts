@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { db } from '@/lib/db'
 import { chatText } from '@/lib/agent/zai'
@@ -692,9 +693,15 @@ export async function autoHireForTask(
       targetName = already.name
       ensureAgentConfig(state, already.id, { monthlyBudgetUsd: bp.budgetUsd })
     } else if (hired.length < maxNewHires) {
+      const empSlugBase = bp.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 40) || 'ai-employee'
       const created = await db.aiEmployee.create({
         data: {
-          slug: `agent_${bp.key.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')}`,
+          slug: empSlugBase + '-' + randomUUID().slice(0, 8),
+
           name: bp.name,
           title: bp.title,
           department: bp.department,

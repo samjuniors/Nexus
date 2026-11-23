@@ -25,6 +25,7 @@ export interface PortableBrainBundle {
   entities: Array<{
     name: string
     type?: string // accepted from older portable bundles; not stored by the current schema
+
     variants?: string
     origin?: string
   }>
@@ -161,7 +162,7 @@ export async function POST(req: NextRequest) {
           data: {
             name,
             variants: typeof ent.variants === 'string' ? ent.variants : '[]',
-            origin: String(ent.origin ?? 'portable_import'),
+            origin: ent.origin === 'manual' ? 'manual' : 'auto',
           },
         })
         entityIdByLower.set(name.toLowerCase(), created.id)
@@ -176,15 +177,16 @@ export async function POST(req: NextRequest) {
       for (const ed of body.edges) {
         const fromId = entityIdByLower.get(String(ed.fromName ?? '').toLowerCase())
         const toId = entityIdByLower.get(String(ed.toName ?? '').toLowerCase())
-        const relation = String(ed.relation ?? 'relates-to')
-        const kind = String(ed.kind ?? 'INFERRED')
+        const relation = String(ed.relation ?? 'relates-to').trim() || 'relates-to'
+        const kind = ed.kind === 'EXTRACTED' ? 'EXTRACTED' : 'INFERRED'
         if (!fromId || !toId || fromId === toId) continue
-        const key = `${fromId}:${toId}:${relation}:${kind}`
+        const key = String(fromId) + ':' + String(toId) + ':' + relation + ':' + kind
         if (edgeKeys.has(key)) continue
         await db.memoryEdge.create({
           data: {
             sourceId: fromId,
             targetId: toId,
+
             relation,
             kind,
             weight: Number(ed.weight ?? 1),

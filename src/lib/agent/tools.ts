@@ -2918,11 +2918,19 @@ export async function executeTool(
             res.ok ? 'Self-heal verified' : 'Self-heal completed with findings',
             2600
           )
+          const brainSummary = res.session.brainContext?.learnedLesson
+            ? `\nPortable Brain Lesson Saved: ${res.session.brainContext.learnedLesson}`
+            : ''
+          const capSummary = res.session.capabilityUpgrade?.applied
+            ? `\nCapability Upgraded: Enabled skill "${res.session.capabilityUpgrade.name}"`
+            : ''
           return {
             ok: res.ok,
-            summary: res.ok ? `Self-heal verified (${res.session.patches.length} file(s))` : 'Self-heal could not auto-verify',
-            raw: `${res.message}\nSession ID: ${res.session.id}\nSnapshot rollback available: ${res.session.canRollback}`,
-            display: { kind: 'text', text: `${res.message}\nSession: ${res.session.id}` },
+            summary: res.ok
+              ? `Self-heal verified (${res.session.patches.length} file(s), ${res.session.attemptsUsed ?? 1} attempt(s))`
+              : 'Self-heal could not auto-verify',
+            raw: `${res.message}\nSession ID: ${res.session.id}\nAttempts: ${res.session.attemptsUsed ?? 1}\nPortable Brain Recalled: ${res.session.brainContext?.recalledCount ?? 0} memories${brainSummary}${capSummary}\nSnapshot rollback available: ${res.session.canRollback}`,
+            display: { kind: 'text', text: `${res.message}${capSummary}\nSession: ${res.session.id}` },
           }
         }
 

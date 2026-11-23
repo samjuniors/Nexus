@@ -154,9 +154,16 @@ export async function POST(req: NextRequest) {
       if (!/^https?:\/\//i.test(webhookUrl)) {
         return NextResponse.json({ error: 'webhookUrl must start with http:// or https://' }, { status: 400 })
       }
+      const slugBase = name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 40) || 'byoa-agent'
+      const slug = `${slugBase}-${Date.now().toString(36)}`
       const employee = await db.aiEmployee.create({
         data: {
-          slug: `byoa_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 48)}_${randomUUID().slice(0, 8)}`,
+          slug: slugBase + '-' + randomUUID().slice(0, 8),
+
           name: name.slice(0, 60),
           title: String(body.title ?? 'External BYOA Runtime Agent').slice(0, 80),
           department: String(body.department ?? 'External Runtimes').slice(0, 48),
