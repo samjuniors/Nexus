@@ -83,3 +83,27 @@ prisma/schema.prisma    Memory / MemoryEntity / MemoryLink / MemoryEdge /
 - `brain/gbrain/vendor/gbrain/` keeps the upstream LICENSE — retain it if you fork.
 - Runtime state (`db/`, `tool-results/`, `agent-workspace/`) is generated locally and git-ignored.
 - Never commit your real `.env`; only `.env.example` belongs in git.
+
+
+## Owner security and remote access (draft)
+
+The Nexus security branch adds a server-level owner gateway. Development binds only to a loopback address by default; production requires a private `NEXUS_OWNER_TOKEN`. Owner actions and WebSocket sessions are gated before Next.js routing. Public phone/web access must use a trusted HTTPS reverse proxy and an explicit `NEXUS_PUBLIC_ORIGIN`; the app must not be placed directly on the public Internet. Use `/access` to unlock a browser session.
+
+Run the targeted security tests with `npm run test:security`; the full acceptance also requires `npm run typecheck`, `npm run lint`, `npm run build` and real Windows/Android tests. **No production security release is approved yet.** See [Owner Access & Release Gates](docs/security/OWNER_ACCESS_AND_RELEASE_GATES.md).
+
+## Nerve Core relationship
+
+**Future milestone only:** Nerve Core will be evaluated as a separately versioned, opt-in runtime behind the Nexus BrainHost interface. Do **not** merge Nerve Core's source or memory store into the portable `brain/` folder yet. Preserve one active brain, one action authority, reversible memory migration and Nexus Spine fallback. See [the deferred integration architecture](docs/architecture/NERVE_CORE_FUTURE_INTEGRATION.md).
+
+## Current selective port
+
+See [the Nexus vs SamjuniorsOS audit](docs/audits/NEXUS_VS_SAMJUNIORSOS_2026-11-21.md) and the [Nexus draft PR](https://github.com/samjuniors/Nexus/pull/1). It imports only bounded native consent/security patterns, not the SamjuniorsOS UI or private data.
+
+
+## Migration and build handoffs
+
+- [SamjuniorsOS → Nexus selective port ledger](docs/migrations/SAMJUNIORSOS_PORT_LEDGER.md)
+- [Google AI Studio Build handoff](docs/AI_STUDIO_BUILD_HANDOFF.md)
+- [Offline-only SQLite backup safety](docs/recovery/OFFLINE_SQLITE_BACKUP.md)
+
+This is a reviewed migration draft, not a finished distribution. The security and recovery fixture commands are `npm run test:security` and `npm run test:recovery`; neither substitutes for live Windows, Android or server acceptance.

@@ -169,6 +169,7 @@ export interface MobileFramePayload {
 
 export interface PermissionRequestPayload {
   requestId: string
+  actionHash: string
   capability: string
   title: string
   description: string
@@ -407,9 +408,13 @@ class NexusControlBus {
     })
   }
 
-  resolvePermission(requestId: string, decision: PermissionDecision): PermissionRequestPayload | null {
+  getPendingPermission(requestId: string): PermissionRequestPayload | null {
+    return this.pendingPermissions.get(requestId)?.request ?? null
+  }
+
+  resolvePermission(requestId: string, decision: PermissionDecision, actionHash: string): PermissionRequestPayload | null {
     const entry = this.pendingPermissions.get(requestId)
-    if (!entry) return null
+    if (!entry || !/^[a-f0-9]{64}$/.test(actionHash) || entry.request.actionHash !== actionHash) return null
     clearTimeout(entry.timer)
     this.pendingPermissions.delete(requestId)
     this.broadcast({
@@ -498,6 +503,10 @@ class NexusControlBus {
       })
     }
 
+    if (action === 'batch_rename' || !sock.capabilities.includes(action)) {
+      return Promise.resolve({ ok: false, output: '', error: 'Command not authorized for this paired device capability set.' })
+    }
+
     const commandId = `devcmd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
     return new Promise<DeviceCommandResult>((resolve) => {
       const timer = setTimeout(() => {
@@ -516,9 +525,10 @@ class NexusControlBus {
     })
   }
 
-  resolveDeviceCommand(commandId: string, result: DeviceCommandResult) {
+  resolveDeviceCommand(commandId: string, result: DeviceCommandResult, deviceId: string, socket: WebSocket) {
     const entry = this.pendingDeviceCommands.get(commandId)
-    if (!entry) return
+    // A paired device must not claim another device's command ID, including after reconnect.
+    if (!entry || entry.deviceId !== deviceId || this.deviceSockets.get(deviceId)?.ws !== socket) return
     clearTimeout(entry.timer)
     this.pendingDeviceCommands.delete(commandId)
     entry.resolve(result)

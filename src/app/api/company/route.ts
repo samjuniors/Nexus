@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import {
@@ -161,7 +162,8 @@ export async function POST(req: NextRequest) {
       const slug = `${slugBase}-${Date.now().toString(36)}`
       const employee = await db.aiEmployee.create({
         data: {
-          slug,
+          slug: slugBase + '-' + randomUUID().slice(0, 8),
+
           name: name.slice(0, 60),
           title: String(body.title ?? 'External BYOA Runtime Agent').slice(0, 80),
           department: String(body.department ?? 'External Runtimes').slice(0, 48),

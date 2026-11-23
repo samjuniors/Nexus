@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
 import { buildAndroidBridgeScript } from '@/lib/agent/device-bridge'
+import { getTrustedNexusOrigin } from '@/lib/agent/trusted-origin'
 
 export async function GET(request: Request) {
-  const url = new URL(request.url)
-  const origin = `${url.protocol}//${url.host}`
+  const origin = getTrustedNexusOrigin(request)
   const script = buildAndroidBridgeScript(origin)
   return new NextResponse(script, {
     status: 200,

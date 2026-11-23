@@ -1,4 +1,8 @@
+import { randomUUID } from 'node:crypto'
 import { db } from '@/lib/db'
+import { computeActionHash } from '@/lib/agent/action-binding'
+import { requiresSingleUseApproval } from '@/lib/agent/permission-policy'
+export { requiresSingleUseApproval } from '@/lib/agent/permission-policy'
 import { controlBus, type PermissionDecision } from '@/lib/agent/control-bus'
 
 export type CapabilityKey =
@@ -107,8 +111,11 @@ export async function listPermissionGrants(): Promise<PermissionGrantDTO[]> {
   const byKey = new Map(rows.map((r) => [r.capability, r]))
   return CAPABILITY_SPECS.map((spec) => {
     const row = byKey.get(spec.capability)
-    const policy: PermissionPolicy =
+    const configuredPolicy: PermissionPolicy =
       row && isValidPolicy(row.policy) ? row.policy : 'ask'
+    const policy: PermissionPolicy = requiresSingleUseApproval(spec.capability) && configuredPolicy === 'always'
+      ? 'ask'
+      : configuredPolicy
     return {
       ...spec,
       policy,
@@ -137,6 +144,9 @@ export async function setPermissionPolicy(
   capability: CapabilityKey,
   policy: PermissionPolicy
 ): Promise<PermissionGrantDTO> {
+  if (policy === 'always' && requiresSingleUseApproval(capability)) {
+    throw new Error('This sensitive capability requires per-action approval and cannot be set to Always')
+  }
   const row = await db.permissionGrant.upsert({
     where: { capability },
     create: { capability, policy },
@@ -178,9 +188,27 @@ export async function recordPermissionAudit(opts: {
 
 export async function resolvePermissionDecision(
   requestId: string,
-  decision: PermissionDecision
+  decision: PermissionDecision,
+  actionHash: string
 ): Promise<{ ok: boolean; capability?: string; decision: PermissionDecision }> {
-  const req = controlBus.resolvePermission(requestId, decision)
+  const pending = controlBus.getPendingPermission(requestId)
+  if (!pending || pending.actionHash !== actionHash ||
+      !['always', 'once', 'deny'].includes(decision)) return { ok: false, decision }
+  if (decision === 'always' && requiresSingleUseApproval(pending.capability)) {
+    return { ok: false, decision: 'deny' }
+  }
+  // A granted action is never released when the durable audit cannot be written.
+  if (decision === 'always' || decision === 'once') {
+    await db.permissionAuditLog.create({
+      data: {
+        capability: pending.capability,
+        actionSummary: pending.actionSummary.slice(0, 150) + ' [sha256:' + actionHash + ']',
+        decision,
+        actor: pending.actor || 'Nexus owner',
+      },
+    })
+  }
+  const req = controlBus.resolvePermission(requestId, decision, actionHash)
   if (!req) return { ok: false, decision }
 
   if (decision === 'always' && isValidCapability(req.capability)) {
@@ -191,12 +219,14 @@ export async function resolvePermissionDecision(
   } else {
     controlBus.broadcastEvaMood('idle', `Permission declined: ${req.title}`, 1200)
   }
-  await recordPermissionAudit({
-    capability: req.capability,
-    actionSummary: req.actionSummary,
-    decision,
-    actor: req.actor,
-  })
+  if (decision === 'deny') {
+    await recordPermissionAudit({
+      capability: req.capability,
+      actionSummary: req.actionSummary,
+      decision,
+      actor: req.actor,
+    })
+  }
   return { ok: true, capability: req.capability, decision }
 }
 
@@ -212,11 +242,22 @@ export async function requireCapabilityPermission(opts: {
   actor?: string
   details?: string
   timeoutMs?: number
-}): Promise<{ allowed: boolean; decision: PermissionDecision; reason?: string }> {
+  actionName?: string
+  target?: unknown
+  payload?: unknown
+}): Promise<{ allowed: boolean; decision: PermissionDecision; reason?: string; actionHash: string }> {
   const actor = opts.actor || 'Eva'
+  const actionHash = computeActionHash({
+    actionName: opts.actionName ?? opts.capability + ':' + opts.actionSummary,
+    target: opts.target ?? null,
+    payload: opts.payload ?? null,
+  })
   const spec = SPEC_BY_KEY.get(opts.capability)!
   const row = await db.permissionGrant.findUnique({ where: { capability: opts.capability } })
-  const policy: PermissionPolicy = row && isValidPolicy(row.policy) ? row.policy : 'ask'
+  const configuredPolicy: PermissionPolicy = row && isValidPolicy(row.policy) ? row.policy : 'ask'
+  const policy: PermissionPolicy = requiresSingleUseApproval(opts.capability) && configuredPolicy === 'always'
+    ? 'ask'
+    : configuredPolicy
 
   if (policy === 'always') {
     await db.permissionGrant
@@ -231,7 +272,7 @@ export async function requireCapabilityPermission(opts: {
       decision: 'always',
       actor,
     })
-    return { allowed: true, decision: 'always' }
+    return { allowed: true, decision: 'always', actionHash }
   }
 
   if (policy === 'deny') {
@@ -245,6 +286,7 @@ export async function requireCapabilityPermission(opts: {
       allowed: false,
       decision: 'deny',
       reason: `Permission "${spec.title}" is set to Deny. Change it in the Permissions panel to allow Eva to run this action.`,
+      actionHash,
     }
   }
 
@@ -254,14 +296,16 @@ export async function requireCapabilityPermission(opts: {
       allowed: false,
       decision: 'timeout',
       reason: `Permission "${spec.title}" requires approval in the open Nexus workspace UI (no active browser client connected).`,
+      actionHash,
     }
   }
 
-  const requestId = `perm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+  const requestId = 'perm_' + randomUUID()
   controlBus.broadcastEvaMood('curious', `Waiting for approval: ${spec.title}`, 45_000)
   const decision = await controlBus.waitForPermission(
     {
       requestId,
+      actionHash,
       capability: opts.capability,
       title: spec.title,
       description: spec.description,
@@ -283,7 +327,7 @@ export async function requireCapabilityPermission(opts: {
         })
         .catch(() => {})
     }
-    return { allowed: true, decision }
+    return { allowed: true, decision, actionHash }
   }
 
   if (decision === 'timeout') {
@@ -297,6 +341,7 @@ export async function requireCapabilityPermission(opts: {
       allowed: false,
       decision: 'timeout',
       reason: `Permission prompt for "${spec.title}" timed out without a response.`,
+      actionHash,
     }
   }
 
@@ -304,5 +349,6 @@ export async function requireCapabilityPermission(opts: {
     allowed: false,
     decision: 'deny',
     reason: `User declined permission "${spec.title}" for: ${opts.actionSummary}`,
+    actionHash,
   }
 }

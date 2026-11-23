@@ -41,6 +41,7 @@ async function listArtifacts() {
     }
     const out: ArtifactEntry[] = []
     for (const e of entries.sort((a, b) => b.name.localeCompare(a.name))) {
+      if (e.isSymbolicLink()) continue
       const rel = prefix ? `${prefix}/${e.name}` : e.name
       const abs = path.join(dir, e.name)
       if (e.isDirectory()) {

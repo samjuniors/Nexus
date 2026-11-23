@@ -7,11 +7,8 @@ import { chatText, getZAI } from '@/lib/agent/zai'
 import { controlBus } from '@/lib/agent/control-bus'
 import { liveBrowser } from '@/lib/agent/browser-manager'
 import { requireCapabilityPermission } from '@/lib/agent/permissions'
-import {
-  buildPowerShellPairCommand,
-  createPairedDevice,
-  listConnectedDevices,
-} from '@/lib/agent/device-bridge'
+import { verifyActionHash } from '@/lib/agent/action-binding'
+import { listConnectedDevices } from '@/lib/agent/device-bridge'
 import { terminalManager } from '@/lib/agent/terminal-manager'
 import type { TerminalShellKind, TerminalTarget } from '@/lib/agent/terminal-types'
 import {
@@ -1125,8 +1122,8 @@ export async function executeTool(
             if (!content) return { ok: false, summary: 'Missing content', raw: 'Error: provide "content".' }
             const abs = safeWorkspacePath(rel)
             if (!abs) return { ok: false, summary: 'Path outside workspace', raw: 'Error: path must stay inside the agent workspace.' }
-            await fs.mkdir(path.dirname(abs), { recursive: true })
-            await fs.writeFile(abs, content, 'utf-8')
+            const saved = await saveWorkspaceFile(rel, Buffer.from(content, 'utf-8'))
+            if (!saved) return { ok: false, summary: 'Path outside workspace', raw: 'Error: workspace paths cannot traverse symbolic links or junctions.' }
             return {
               ok: true,
               summary: `Wrote ${rel} (${content.length} chars)`,
@@ -1198,13 +1195,16 @@ export async function executeTool(
           (program === 'git' && /^(push|reset|clean|checkout\s--)/.test(argv.slice(1).join(' '))) ||
           (program === 'curl' && /-X\s*(POST|PUT|DELETE|PATCH)|--data|-d\s|-T\s/.test(command))
 
-        if (isDestructive && args.confirm !== true) {
+        if (isWrite || isDestructive) {
+          // LLM-supplied args.confirm can never authorize an OS command.
+          const actionBinding = { actionName: 'workspace.shell', target: WORKSPACE_DIR, payload: { command, argv } }
           const perm = await requireCapabilityPermission({
             capability: 'workspace_shell',
             actionSummary: `Run shell command: ${truncate(command, 90)}`,
-            details: `Destructive-tier command inside workspace directory`,
+            details: 'Write-capable command inside the workspace directory',
+            ...actionBinding,
           })
-          if (!perm.allowed) {
+          if (!perm.allowed || !verifyActionHash(perm.actionHash, actionBinding)) {
             return {
               ok: false,
               summary: `Permission required: ${truncate(command, 80)}`,
@@ -2000,6 +2000,7 @@ export async function executeTool(
 
       case 'browser_control': {
         const action = str(args.action, 'snapshot').toLowerCase()
+        const browserBinding = { actionName: 'browser.' + action, target: 'live_browser', payload: args }
         const perm = await requireCapabilityPermission({
           capability: 'browser_control',
           actionSummary:
@@ -2011,8 +2012,9 @@ export async function executeTool(
                   ? `Open live browser at ${truncate(str(args.url), 80)}`
                   : `Browser action "${action}"${args.selector ? ` on ${str(args.selector)}` : ''}`,
           details: 'Streams a live Playwright Chromium window or embedded media player inside the split-screen panel.',
+          ...browserBinding,
         })
-        if (!perm.allowed) {
+        if (!perm.allowed || !verifyActionHash(perm.actionHash, browserBinding)) {
           return {
             ok: false,
             summary: 'Browser control permission declined',
@@ -2222,12 +2224,14 @@ export async function executeTool(
       case 'app_control': {
         const action = str(args.action).trim()
         if (!action) return { ok: false, summary: 'Missing action', raw: 'Error: app_control requires "action".' }
+        const uiBinding = { actionName: 'app_ui.' + action, target: 'nexus_ui', payload: args }
         const perm = await requireCapabilityPermission({
           capability: 'app_ui',
           actionSummary: `UI control: ${action}${args.tab ? ` (${str(args.tab)})` : args.mode ? ` (${str(args.mode)})` : ''}`,
           details: 'Allows Eva to navigate panels, open split-screen views, spawn popups, and glide her animated cursor.',
+          ...uiBinding,
         })
-        if (!perm.allowed) {
+        if (!perm.allowed || !verifyActionHash(perm.actionHash, uiBinding)) {
           return {
             ok: false,
             summary: 'App UI permission declined',
@@ -2414,12 +2418,14 @@ export async function executeTool(
         const slug = str(args.slug).trim()
         if (!slug) return { ok: false, summary: 'Missing slug', raw: 'Error: provide "slug" of the plugin, skill, tool, or MCP server.' }
 
+        const extensionBinding = { actionName: 'extensions.' + action, target: slug, payload: args }
         const perm = await requireCapabilityPermission({
           capability: 'self_install',
           actionSummary: `${action.replace(/_/g, ' ')}: ${slug}`,
           details: 'Allows Eva to self-install or configure plugins, skills, tools, and MCP servers autonomously.',
+          ...extensionBinding,
         })
-        if (!perm.allowed) {
+        if (!perm.allowed || !verifyActionHash(perm.actionHash, extensionBinding)) {
           return {
             ok: false,
             summary: 'Self-install permission declined',
@@ -2586,6 +2592,7 @@ export async function executeTool(
         }
 
         // Per-App Allowlist strict guard
+        const desktopBinding = { actionName: 'desktop.' + action, target: target.id, payload: args }
         if (action === 'open_app') {
           const apps = await listAllowedDesktopApps()
           const appName = str(args.app)
@@ -2598,36 +2605,50 @@ export async function executeTool(
               display: { kind: 'text', text: `Blocked by Allowed Apps policy: ${appName}` },
             }
           }
-          if (evalRes.policy === 'ask') {
-            automationSession.setAwaitingApproval(`Launch ${appName} on ${target.name}`)
+          // An Allowed App preset is not an authorization for an AI-initiated launch.
+          automationSession.setAwaitingApproval(`Launch ${appName} on ${target.name}`)
             const appPerm = await requireCapabilityPermission({
               capability: 'desktop_bridge',
               actionSummary: `Launch app "${appName}" on ${target.name}`,
               details: JSON.stringify(args).slice(0, 180),
+              ...desktopBinding,
             })
-            automationSession.clearAwaitingApproval()
-            if (!appPerm.allowed) {
+          automationSession.clearAwaitingApproval()
+          if (!appPerm.allowed || !verifyActionHash(appPerm.actionHash, desktopBinding)) {
               return {
                 ok: false,
                 summary: `Launch declined for ${appName}`,
                 raw: appPerm.reason ?? `User declined launching ${appName}.`,
                 display: { kind: 'text', text: appPerm.reason ?? 'App launch declined.' },
               }
-            }
           }
         } else {
           const perm = await requireCapabilityPermission({
             capability: 'desktop_bridge',
             actionSummary: `${action} on ${target.name} (${target.platform})`,
             details: JSON.stringify(args).slice(0, 180),
+            ...desktopBinding,
           })
-          if (!perm.allowed) {
+          if (!perm.allowed || !verifyActionHash(perm.actionHash, desktopBinding)) {
             return {
               ok: false,
               summary: 'Desktop bridge permission declined',
               raw: perm.reason ?? 'Permission declined for device_control.',
               display: { kind: 'text', text: perm.reason ?? 'Permission declined.' },
             }
+          }
+        }
+
+        // Remote commands can execute arbitrary code. An app/device grant does not
+        // implicitly approve shell access: require the workspace_shell capability too.
+        if (action === 'shell' || action === 'powershell') {
+          const shellPermission = await requireCapabilityPermission({
+            capability: 'workspace_shell',
+            actionSummary: 'Paired device shell: ' + action,
+            ...desktopBinding,
+          })
+          if (!shellPermission.allowed || !verifyActionHash(shellPermission.actionHash, desktopBinding)) {
+            return { ok: false, summary: 'Remote shell permission declined', raw: shellPermission.reason ?? 'Denied by workspace shell gate' }
           }
         }
 
@@ -2737,12 +2758,14 @@ export async function executeTool(
         const action = str(args.action, 'status').toLowerCase()
 
         if (action !== 'status' && action !== 'list_apps') {
+          const mobileBinding = { actionName: 'mobile.' + action, target: str(args.deviceId) || 'mobile_device', payload: args }
           const perm = await requireCapabilityPermission({
             capability: 'mobile_control',
             actionSummary: `Android / Mobile takeover: ${action}${str(args.goal || args.app || args.target || args.setting) ? ` (${str(args.goal || args.app || args.target || args.setting).slice(0, 60)})` : ''}`,
             details: JSON.stringify(args).slice(0, 200),
+            ...mobileBinding,
           })
-          if (!perm.allowed) {
+          if (!perm.allowed || !verifyActionHash(perm.actionHash, mobileBinding)) {
             return {
               ok: false,
               summary: 'Mobile takeover permission declined',
@@ -2838,6 +2861,15 @@ export async function executeTool(
           if (!sessionId) {
             return { ok: false, summary: 'Missing sessionId for rollback', raw: 'Error: sessionId is required.' }
           }
+          const rollbackBinding = { actionName: 'self_heal.rollback', target: sessionId, payload: args }
+          const rollbackPermission = await requireCapabilityPermission({
+            capability: 'self_code_edit',
+            actionSummary: 'Rollback self-heal snapshot: ' + sessionId,
+            ...rollbackBinding,
+          })
+          if (!rollbackPermission.allowed || !verifyActionHash(rollbackPermission.actionHash, rollbackBinding)) {
+            return { ok: false, summary: 'Self-heal rollback not approved', raw: rollbackPermission.reason ?? 'Approval required' }
+          }
           const res = await rollbackSelfHealSession(sessionId)
           controlBus.broadcastUiCommand({ command: 'open_split', mode: 'self_heal', title: 'Self-Heal Studio' })
           return {
@@ -2849,6 +2881,7 @@ export async function executeTool(
         }
 
         // Mutating actions ('patch' or 'auto_heal') require one-time self_code_edit permission
+        const repairBinding = { actionName: 'self_heal.' + action, target: str(args.path || 'nexus_source'), payload: args }
         const perm = await requireCapabilityPermission({
           capability: 'self_code_edit',
           actionSummary:
@@ -2858,8 +2891,9 @@ export async function executeTool(
           details: Array.isArray(args.edits)
             ? (args.edits as { path?: string }[]).map((e) => e.path).filter(Boolean).join(', ')
             : str(args.path) || undefined,
+          ...repairBinding,
         })
-        if (!perm.allowed) {
+        if (!perm.allowed || !verifyActionHash(perm.actionHash, repairBinding)) {
           return {
             ok: false,
             summary: 'Self-healing code permission declined',
@@ -2988,30 +3022,10 @@ export async function executeTool(
         }
 
         if (action === 'pair_windows') {
-          const deviceName = str(args.deviceName, 'Windows PC').trim() || 'Windows PC'
-          const platform = str(args.platform, 'windows').trim() || 'windows'
-          const origin =
-            process.env.NEXT_PUBLIC_APP_URL ||
-            process.env.APP_URL ||
-            `http://localhost:${process.env.PORT || 3000}`
-          const { device, pairingToken } = await createPairedDevice(deviceName, platform)
-          const psCmd = buildPowerShellPairCommand(origin, pairingToken)
-          terminalManager.pushSystemNotice(
-            `Eva generated a real Windows PowerShell pairing command for "${device.name}":\n${psCmd}`
-          )
-          controlBus.broadcastUiCommand({ command: 'refresh_state', scopes: ['devices'] })
-          const raw = [
-            `Paired device entry created: ${device.name} (id=${device.id}, platform=${device.platform})`,
-            `One-line Windows PowerShell command (run on your Windows PC to connect live):`,
-            psCmd,
-            `Once running, your Windows PC appears online and Eva can run real Windows PowerShell directly on it.`,
-          ].join('\n')
-          return {
-            ok: true,
-            summary: `Generated PowerShell pairing command for ${device.name}`,
-            raw,
-            display: { kind: 'code', code: psCmd, output: `Pairing token issued for ${device.name}. Run in Windows PowerShell to connect.`, ok: true },
-          }
+          // Do not expose pairing tokens or executable pairing commands to the LLM.
+          // Pairing remains available through the authenticated owner Devices UI.
+          controlBus.broadcastUiCommand({ command: 'open_split', mode: 'devices', title: 'Connected Devices' })
+          return { ok: true, summary: 'Open private device pairing UI', raw: 'Pair a device in Nexus Devices with owner approval. Pairing credentials are not delivered to the agent.' }
         }
 
         // Default: exec a real OS shell / PowerShell command
@@ -3038,19 +3052,36 @@ export async function executeTool(
               requestedShell === 'pwsh' ||
               terminalManager.getSnapshot().target === 'windows_pc'))
 
+        const terminalBinding = {
+          actionName: 'terminal.exec',
+          target: willUseRemoteDesktop ? str(args.deviceId || onlineDesktop?.id) : 'host',
+          payload: { command, requestedTarget, requestedShell, cwd: args.cwd, timeoutMs: args.timeoutMs },
+        }
         const perm = await requireCapabilityPermission({
           capability: willUseRemoteDesktop ? 'desktop_bridge' : 'workspace_shell',
           actionSummary: `Run ${willUseRemoteDesktop ? 'Windows PowerShell' : 'Terminal'} command: ${truncate(command, 90)}`,
           details: willUseRemoteDesktop
             ? `Real Windows PowerShell execution on ${onlineDesktop?.name ?? 'paired Windows PC'}`
             : `Real host shell command in ${terminalManager.getSnapshot().cwd}`,
+          ...terminalBinding,
         })
-        if (!perm.allowed) {
+        if (!perm.allowed || !verifyActionHash(perm.actionHash, terminalBinding)) {
           return {
             ok: false,
             summary: `Permission declined for terminal command`,
             raw: perm.reason ?? 'User declined terminal execution permission.',
             display: { kind: 'text', text: perm.reason ?? 'Permission declined.' },
+          }
+        }
+
+        if (willUseRemoteDesktop) {
+          const shellPermission = await requireCapabilityPermission({
+            capability: 'workspace_shell',
+            actionSummary: 'Authorize remote shell command: ' + truncate(command, 90),
+            ...terminalBinding,
+          })
+          if (!shellPermission.allowed || !verifyActionHash(shellPermission.actionHash, terminalBinding)) {
+            return { ok: false, summary: 'Remote shell permission declined', raw: shellPermission.reason ?? 'Approval required' }
           }
         }
 

@@ -3,6 +3,7 @@ export type ReasoningSource = 'browser_autopilot' | 'mobile_autopilot' | 'missio
 export type ReasoningNodeKind =
   | 'goal'
   | 'decision'
+  | 'action'
   | 'observation'
   | 'self_correction'
   | 'verification'

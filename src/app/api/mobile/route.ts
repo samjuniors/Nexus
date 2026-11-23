@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
 import { mobileManager, type MobileActionInput } from '@/lib/agent/mobile-manager'
+import { requireCapabilityPermission } from '@/lib/agent/permissions'
+import { verifyActionHash } from '@/lib/agent/action-binding'
 import { listConnectedDevices } from '@/lib/agent/device-bridge'
 
 export async function GET() {
@@ -25,6 +27,9 @@ export async function POST(request: Request) {
     if (!body || typeof body.action !== 'string') {
       return NextResponse.json({ ok: false, error: 'Missing mobile action' }, { status: 400 })
     }
+    const actionBinding = { actionName: 'mobile.' + body.action, target: 'mobile_device', payload: body }
+    const permission = await requireCapabilityPermission({ capability: 'mobile_control', actionSummary: 'Control a paired mobile device: ' + body.action.slice(0, 80), actor: 'Nexus owner', ...actionBinding })
+    if (!permission.allowed || !verifyActionHash(permission.actionHash, actionBinding)) return NextResponse.json({ ok: false, error: permission.reason || 'Mobile control denied' }, { status: 403 })
     const res = await mobileManager.execute(body, { broadcast: true, openPanel: false })
     return NextResponse.json({
       ok: res.ok,

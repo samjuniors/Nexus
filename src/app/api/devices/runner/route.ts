@@ -1,13 +1,9 @@
 import { NextResponse } from 'next/server'
 import { buildCompanionRunnerScript } from '@/lib/agent/device-bridge'
+import { getTrustedNexusOrigin } from '@/lib/agent/trusted-origin'
 
 export async function GET(request: Request) {
-  const url = new URL(request.url)
-  const fwdProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim()
-  const fwdHost = request.headers.get('x-forwarded-host')?.split(',')[0]?.trim()
-  const host = fwdHost || request.headers.get('host')?.trim() || url.host
-  const proto = fwdProto ? `${fwdProto}:` : url.protocol
-  const origin = `${proto}//${host}`
+  const origin = getTrustedNexusOrigin(request)
   const script = buildCompanionRunnerScript(origin)
   return new NextResponse(script, {
     status: 200,

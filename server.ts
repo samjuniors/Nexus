@@ -1,15 +1,23 @@
 import { createServer } from 'http'
 import next from 'next'
+import { loadEnvConfig } from '@next/env'
 import { WebSocketServer } from 'ws'
+import { createOwnerGateway } from './security/owner-gateway.cjs'
+
+// Load .env and .env.local before owner authentication reads process.env.
+// This follows Next.js's documented out-of-runtime environment initialization.
+loadEnvConfig(process.cwd(), process.env.NODE_ENV !== 'production')
 
 const dev = process.env.NODE_ENV !== 'production'
-const hostname = '0.0.0.0'
 const rawPort = Number(process.env.PORT ?? 3000)
 const nginxPort = Number(process.env.NGINX_PORT ?? 0)
 const port =
   !Number.isFinite(rawPort) || rawPort <= 0 || (nginxPort > 0 && rawPort === nginxPort) || (dev && rawPort === 8080)
     ? 3000
     : rawPort
+
+const ownerGateway = createOwnerGateway({ port })
+const hostname = ownerGateway.bindHost
 
 const startedAt = Date.now()
 const app = next({ dev, hostname, port })
@@ -39,6 +47,8 @@ const preparePromise = app
 
 const server = createServer(async (req, res) => {
   try {
+    // Authenticate before Next.js, API routing, and the health response.
+    if (!(await ownerGateway.guardHttp(req, res))) return
     const pathname = (req.url ?? '/').split('?')[0]
 
     // Fast readiness endpoint for container & proxy health checks
@@ -87,9 +97,15 @@ const server = createServer(async (req, res) => {
 
 server.on('upgrade', (req, socket, head) => {
   try {
-    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+    const url = new URL(req.url ?? '/', 'http://localhost:' + port)
+    if (!ownerGateway.guardUpgrade(req, url.pathname)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+      socket.destroy()
+      return
+    }
     if (url.pathname === '/api/live') {
       wss.handleUpgrade(req, socket, head, async (ws) => {
+        ownerGateway.registerOwnerSocket(ws, req)
         try {
           const { handleLiveSocket } = await import('./src/lib/agent/live-session')
           await handleLiveSocket(ws, req)
@@ -106,19 +122,26 @@ server.on('upgrade', (req, socket, head) => {
     }
     if (url.pathname === '/api/control') {
       wss.handleUpgrade(req, socket, head, async (ws) => {
+        ownerGateway.registerOwnerSocket(ws, req)
         try {
           const { controlBus } = await import('./src/lib/agent/control-bus')
           const { resolvePermissionDecision } = await import('./src/lib/agent/permissions')
           controlBus.registerUiClient(ws)
           ws.on('message', (raw) => {
+            if (!ownerGateway.guardUpgrade(req, '/api/control')) {
+              ws.terminate()
+              return
+            }
             try {
               const msg = JSON.parse(String(raw)) as {
                 type?: string
                 requestId?: string
+                actionHash?: string
                 decision?: 'always' | 'once' | 'deny'
               }
-              if (msg.type === 'permission:respond' && msg.requestId && msg.decision) {
-                void resolvePermissionDecision(msg.requestId, msg.decision)
+              if (msg.type === 'permission:respond' && msg.requestId && msg.actionHash &&
+                  (msg.decision === 'always' || msg.decision === 'once' || msg.decision === 'deny')) {
+                void resolvePermissionDecision(msg.requestId, msg.decision, msg.actionHash)
               }
             } catch {
               /* ignore malformed frames */
@@ -175,7 +198,7 @@ server.on('error', (err) => {
 })
 
 server.listen(port, hostname, () => {
-  console.log(`> Nexus Agent listening on http://${hostname}:${port} (dev=${dev})`)
+  console.log(`> Nexus Agent listening on http://${hostname}:${port} (dev=${dev}, ownerAuth=${ownerGateway.requiresOwnerToken})`)
 })
 
 const shutdown = () => {

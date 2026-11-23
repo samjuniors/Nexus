@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
 import { liveBrowser } from '@/lib/agent/browser-manager'
+import { requireCapabilityPermission } from '@/lib/agent/permissions'
+import { verifyActionHash } from '@/lib/agent/action-binding'
 
 export async function GET() {
   return NextResponse.json({
@@ -25,6 +27,9 @@ export async function POST(request: Request) {
       submit?: boolean
     }
     const action = String(body.action ?? 'snapshot').trim()
+    const actionBinding = { actionName: 'browser.' + action, target: 'live_browser', payload: body }
+    const permission = await requireCapabilityPermission({ capability: 'browser_control', actionSummary: 'Browser operation: ' + action.slice(0, 80), actor: 'Nexus owner', ...actionBinding })
+    if (!permission.allowed || !verifyActionHash(permission.actionHash, actionBinding)) return NextResponse.json({ ok: false, error: permission.reason || 'Browser control denied' }, { status: 403 })
 
     if (action === 'close') {
       await liveBrowser.close()

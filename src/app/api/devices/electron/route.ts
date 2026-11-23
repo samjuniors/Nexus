@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getTrustedNexusOrigin } from '@/lib/agent/trusted-origin'
 
 /**
  * GET /api/devices/electron
@@ -7,7 +8,7 @@ import { NextRequest, NextResponse } from 'next/server'
  * both the Web app and a native Electron desktop shell.
  */
 export async function GET(req: NextRequest) {
-  const origin = req.nextUrl.origin || 'http://localhost:3000'
+  const origin = getTrustedNexusOrigin(req)
   const wsOrigin = origin.replace(/^http/, 'ws')
 
   const config = {

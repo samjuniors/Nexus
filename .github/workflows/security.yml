@@ -1,0 +1,51 @@
+name: Nexus security and acceptance gates
+
+on:
+  push:
+    branches:
+      - main
+      - 'audit/**'
+      - 'security/**'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    name: Owner gateway, desktop consent, lint, types and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.3'
+
+      - name: Install pinned dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: bunx prisma generate
+
+      - name: Owner and Electron permission boundary tests
+        run: npm run test:security
+
+      - name: Offline SQLite backup and manifest tests
+        run: npm run test:recovery
+
+      - name: TypeScript validation
+        run: npm run typecheck
+
+      - name: ESLint validation
+        run: npm run lint
+
+      - name: Production build
+        run: npm run build

@@ -61,3 +61,10 @@ server.log
 
 # Skills directory (local, machine-specific)
 /skills/
+# Nexus offline disaster-recovery snapshots — never commit real user databases
+/backups/
+/prisma/*.db
+/prisma/*.db-*
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal

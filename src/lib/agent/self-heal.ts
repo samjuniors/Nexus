@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises'
+import { lstatSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -119,6 +120,37 @@ const ALLOWED_ROOT_FILES = new Set(['package.json', 'next.config.ts'])
 const BLOCKED_SEGMENTS = new Set(['.git', '.next', 'node_modules', '.nexus-snapshots'])
 const BLOCKED_EXTENSIONS = new Set(['.db', '.sqlite', '.sqlite3', '.pem', '.key', '.p12'])
 
+/** Reject existing symlink/junction components below the canonical workspace root. */
+function traversesSymlinkOrJunction(root: string, target: string): boolean {
+  const resolvedRoot = path.resolve(root)
+  const resolvedTarget = path.resolve(target)
+  const relative = path.relative(resolvedRoot, resolvedTarget)
+  if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return true
+  let rootReal: string
+  try {
+    const rootStat = lstatSync(resolvedRoot)
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return true
+    rootReal = realpathSync.native(resolvedRoot)
+  } catch {
+    return true
+  }
+  let current = resolvedRoot
+  for (const segment of relative ? relative.split(path.sep) : []) {
+    current = path.join(current, segment)
+    try {
+      const stat = lstatSync(current)
+      if (stat.isSymbolicLink()) return true
+      const actual = realpathSync.native(current)
+      const rel = path.relative(rootReal, actual)
+      if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) return true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+      return true
+    }
+  }
+  return false
+}
+
 /** Validates and resolves a workspace-relative path with strict guardrails against traversal or secrets. */
 export function resolveSafeAppPath(relPath: string): { abs: string; rel: string } {
   const clean = relPath.replace(/\\/g, '/').replace(/^\/+/, '').trim()
@@ -148,6 +180,9 @@ export function resolveSafeAppPath(relPath: string): { abs: string; rel: string 
   const abs = path.resolve(WORKSPACE_ROOT, clean)
   if (!abs.startsWith(WORKSPACE_ROOT + path.sep) && abs !== WORKSPACE_ROOT) {
     throw new Error(`Path escapes workspace root: "${relPath}"`)
+  }
+  if (traversesSymlinkOrJunction(WORKSPACE_ROOT, abs)) {
+    throw new Error('Path traverses a symbolic link or junction: ' + relPath)
   }
   return { abs, rel: clean }
 }

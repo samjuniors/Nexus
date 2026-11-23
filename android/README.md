@@ -7,7 +7,7 @@ Native Kotlin + Material 3 Android Studio project (`com.nexus.eva`) that package
 - **Foreground Voice Service (`microphone`)**: Keeps Eva Voice alive with a persistent notification (and a one-tap **Stop Voice** notification button) even when you switch apps or lock your screen.
 - **Native Material 3 Haptics**: Exposes `window.NexusAndroid.haptic(style)` using Android `VibrationEffect` APIs.
 - **System Back Gesture Stack**: Routes Android predictive/hardware Back gestures into `window.__nexusAndroidHandleBack()` to dismiss bottom sheets, close split panels, and step back cleanly before prompting to exit.
-- **Saved Server URL Picker**: Connect to any Cloud HTTPS deployment, local Wi-Fi LAN IP (`http://192.168.x.x:3000`), or USB ADB reverse tunnel (`http://127.0.0.1:3000`), with a live `/api/health` connection check and saved history.
+- **Saved Server URL Picker**: Connect to any Cloud HTTPS deployment, owner-authenticated HTTPS proxy (`NEXUS_PUBLIC_ORIGIN`), or USB ADB reverse tunnel (`http://127.0.0.1:3000`), with a live `/api/health` connection check and saved history.
 
 ## Building the APK
 
@@ -34,3 +34,8 @@ If running Nexus Eva locally on port `3000` with a phone plugged in via USB:
 adb reverse tcp:3000 tcp:3000
 ```
 Then open the Nexus Eva APK and tap the **USB ADB (127.0.0.1:3000)** preset in the Server Picker.
+
+
+## Security notice
+
+Nexus's server now binds to loopback. A raw Wi-Fi URL such as `http://192.168.x.x:3000` is **not supported** for owner access. Use `adb reverse tcp:3000 tcp:3000` for private USB development, or configure a trusted HTTPS reverse proxy with `NEXUS_PUBLIC_ORIGIN` and `NEXUS_OWNER_TOKEN` for remote phone access. Log in through `/access` in the Android WebView and verify cookie persistence. Native device bridge pairing tokens are distinct from owner login credentials. Release and WebView tests remain required; see [owner security instructions](../docs/security/OWNER_ACCESS_AND_RELEASE_GATES.md).
