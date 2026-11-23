@@ -4,6 +4,8 @@ import type { ConversationDTO, GBrainNodeDTO, RunDTO, RunEventDTO } from './clie
 import {
   buildMissionOverlayGraph,
   computeMissionOverlayLayout,
+  getActiveExecutionFlowEdgeIds,
+  getActivelyProcessedEntities,
   selectActiveMissionRun,
 } from './gbrain-mission-graph'
 import type { ReasoningChain } from './reasoning-chain'
@@ -309,5 +311,78 @@ describe('gbrain-mission-graph', () => {
     assert.equal(chainGraph.hasMission, true)
     assert.equal(chainGraph.source, 'reasoning')
     assert.equal(chainGraph.nodes.length, 2)
+  })
+
+  it('identifies actively processed GBrain entities and flowing edges only while Agentic Tasks are running', () => {
+    const runningRun = makeRun({
+      status: 'executing',
+      events: [
+        ev(1, 'analysis', {
+          steps: [
+            { id: 1, description: 'Search docs', assignee: 'Eva', uses: ['web_search'] },
+            { id: 2, description: 'Verify via shell', assignee: 'Eva', uses: ['run_shell'] },
+            { id: 3, description: 'Write summary', assignee: 'Eva', uses: [] },
+          ],
+        }),
+        ev(2, 'step_start', { stepId: 1 }),
+        ev(3, 'step_done', { stepId: 1, result: 'Done searching' }),
+        ev(4, 'step_start', { stepId: 2 }),
+      ],
+    })
+
+    const runningGraph = buildMissionOverlayGraph({
+      run: runningRun,
+      live: true,
+      gbrainNodes: sampleGBrainNodes,
+    })
+    const activeEntities = getActivelyProcessedEntities(runningGraph)
+    const activeEdges = getActiveExecutionFlowEdgeIds(runningGraph)
+
+    // Step 2 is running and uses run_shell + Eva, while Step 1 (web_search) is already done
+    assert.ok(activeEntities.has('ent-shell'), 'run_shell entity should pulse while Step 2 is running')
+    assert.equal(activeEntities.get('ent-shell')?.stepIndex, 2)
+    assert.equal(activeEntities.has('ent-web'), false, 'completed Step 1 entity should not pulse')
+
+    const step1 = runningGraph.nodes.find((n) => n.stepId === 1)!
+    const step2 = runningGraph.nodes.find((n) => n.stepId === 2)!
+    const step3 = runningGraph.nodes.find((n) => n.stepId === 3)!
+
+    const depIntoStep2 = runningGraph.edges.find(
+      (e) => e.sourceId === step1.id && e.targetId === step2.id
+    )!
+    const depIntoStep3 = runningGraph.edges.find(
+      (e) => e.sourceId === step2.id && e.targetId === step3.id
+    )!
+    const bridgeFromStep2 = runningGraph.edges.find(
+      (e) => e.edgeKind === 'knowledge_bridge' && e.sourceId === step2.id && e.targetId === 'ent-shell'
+    )!
+    const bridgeFromStep1 = runningGraph.edges.find(
+      (e) => e.edgeKind === 'knowledge_bridge' && e.sourceId === step1.id && e.targetId === 'ent-web'
+    )!
+
+    assert.ok(activeEdges.has(depIntoStep2.id), 'dependency feeding into running Step 2 should flow')
+    assert.ok(activeEdges.has(bridgeFromStep2.id), 'knowledge bridge from running Step 2 should flow')
+    assert.equal(activeEdges.has(bridgeFromStep1.id), false, 'completed Step 1 bridge should not flow')
+    assert.equal(activeEdges.has(depIntoStep3.id), true, 'active running edge leaving Step 2 flows when status is running')
+
+    // Completed mission produces zero pulsing entities or flowing edges
+    const doneRun = makeRun({
+      status: 'done',
+      events: [
+        ev(1, 'analysis', {
+          steps: [{ id: 1, description: 'Verify via shell', assignee: 'Eva', uses: ['run_shell'] }],
+        }),
+        ev(2, 'step_start', { stepId: 1 }),
+        ev(3, 'step_done', { stepId: 1, result: 'OK' }),
+        ev(4, 'final', { text: 'All complete' }),
+      ],
+    })
+    const doneGraph = buildMissionOverlayGraph({
+      run: doneRun,
+      live: false,
+      gbrainNodes: sampleGBrainNodes,
+    })
+    assert.equal(getActivelyProcessedEntities(doneGraph).size, 0)
+    assert.equal(getActiveExecutionFlowEdgeIds(doneGraph).size, 0)
   })
 })

@@ -61,6 +61,8 @@ import {
 import {
   buildMissionOverlayGraph,
   computeMissionOverlayLayout,
+  getActiveExecutionFlowEdgeIds,
+  getActivelyProcessedEntities,
   MISSION_STATUS_META,
   selectActiveMissionRun,
   type LaidMissionNode,
@@ -500,6 +502,17 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
 
   const showMissionOnCanvas =
     missionGraph.hasMission && (layoutMode === 'mission' || showMissionLayer)
+
+  // Live execution pulse targets: GBrain entities actively being processed by running Agentic Tasks
+  const activeProcessingEntities = useMemo(
+    () => getActivelyProcessedEntities(missionGraph),
+    [missionGraph]
+  )
+
+  const activeFlowEdgeIds = useMemo(
+    () => getActiveExecutionFlowEdgeIds(missionGraph),
+    [missionGraph]
+  )
 
   // Deterministic card-aware GBrain entity layout
   const baseLayoutMode: GBrainLayoutMode = layoutMode === 'mission' ? 'clustered' : layoutMode
@@ -1313,19 +1326,24 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                   </div>
 
                   <div className="space-y-0.5">
-                    {missionGraph.nodes.map((mn) => (
+                    {missionGraph.nodes.map((mn) => {
+                      const isRunningNode = mn.status === 'running'
+                      return (
                       <button
                         key={mn.id}
                         type="button"
+                        data-mission-rail-status={mn.status}
                         onClick={() => {
                           if (!showMissionOnCanvas) setShowMissionLayer(true)
                           focusNode(mn.id)
                         }}
                         className={cn(
-                          'flex w-full items-center justify-between gap-1.5 rounded-md px-2 py-1 text-left text-[11px] transition-colors',
+                          'flex w-full items-center justify-between gap-1.5 rounded-md border px-2 py-1 text-left text-[11px] transition-colors',
                           selected === mn.id
-                            ? 'bg-sky-500/12 font-medium text-sky-600 dark:text-sky-400'
-                            : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+                            ? 'border-sky-500/35 bg-sky-500/12 font-medium text-sky-600 dark:text-sky-400'
+                            : isRunningNode
+                              ? 'border-sky-500/30 bg-sky-500/8 font-medium text-foreground'
+                              : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'
                         )}
                       >
                         <span className="flex min-w-0 items-center gap-1.5">
@@ -1349,7 +1367,8 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                           {mn.statusLabel}
                         </span>
                       </button>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               )}
@@ -1936,30 +1955,49 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                       const isHighlighted =
                         activeFocusId !== null &&
                         (me.sourceId === activeFocusId || me.targetId === activeFocusId)
-                      const dimmed = activeFocusId !== null && !isHighlighted
+                      const isFlowing = activeFlowEdgeIds.has(me.id)
+                      const dimmed = activeFocusId !== null && !isHighlighted && !isFlowing
 
                       const sx = src.x
                       const sy = src.y + src.height / 2
                       const ex = dst.x
                       const ey = dst.y - HALF_H
                       const midY = (sy + ey) / 2
-                      const stroke = isHighlighted ? '#38bdf8' : MISSION_STATUS_META[me.status].accent
+                      const stroke = isHighlighted || isFlowing ? '#38bdf8' : MISSION_STATUS_META[me.status].accent
+                      const dPath = `M ${sx} ${sy} C ${sx} ${midY}, ${ex} ${midY}, ${ex} ${ey}`
 
                       return (
-                        <g key={me.id} data-mission-edge="knowledge_bridge">
+                        <g
+                          key={me.id}
+                          data-mission-edge="knowledge_bridge"
+                          data-mission-edge-flowing={isFlowing ? '1' : undefined}
+                        >
                           <path
-                            d={`M ${sx} ${sy} C ${sx} ${midY}, ${ex} ${midY}, ${ex} ${ey}`}
+                            d={dPath}
                             fill="none"
                             stroke={stroke}
-                            strokeOpacity={isHighlighted ? 0.85 : dimmed ? 0.06 : 0.34}
-                            strokeWidth={isHighlighted ? 1.8 : 1.15}
+                            strokeOpacity={isHighlighted ? 0.85 : isFlowing ? 0.35 : dimmed ? 0.06 : 0.34}
+                            strokeWidth={isHighlighted || isFlowing ? 1.8 : 1.15}
                             strokeDasharray="4 4"
                             markerEnd={
-                              isHighlighted
+                              isHighlighted || isFlowing
                                 ? 'url(#gbrain-arrow-active)'
                                 : `url(#gbrain-mission-arrow-${me.status})`
                             }
                           />
+                          {isFlowing && (
+                            <path
+                              d={dPath}
+                              fill="none"
+                              stroke="#38bdf8"
+                              strokeOpacity={0.92}
+                              strokeWidth={2}
+                              strokeDasharray="7 5"
+                              strokeLinecap="round"
+                              className="gbrain-flow-edge"
+                              pointerEvents="none"
+                            />
+                          )}
                         </g>
                       )
                     })}
@@ -1975,32 +2013,52 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                       const isHighlighted =
                         activeFocusId !== null &&
                         (me.sourceId === activeFocusId || me.targetId === activeFocusId)
-                      const dimmed = activeFocusId !== null && !isHighlighted
+                      const isFlowing = activeFlowEdgeIds.has(me.id)
+                      const dimmed = activeFocusId !== null && !isHighlighted && !isFlowing
 
                       const sx = src.x + src.width / 2
                       const sy = src.y
                       const ex = dst.x - dst.width / 2 - 2
                       const ey = dst.y
                       const dx = Math.max(36, Math.abs(ex - sx) * 0.45)
-                      const stroke = MISSION_STATUS_META[me.status].accent
+                      const stroke = isFlowing ? '#38bdf8' : MISSION_STATUS_META[me.status].accent
                       const mx = (sx + ex) / 2
                       const my = (sy + ey) / 2
+                      const dPath = `M ${sx} ${sy} C ${sx + dx} ${sy}, ${ex - dx} ${ey}, ${ex} ${ey}`
 
                       return (
                         <g
                           key={me.id}
                           data-mission-edge={me.edgeKind}
                           data-mission-edge-status={me.status}
+                          data-mission-edge-flowing={isFlowing ? '1' : undefined}
                         >
                           <path
-                            d={`M ${sx} ${sy} C ${sx + dx} ${sy}, ${ex - dx} ${ey}, ${ex} ${ey}`}
+                            d={dPath}
                             fill="none"
                             stroke={stroke}
-                            strokeOpacity={isHighlighted ? 0.98 : dimmed ? 0.14 : 0.78}
-                            strokeWidth={isHighlighted ? 2.4 : me.status === 'running' ? 2.1 : 1.65}
+                            strokeOpacity={isHighlighted ? 0.98 : isFlowing ? 0.38 : dimmed ? 0.14 : 0.78}
+                            strokeWidth={isHighlighted ? 2.4 : isFlowing || me.status === 'running' ? 2.1 : 1.65}
                             strokeDasharray={me.status === 'blocked' ? '5 4' : undefined}
-                            markerEnd={`url(#gbrain-mission-arrow-${me.status})`}
+                            markerEnd={
+                              isFlowing
+                                ? 'url(#gbrain-mission-arrow-running)'
+                                : `url(#gbrain-mission-arrow-${me.status})`
+                            }
                           />
+                          {isFlowing && (
+                            <path
+                              d={dPath}
+                              fill="none"
+                              stroke="#38bdf8"
+                              strokeOpacity={0.95}
+                              strokeWidth={2.2}
+                              strokeDasharray="7 5"
+                              strokeLinecap="round"
+                              className="gbrain-flow-edge"
+                              pointerEvents="none"
+                            />
+                          )}
                           {isHighlighted && (
                             <g transform={`translate(${mx}, ${my})`} pointerEvents="none">
                               <rect
@@ -2033,7 +2091,10 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                 {canvasLaidNodes.map((l) => {
                   const isSelected = l.node.id === selected
                   const isHovered = l.node.id === hovered
-                  const inNeighborhood = activeFocusId === null || neighborSet.has(l.node.id)
+                  const processingInfo = activeProcessingEntities.get(l.node.id) ?? null
+                  const isProcessing = processingInfo !== null
+                  const inNeighborhood =
+                    activeFocusId === null || neighborSet.has(l.node.id) || isProcessing
                   const cat = GBRAIN_CATEGORY_MAP[l.node.category] ?? GBRAIN_CATEGORY_MAP.concepts
                   const traceOp = tracedNodeMap.get(l.node.id) ?? null
                   const inActivePack = activePackSet.has(l.node.id)
@@ -2051,6 +2112,9 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                       data-node-category={l.node.category}
                       data-node-traced={traceOp ?? undefined}
                       data-node-in-pack={inActivePack ? '1' : undefined}
+                      data-node-processing={isProcessing ? '1' : undefined}
+                      data-node-pulsing={isProcessing ? '1' : undefined}
+                      data-node-processing-task={processingInfo?.taskId}
                       transform={`translate(${l.x}, ${l.y})`}
                       className="cursor-pointer"
                       opacity={inNeighborhood ? 1 : 0.22}
@@ -2068,7 +2132,47 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                         }
                       }}
                     >
-                      <title>{`${l.node.name} · ${cat.label} (${l.node.degree} links, ${l.node.memoryCount} memories)${traceOp ? ` · Live ${traceOp}` : ''}${inActivePack ? ' · Active Context Pack' : ''} — click to inspect, drag to move`}</title>
+                      <title>{`${l.node.name} · ${cat.label} (${l.node.degree} links, ${l.node.memoryCount} memories)${processingInfo ? ` · Processing now by ${processingInfo.stepIndex ? `Task #${processingInfo.stepIndex}` : processingInfo.assignee}: ${processingInfo.taskTitle}` : ''}${traceOp ? ` · Live ${traceOp}` : ''}${inActivePack ? ' · Active Context Pack' : ''} — click to inspect, drag to move`}</title>
+
+                      {/* Live Agentic Task Processing Pulse Ripples */}
+                      {isProcessing && (
+                        <g pointerEvents="none" data-node-pulse-ring="1">
+                          <rect
+                            x={-HALF_W - 2}
+                            y={-HALF_H - 2}
+                            width={CARD_W + 4}
+                            height={CARD_H + 4}
+                            rx={11}
+                            fill="none"
+                            stroke="#38bdf8"
+                            strokeWidth={2}
+                            className="gbrain-exec-pulse-outer"
+                          />
+                          <rect
+                            x={-HALF_W - 2}
+                            y={-HALF_H - 2}
+                            width={CARD_W + 4}
+                            height={CARD_H + 4}
+                            rx={11}
+                            fill="none"
+                            stroke="#38bdf8"
+                            strokeWidth={1.5}
+                            className="gbrain-exec-pulse-inner"
+                          />
+                          <rect
+                            x={-HALF_W - 3.5}
+                            y={-HALF_H - 3.5}
+                            width={CARD_W + 7}
+                            height={CARD_H + 7}
+                            rx={12}
+                            fill="#38bdf8"
+                            fillOpacity={0.07}
+                            stroke="#38bdf8"
+                            strokeWidth={1.4}
+                            className="gbrain-exec-breathe"
+                          />
+                        </g>
+                      )}
 
                       {/* Live Working Memory Trace Halo */}
                       {traceOp && (
@@ -2132,13 +2236,13 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                         rx={9}
                         fill="var(--card)"
                         stroke={
-                          isSelected
+                          isSelected || isProcessing
                             ? '#38bdf8'
                             : inActivePack
                               ? '#38bdf8'
                               : 'var(--border)'
                         }
-                        strokeWidth={isSelected || inActivePack ? 1.5 : 1}
+                        strokeWidth={isSelected || isProcessing || inActivePack ? 1.6 : 1}
                       />
 
                       {/* Subtle top semantic category strip (clean horizontal accent, not a thick left border) */}
@@ -2148,17 +2252,21 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                         width={CARD_W - 20}
                         height={2.5}
                         rx={1.25}
-                        fill={cat.accent}
-                        opacity={isSelected || isHovered || inActivePack ? 1 : 0.85}
+                        fill={isProcessing ? '#38bdf8' : cat.accent}
+                        opacity={isSelected || isHovered || inActivePack || isProcessing ? 1 : 0.85}
                       />
 
-                      {/* Category dot + Node Title */}
-                      <circle
-                        cx={-HALF_W + 14}
-                        cy={-6}
-                        r={3.5}
-                        fill={cat.accent}
-                      />
+                      {/* Category dot or Active Processing Spinner + Node Title */}
+                      {isProcessing ? (
+                        <MissionNodeStatusSvg status="running" x={-HALF_W + 14} y={-6} />
+                      ) : (
+                        <circle
+                          cx={-HALF_W + 14}
+                          cy={-6}
+                          r={3.5}
+                          fill={cat.accent}
+                        />
+                      )}
                       <text
                         x={-HALF_W + 24}
                         y={-2.5}
@@ -2171,7 +2279,7 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                       </text>
 
                       {/* Active Context Pack Pin Indicator */}
-                      {inActivePack && (
+                      {inActivePack && !isProcessing && (
                         <circle
                           cx={HALF_W - 12}
                           cy={-6}
@@ -2180,16 +2288,17 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                         />
                       )}
 
-                      {/* Clean unboxed metadata subline */}
+                      {/* Clean unboxed metadata subline (explicit Processing state when active) */}
                       <text
                         x={-HALF_W + 14}
                         y={14}
                         fontSize={9.5}
-                        fill="var(--muted-foreground)"
+                        fill={isProcessing ? '#38bdf8' : 'var(--muted-foreground)'}
                         className="pointer-events-none select-none font-mono"
                       >
-                        {cat.shortLabel} · {l.node.degree} links
-                        {l.node.memoryCount > 0 ? ` · ${l.node.memoryCount}m` : ''}
+                        {isProcessing
+                          ? `Processing${processingInfo.stepIndex ? ` · #${processingInfo.stepIndex}` : ''} · ${truncateText(processingInfo.assignee, 10)}`
+                          : `${cat.shortLabel} · ${l.node.degree} links${l.node.memoryCount > 0 ? ` · ${l.node.memoryCount}m` : ''}`}
                       </text>
                     </g>
                   )
@@ -2200,12 +2309,14 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                   laidMissionNodes.map((l) => {
                     const isSelected = l.node.id === selected
                     const isHovered = l.node.id === hovered
-                    const inNeighborhood = activeFocusId === null || neighborSet.has(l.node.id)
                     const statusMeta = MISSION_STATUS_META[l.node.status]
                     const hw = l.width / 2
                     const hh = l.height / 2
                     const isRoot = l.node.nodeKind === 'mission_root'
                     const isRunning = l.node.status === 'running'
+                    const shouldPulse = isRunning && (!isRoot || missionGraph.running === 0)
+                    const inNeighborhood =
+                      activeFocusId === null || neighborSet.has(l.node.id) || isRunning
                     const maxChars = isRoot ? 24 : 21
 
                     return (
@@ -2215,6 +2326,7 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                         data-mission-node="1"
                         data-mission-kind={l.node.nodeKind}
                         data-mission-status={l.node.status}
+                        data-node-pulsing={shouldPulse ? '1' : undefined}
                         transform={`translate(${l.x}, ${l.y})`}
                         className="cursor-pointer"
                         opacity={inNeighborhood ? 1 : 0.25}
@@ -2234,19 +2346,60 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                       >
                         <title>{`${isRoot ? 'Mission Goal' : `Sub-goal #${l.node.stepIndex}`}: ${l.node.description} · Status: ${l.node.statusLabel} · Assignee: ${l.node.assignee} — click to inspect dependencies, drag to arrange`}</title>
 
-                        {/* Dynamic Running Halo */}
-                        {isRunning && (
+                        {/* Dynamic Real-Time Execution Pulse Ripples */}
+                        {shouldPulse && (
+                          <g pointerEvents="none" data-node-pulse-ring="1">
+                            <rect
+                              x={-hw - 2}
+                              y={-hh - 2}
+                              width={l.width + 4}
+                              height={l.height + 4}
+                              rx={12}
+                              fill="none"
+                              stroke={statusMeta.accent}
+                              strokeWidth={2.2}
+                              className="gbrain-exec-pulse-outer"
+                            />
+                            <rect
+                              x={-hw - 2}
+                              y={-hh - 2}
+                              width={l.width + 4}
+                              height={l.height + 4}
+                              rx={12}
+                              fill="none"
+                              stroke={statusMeta.accent}
+                              strokeWidth={1.6}
+                              className="gbrain-exec-pulse-inner"
+                            />
+                            <rect
+                              x={-hw - 4}
+                              y={-hh - 4}
+                              width={l.width + 8}
+                              height={l.height + 8}
+                              rx={13}
+                              fill={statusMeta.accent}
+                              fillOpacity={0.07}
+                              stroke={statusMeta.accent}
+                              strokeWidth={1.5}
+                              className="gbrain-exec-breathe"
+                            />
+                          </g>
+                        )}
+
+                        {/* Subtle breathing border on running Mission Root while child sub-goals pulse */}
+                        {isRoot && isRunning && !shouldPulse && (
                           <rect
-                            x={-hw - 5}
-                            y={-hh - 5}
-                            width={l.width + 10}
-                            height={l.height + 10}
-                            rx={14}
+                            x={-hw - 4}
+                            y={-hh - 4}
+                            width={l.width + 8}
+                            height={l.height + 8}
+                            rx={13}
                             fill="none"
                             stroke={statusMeta.accent}
-                            strokeWidth={1.6}
+                            strokeWidth={1.5}
                             strokeDasharray="6 4"
-                            strokeOpacity={0.85}
+                            className="gbrain-exec-breathe"
+                            pointerEvents="none"
                           />
                         )}
 
@@ -2282,7 +2435,7 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                           }
                           strokeWidth={
                             isSelected || l.node.status === 'failed' || l.node.status === 'running'
-                              ? 1.5
+                              ? 1.6
                               : 1
                           }
                         />
@@ -2317,7 +2470,7 @@ export function GBrainGraph({ open, onOpenChange }: { open: boolean; onOpenChang
                           x={-hw + 14}
                           y={14}
                           fontSize={9.5}
-                          fill="var(--muted-foreground)"
+                          fill={isRunning ? statusMeta.accent : 'var(--muted-foreground)'}
                           className="pointer-events-none select-none font-mono"
                         >
                           {isRoot

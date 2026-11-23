@@ -982,3 +982,78 @@ export function computeMissionOverlayLayout(
     },
   }
 }
+
+export interface ActiveEntityProcessingInfo {
+  entityId: string
+  taskId: string
+  stepIndex: number | null
+  taskTitle: string
+  assignee: string
+  taskCount: number
+}
+
+/**
+ * Identifies every GBrain Knowledge Entity currently being actively processed by a
+ * running Agentic Task (or by the active Mission Root during planning/synthesis).
+ * Returns an empty map when the mission is idle, completed, or failed so zero nodes pulse statically.
+ */
+export function getActivelyProcessedEntities(
+  mission: MissionOverlayGraph
+): Map<string, ActiveEntityProcessingInfo> {
+  const result = new Map<string, ActiveEntityProcessingInfo>()
+  if (!mission.hasMission) return result
+
+  const runningTasks = mission.nodes.filter(
+    (n) => n.nodeKind === 'mission_task' && n.status === 'running'
+  )
+
+  const activeSources =
+    runningTasks.length > 0
+      ? runningTasks
+      : mission.nodes.filter((n) => n.nodeKind === 'mission_root' && n.status === 'running')
+
+  for (const task of activeSources) {
+    for (const entityId of task.linkedEntityIds) {
+      const existing = result.get(entityId)
+      if (existing) {
+        existing.taskCount += 1
+      } else {
+        result.set(entityId, {
+          entityId,
+          taskId: task.id,
+          stepIndex: task.stepIndex,
+          taskTitle: task.title,
+          assignee: task.assignee,
+          taskCount: 1,
+        })
+      }
+    }
+  }
+
+  return result
+}
+
+/**
+ * Identifies mission DAG edges and knowledge-bridge edges actively carrying live execution flow
+ * into or out of currently running Agentic Tasks.
+ */
+export function getActiveExecutionFlowEdgeIds(mission: MissionOverlayGraph): Set<string> {
+  const active = new Set<string>()
+  if (!mission.hasMission) return active
+
+  const statusById = new Map(mission.nodes.map((n) => [n.id, n.status]))
+
+  for (const edge of mission.edges) {
+    const srcStatus = statusById.get(edge.sourceId)
+    const dstStatus = statusById.get(edge.targetId)
+
+    if (edge.edgeKind === 'knowledge_bridge') {
+      if (srcStatus === 'running') active.add(edge.id)
+    } else if (dstStatus === 'running' || (edge.status === 'running' && srcStatus === 'running')) {
+      active.add(edge.id)
+    }
+  }
+
+  return active
+}
+

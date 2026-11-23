@@ -636,3 +636,80 @@ button,
 .pt-safe {
   padding-top: env(safe-area-inset-top);
 }
+
+/* ---- GBrainGraph live Agentic Task execution pulse & flow ---- */
+
+@keyframes gbrain-exec-pulse {
+  0% {
+    transform: scale(1, 1);
+    opacity: 0.72;
+  }
+  70% {
+    transform: scale(1.075, 1.2);
+    opacity: 0.14;
+  }
+  100% {
+    transform: scale(1.095, 1.25);
+    opacity: 0;
+  }
+}
+
+@keyframes gbrain-exec-breathe {
+  0%, 100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+
+@keyframes gbrain-flow-dash {
+  from {
+    stroke-dashoffset: 24;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.gbrain-exec-pulse-outer {
+  transform-box: fill-box;
+  transform-origin: center;
+  will-change: transform, opacity;
+  animation: gbrain-exec-pulse 1.9s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+.gbrain-exec-pulse-inner {
+  transform-box: fill-box;
+  transform-origin: center;
+  will-change: transform, opacity;
+  animation: gbrain-exec-pulse 1.9s cubic-bezier(0.16, 1, 0.3, 1) 0.95s infinite;
+}
+
+.gbrain-exec-breathe {
+  will-change: opacity;
+  animation: gbrain-exec-breathe 1.9s ease-in-out infinite;
+}
+
+.gbrain-flow-edge {
+  animation: gbrain-flow-dash 1.05s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gbrain-exec-pulse-outer {
+    animation: none;
+    opacity: 0.55;
+  }
+  .gbrain-exec-pulse-inner {
+    animation: none;
+    opacity: 0;
+  }
+  .gbrain-exec-breathe {
+    animation: none;
+    opacity: 0.85;
+  }
+  .gbrain-flow-edge {
+    animation: none;
+  }
+}
+

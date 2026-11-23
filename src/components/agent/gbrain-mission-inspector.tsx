@@ -248,28 +248,47 @@ export function GBrainMissionInspector({
       {/* Linked GBrain Knowledge Entities */}
       {linkedEntities.length > 0 && (
         <div className="border-t border-border/60 pt-3">
-          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-            <Link2 className="h-3 w-3" /> Linked GBrain entities ({linkedEntities.length})
+          <div className="mb-1.5 flex items-center justify-between gap-1.5 text-[11px] font-medium text-muted-foreground">
+            <span className="flex items-center gap-1.5">
+              <Link2 className="h-3 w-3" />
+              <span>Linked GBrain entities ({linkedEntities.length})</span>
+            </span>
+            {node.status === 'running' && (
+              <span className="font-mono text-[10px] text-sky-600 dark:text-sky-400">
+                Processing live
+              </span>
+            )}
           </div>
           <div className="space-y-1">
             {linkedEntities.map((ent) => {
               const cat = GBRAIN_CATEGORY_MAP[ent.category] ?? GBRAIN_CATEGORY_MAP.concepts
+              const isLive = node.status === 'running'
               return (
                 <button
                   key={ent.id}
                   type="button"
                   onClick={() => onFocusEntityNode(ent.id)}
-                  className="flex w-full items-center justify-between gap-2 rounded-md border border-border/70 bg-background/60 px-2.5 py-1.5 text-left text-xs transition-colors hover:border-sky-500/40 hover:bg-muted"
+                  className={cn(
+                    'flex w-full items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors hover:border-sky-500/40 hover:bg-muted',
+                    isLive
+                      ? 'border-sky-500/35 bg-sky-500/8'
+                      : 'border-border/70 bg-background/60'
+                  )}
                 >
                   <span className="flex min-w-0 items-center gap-2">
                     <span
                       className="h-2 w-2 shrink-0 rounded-full"
-                      style={{ backgroundColor: cat.accent }}
+                      style={{ backgroundColor: isLive ? '#38bdf8' : cat.accent }}
                     />
                     <span className="truncate font-medium text-foreground">{ent.name}</span>
                   </span>
-                  <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-                    {cat.shortLabel}
+                  <span
+                    className={cn(
+                      'shrink-0 font-mono text-[10px]',
+                      isLive ? 'text-sky-600 dark:text-sky-400' : 'text-muted-foreground'
+                    )}
+                  >
+                    {isLive ? 'Processing' : cat.shortLabel}
                   </span>
                 </button>
               )
