@@ -81,3 +81,12 @@ The earlier run #34 had unavailable logs and is superseded. Current branch HEAD 
 3. Independent security review, replay/idempotency/actor-scope verification, Android physical-device acceptance, native Electron runtime permission acceptance and HTTPS reverse-proxy review remain required.
 
 The Windows results are local acceptance evidence on the isolated clone, not a production approval. PR #1 remains draft and unmerged.
+
+
+## Companion Bridge Connected Folders fix — 2026-11-23
+
+The generated desktop companion no longer relies on lexical-only containment. It checks each existing path component with lstatSync before canonical resolution, rejects symlinks and Windows junctions in configured roots and requested targets, enforces canonical root containment, revalidates before filesystem operations, and omits linked children from directory listings. The generated-script Windows regression suite covers reads, writes, listings, a linked root, normal access and read-only policy.
+
+Windows 11 local verification on the isolated PR clone passed the complete security suite (including the new companion test), recovery suite (5/5), TypeScript, ESLint (0 errors; 4 warnings) and production build. GitHub Actions run #135 passed on the previous head; a new CI run is required for the follow-up commit.
+
+Residual P0 limitation: these checks are not handle-pinned and do not prove race-free TOCTOU safety against concurrent junction/symlink replacement. Treat that as an unresolved security review item; do not claim atomic containment or production-safe arbitrary filesystem writes. Native Electron GUI/media prompts, Android physical-device/WebView acceptance, independent security review and HTTPS reverse-proxy review also remain outstanding. Owner authorized merging PR #1 after the updated commit's CI and repository requirements pass; merge does not authorize deployment or production release.

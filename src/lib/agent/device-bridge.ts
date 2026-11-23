@@ -315,28 +315,53 @@ function expandEnvPath(rawPath) {
   return path.resolve(expanded);
 }
 
+// Resolve existing components with lstat before realpath so links and Windows junctions are rejected.
+function resolvePathWithoutLinks(inputPath) {
+  const absolute = path.resolve(inputPath);
+  const parsed = path.parse(absolute);
+  const parts = absolute.slice(parsed.root.length).split(path.sep).filter(Boolean);
+  let cursor = parsed.root;
+  let missing = false;
+  for (let i = 0; i < parts.length; i += 1) {
+    cursor = path.join(cursor, parts[i]);
+    if (missing) continue;
+    let stat;
+    try {
+      stat = fs.lstatSync(cursor);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') { missing = true; continue; }
+      return null;
+    }
+    if (stat.isSymbolicLink()) return null;
+    if (i < parts.length - 1 && !stat.isDirectory()) return null;
+    try {
+      const realPath = path.resolve(fs.realpathSync.native(cursor));
+      const currentPath = path.resolve(cursor);
+      if (platform === 'windows' ? realPath.toLowerCase() !== currentPath.toLowerCase() : realPath !== currentPath) return null;
+    } catch { return null; }
+  }
+  return path.resolve(cursor);
+}
+
+function isWithinFolder(rootPath, candidatePath) {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
+}
+
 function checkFolderGuard(targetPath, needWrite = false) {
-  if (!targetPath || typeof targetPath !== 'string') {
-    return { ok: false, error: 'Target path is required.' };
-  }
-  if (/(^|[\\\\/])\\.\\.([\\\\/]|$)/.test(targetPath)) {
-    return { ok: false, error: 'Blocked: path traversal (..) is not permitted.' };
-  }
-  const resolvedTarget = expandEnvPath(targetPath);
-  const normTarget = platform === 'windows' ? resolvedTarget.toLowerCase() : resolvedTarget;
+  if (!targetPath || typeof targetPath !== 'string') return { ok: false, error: 'Target path is required.' };
+  if (/(^|[\\\\/])\\.\\.([\\\\/]|$)/.test(targetPath)) return { ok: false, error: 'Blocked: path traversal (..) is not permitted.' };
+  const safeTarget = resolvePathWithoutLinks(expandEnvPath(targetPath));
+  if (!safeTarget) return { ok: false, error: 'Blocked: symbolic links and junctions are not permitted in Connected Folders paths.' };
   const enabled = syncedFolders.filter((f) => f && f.enabled);
-  if (enabled.length === 0) {
-    return { ok: false, error: 'No Connected Folders are enabled in Permissions > Connected Folders.' };
-  }
+  if (enabled.length === 0) return { ok: false, error: 'No Connected Folders are enabled in Permissions > Connected Folders.' };
   for (const folder of enabled) {
-    const resolvedRoot = expandEnvPath(folder.path);
-    const normRoot = platform === 'windows' ? resolvedRoot.toLowerCase() : resolvedRoot;
-    const sep = path.sep;
-    if (normTarget === normRoot || normTarget.startsWith(normRoot + sep)) {
-      if (needWrite && folder.accessMode !== 'read_write') {
-        return { ok: false, error: 'Blocked: folder "' + folder.label + '" is Read-Only.' };
-      }
-      return { ok: true, resolvedPath: resolvedTarget, folder };
+    const safeRoot = resolvePathWithoutLinks(expandEnvPath(folder.path));
+    if (!safeRoot) continue;
+    try { if (!fs.statSync(safeRoot).isDirectory()) continue; } catch { continue; }
+    if (isWithinFolder(safeRoot, safeTarget)) {
+      if (needWrite && folder.accessMode !== 'read_write') return { ok: false, error: 'Blocked: folder "' + folder.label + '" is Read-Only.' };
+      return { ok: true, resolvedPath: safeTarget, resolvedRoot: safeRoot, folder };
     }
   }
   return { ok: false, error: 'Blocked: path is outside your enabled Connected Folders allowlist.' };
@@ -512,19 +537,24 @@ async function executeAction(action, args = {}, ws) {
     const guard = checkFolderGuard(args.path, false);
     if (!guard.ok) return { ok: false, output: '', error: guard.error };
     try {
-      const entries = fs.readdirSync(guard.resolvedPath, { withFileTypes: true }).slice(0, 120);
+      const finalGuard = checkFolderGuard(args.path, false);
+      if (!finalGuard.ok) return { ok: false, output: '', error: finalGuard.error };
+      const entries = fs.readdirSync(finalGuard.resolvedPath, { withFileTypes: true }).filter((entry) => !entry.isSymbolicLink()).slice(0, 120);
       const items = entries.map((e) => {
-        const full = path.join(guard.resolvedPath, e.name);
+        const full = path.join(finalGuard.resolvedPath, e.name);
+        const childGuard = checkFolderGuard(full, false);
+        if (!childGuard.ok) return null;
         let size = 0;
         let mtime = null;
         try {
-          const st = fs.statSync(full);
+          const st = fs.lstatSync(full);
+          if (st.isSymbolicLink()) return null;
           size = st.size;
           mtime = st.mtime.toISOString();
-        } catch {}
+        } catch { return null; }
         return { name: e.name, kind: e.isDirectory() ? 'dir' : 'file', path: full, size, mtime };
-      });
-      return { ok: true, output: JSON.stringify({ folder: guard.resolvedPath, items }, null, 2) };
+      }).filter(Boolean);
+      return { ok: true, output: JSON.stringify({ folder: finalGuard.resolvedPath, items }, null, 2) };
     } catch (err) {
       return { ok: false, output: '', error: err instanceof Error ? err.message : String(err) };
     }
@@ -534,16 +564,16 @@ async function executeAction(action, args = {}, ws) {
     const guard = checkFolderGuard(args.path, false);
     if (!guard.ok) return { ok: false, output: '', error: guard.error };
     try {
-      const ext = path.extname(guard.resolvedPath).toLowerCase();
+      const finalGuard = checkFolderGuard(args.path, false);
+      if (!finalGuard.ok) return { ok: false, output: '', error: finalGuard.error };
+      const ext = path.extname(finalGuard.resolvedPath).toLowerCase();
       if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
-        const buf = fs.readFileSync(guard.resolvedPath);
-        if (buf.length > 4 * 1024 * 1024) {
-          return { ok: false, output: '', error: 'Image exceeds 4MB bridge transfer limit.' };
-        }
+        const buf = fs.readFileSync(finalGuard.resolvedPath);
+        if (buf.length > 4 * 1024 * 1024) return { ok: false, output: '', error: 'Image exceeds 4MB bridge transfer limit.' };
         const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
-        return { ok: true, output: JSON.stringify({ path: guard.resolvedPath, mimeType: mime, base64: buf.toString('base64') }) };
+        return { ok: true, output: JSON.stringify({ path: finalGuard.resolvedPath, mimeType: mime, base64: buf.toString('base64') }) };
       }
-      const content = fs.readFileSync(guard.resolvedPath, 'utf8').slice(0, 32000);
+      const content = fs.readFileSync(finalGuard.resolvedPath, 'utf8').slice(0, 32000);
       return { ok: true, output: content };
     } catch (err) {
       return { ok: false, output: '', error: err instanceof Error ? err.message : String(err) };
@@ -555,8 +585,15 @@ async function executeAction(action, args = {}, ws) {
     if (!guard.ok) return { ok: false, output: '', error: guard.error };
     try {
       fs.mkdirSync(path.dirname(guard.resolvedPath), { recursive: true });
-      fs.writeFileSync(guard.resolvedPath, args.content, 'utf8');
-      return { ok: true, output: 'Saved file: ' + guard.resolvedPath };
+      const finalGuard = checkFolderGuard(args.path, true);
+      if (!finalGuard.ok) return { ok: false, output: '', error: finalGuard.error };
+      try {
+        if (fs.lstatSync(finalGuard.resolvedPath).isSymbolicLink()) return { ok: false, output: '', error: 'Blocked: symbolic link or junction target is not permitted.' };
+      } catch (err) {
+        if (!err || err.code !== 'ENOENT') throw err;
+      }
+      fs.writeFileSync(finalGuard.resolvedPath, args.content, 'utf8');
+      return { ok: true, output: 'Saved file: ' + finalGuard.resolvedPath };
     } catch (err) {
       return { ok: false, output: '', error: err instanceof Error ? err.message : String(err) };
     }
@@ -569,8 +606,12 @@ async function executeAction(action, args = {}, ws) {
     if (!gTo.ok) return { ok: false, output: '', error: 'Destination: ' + gTo.error };
     try {
       fs.mkdirSync(path.dirname(gTo.resolvedPath), { recursive: true });
-      fs.renameSync(gFrom.resolvedPath, gTo.resolvedPath);
-      return { ok: true, output: 'Moved to: ' + gTo.resolvedPath };
+      const finalFrom = checkFolderGuard(args.from, true);
+      if (!finalFrom.ok) return { ok: false, output: '', error: 'Source: ' + finalFrom.error };
+      const finalTo = checkFolderGuard(args.to, true);
+      if (!finalTo.ok) return { ok: false, output: '', error: 'Destination: ' + finalTo.error };
+      fs.renameSync(finalFrom.resolvedPath, finalTo.resolvedPath);
+      return { ok: true, output: 'Moved to: ' + finalTo.resolvedPath };
     } catch (err) {
       return { ok: false, output: '', error: err instanceof Error ? err.message : String(err) };
     }
