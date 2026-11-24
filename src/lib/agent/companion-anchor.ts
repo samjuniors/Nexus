@@ -35,8 +35,8 @@ export function resolveCompanionAnchor(ctx: {
     return { slot: 'bottom-right-elevated', offsetX: 0, offsetY: -120 }
   }
 
-  if (ctx.activeTab === 'org') {
-    // Keep clear of Org inspector controls on the bottom-right
+  if (ctx.activeTab === 'org' || ctx.activeTab === 'company') {
+    // Keep clear of Company HQ / Org inspector controls on the bottom-right
     return { slot: 'bottom-right-elevated', offsetX: -8, offsetY: -80 }
   }
 

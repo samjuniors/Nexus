@@ -4,6 +4,7 @@
 
 export type Tab =
   | 'agent'
+  | 'company'
   | 'org'
   | 'automations'
   | 'brain'

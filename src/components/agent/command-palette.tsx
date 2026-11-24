@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import {
   Bot,
   Brain,
+  Building2,
   CalendarClock,
   Focus,
   FolderOpen,
@@ -253,6 +254,18 @@ export function CommandPalette({
         run: () => {
           setLayoutMode('standard')
           setTab('agent')
+          close()
+        },
+      },
+      {
+        id: 'nav-company',
+        group: 'Workspace',
+        label: 'Go to Company HQ',
+        hint: 'Companies, products, Eva CEO & approvals',
+        icon: Building2,
+        run: () => {
+          setLayoutMode('standard')
+          setTab('company')
           close()
         },
       },

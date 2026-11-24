@@ -4,6 +4,7 @@ import { useState } from 'react'
 import {
   Bot,
   Brain,
+  Building2,
   CalendarClock,
   Download,
   Focus,
@@ -38,6 +39,7 @@ import { cn } from '@/lib/utils'
 
 const WORKSPACE_DESTINATIONS: { tab: Tab; label: string; icon: typeof Bot }[] = [
   { tab: 'agent', label: 'Chat Workspace', icon: Bot },
+  { tab: 'company', label: 'Company HQ', icon: Building2 },
   { tab: 'org', label: 'Team & Org', icon: Users },
   { tab: 'automations', label: 'Automations', icon: CalendarClock },
   { tab: 'brain', label: 'Portable Brain', icon: Brain },

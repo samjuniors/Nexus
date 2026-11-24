@@ -4,6 +4,7 @@ import { useSyncExternalStore } from 'react'
 import {
   Bot,
   Brain,
+  Building2,
   CalendarClock,
   ChevronDown,
   Command,
@@ -29,6 +30,8 @@ import {
 } from 'lucide-react'
 import { useEvaControl, type SplitMode } from '@/lib/agent/eva-control-store'
 import { useApp } from '@/lib/agent/store'
+import { useCompanyStore } from '@/lib/agent/company-store'
+import { CompanySwitcher } from '@/components/agent/company-switcher'
 import type { Tab } from '@/lib/agent/client'
 import { cn } from '@/lib/utils'
 
@@ -40,6 +43,7 @@ interface NavItem {
 
 const PRIMARY_NAV: NavItem[] = [
   { tab: 'agent', label: 'Agent', icon: Bot },
+  { tab: 'company', label: 'Company HQ', icon: Building2 },
   { tab: 'org', label: 'Team & Org', icon: Users },
   { tab: 'automations', label: 'Automations', icon: CalendarClock },
   { tab: 'brain', label: 'Brain', icon: Brain },
@@ -169,9 +173,11 @@ export function Sidebar({ onOpenCommandPalette }: { onOpenCommandPalette?: () =>
     () => false
   )
 
+  const pendingApprovals = useCompanyStore((s) => s.snapshot?.metrics.totalFounderApprovals ?? 0)
   const brainConnected = brain?.connected ?? true
 
   const badges: Partial<Record<Tab, number>> = {
+    company: pendingApprovals,
     org: employees.filter((e) => e.status === 'active').length,
     automations: automations.filter((a) => a.enabled).length,
     artifacts: artifacts.length,
@@ -237,8 +243,9 @@ export function Sidebar({ onOpenCommandPalette }: { onOpenCommandPalette?: () =>
         </button>
       </div>
 
-      {/* Instant Voice Focus + Dynamic Command Bar */}
+      {/* Active Company & Product Switcher + Instant Voice Focus + Dynamic Command Bar */}
       <div className={cn('space-y-1.5 px-2 pt-2.5 pb-1', !collapsed && 'px-2.5')}>
+        <CompanySwitcher variant="sidebar" collapsed={collapsed} />
         {onOpenCommandPalette && (
           <button
             type="button"

@@ -8,6 +8,7 @@ import { graphRecallMemories, touchRecalledMemories } from '@/lib/agent/memory-g
 import { brainCache, refineStats, coachLessonsFor, coachBlock, coachReviewRun, gradeLessons } from '@/lib/agent/brain-runtime'
 import { appBrainAnswerMessages, routeWithAppBrain } from '@/lib/agent/app-brain'
 import { reasoningChain } from '@/lib/agent/reasoning-chain'
+import { getActiveCompanyPromptContext } from '@/lib/agent/paperclip-company'
 import type {
   AgentPlan,
   CapabilityRef,
@@ -616,9 +617,11 @@ RULES:
 Respond ONLY with minified JSON:
 {"analysis":"one or two sentences of mission analysis","capabilities":[{"type":"skill|tool|plugin|mcp|memory","name":"<exact name from the lists>","reason":"<short reason>"}],"steps":[{"description":"<what to do>","assignee":"${LEAD}|<SubagentName>","uses":["<tool_slug>"]}],"subagents":[{"name":"<SubagentName>","role":"<specialty description>"}]}`
 
+  const activeCompanyBlock = getActiveCompanyPromptContext()
+
   const user = `APP MEMORY (what you already remember about the user and past missions):
 ${memoryBlock}
-${coreContext}${brainContext}${coachContext}
+${activeCompanyBlock ? `\n${activeCompanyBlock}\n` : ''}${coreContext}${brainContext}${coachContext}
 RECENT CONVERSATION:
 ${historyBlock}
 

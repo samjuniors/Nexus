@@ -44,6 +44,12 @@ function ViewLoader() {
 const BrainView = dynamic(() => import('@/components/agent/brain-view').then((m) => m.BrainView), {
   loading: () => <ViewLoader />,
 })
+const CompanyHqView = dynamic(
+  () => import('@/components/agent/company-hq-view').then((m) => m.CompanyHqView),
+  {
+    loading: () => <ViewLoader />,
+  }
+)
 const OrgView = dynamic(() => import('@/components/agent/org-view').then((m) => m.OrgView), {
   loading: () => <ViewLoader />,
 })
@@ -74,6 +80,7 @@ const MarketplaceView = dynamic(() => import('@/components/agent/marketplace-vie
 
 const VIEW_LABELS: Record<Tab, string> = {
   agent: 'Agent',
+  company: 'Company HQ',
   org: 'AI Team & Org',
   automations: 'Automations',
   brain: 'Brain',
@@ -211,6 +218,7 @@ function ShellContent() {
           onReturnHome={activeTab !== 'agent' ? () => setTab('agent') : undefined}
         >
           {activeTab === 'agent' && <ChatView />}
+          {activeTab === 'company' && <CompanyHqView />}
           {activeTab === 'org' && <OrgView />}
           {activeTab === 'automations' && <AutomationsView />}
           {brainConnected && activeTab === 'brain' && <BrainView />}

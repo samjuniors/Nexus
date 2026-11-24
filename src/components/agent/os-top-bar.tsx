@@ -19,6 +19,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { useEva } from '@/components/agent/eva-provider'
+import { CompanySwitcher } from '@/components/agent/company-switcher'
 import { useApp } from '@/lib/agent/store'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
 import {
@@ -36,7 +37,8 @@ import { cn } from '@/lib/utils'
 
 const WINDOW_TITLES: Record<Tab, string> = {
   agent: 'Agent Console',
-  org: 'Company & Org',
+  company: 'Company HQ',
+  org: 'Team & Org',
   automations: 'Automations',
   brain: 'Portable Brain',
   artifacts: 'Artifacts',
@@ -178,13 +180,15 @@ export function OsTopBar({ onOpenCommandPalette }: { onOpenCommandPalette: () =>
         )}
       </div>
 
-      {/* Desktop (>= lg): Left Active OS Window & Live Process indicator */}
+      {/* Desktop (>= lg): Left Active OS Window, Company Switcher & Live Process indicator */}
       <div className="hidden min-w-0 items-center gap-2 lg:flex">
         <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Nexus OS
         </span>
         <span className="text-border">/</span>
         <span className="truncate font-medium text-foreground">{windowName}</span>
+        <span className="text-border">/</span>
+        <CompanySwitcher variant="topbar" />
         {runningRunId && (
           <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-sky-600 dark:text-sky-400">
             <span className="h-1.5 w-1.5 rounded-full bg-sky-400 pulse-dot" />

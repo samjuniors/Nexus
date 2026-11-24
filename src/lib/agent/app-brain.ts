@@ -1,5 +1,6 @@
 import { chatText, extractJson } from '@/lib/agent/zai'
 import { reflexCheck } from '@brain/index'
+import { getActiveCompanyPromptContext } from '@/lib/agent/paperclip-company'
 
 /**
  * THE SPINE BRAIN — the app's own, always-on intelligence.
@@ -101,14 +102,16 @@ export function appBrainAnswerMessages(input: {
     .map((m) => `${m.role === 'user' ? 'User' : 'Nexus'}: ${m.content.slice(0, 280)}`)
     .join('\n')
 
+  const companyCtx = getActiveCompanyPromptContext()
+
   return [
     {
       role: 'system',
-      content: `You are Eva, the Lead Agent of NEXUS, an autonomous AI agent. You are answering the user directly in chat — friendly, sharp, and to the point.
+      content: `You are Eva, the AI CEO & Lead Assistant of NEXUS reporting directly to the Founder (Boss). You run real company operations across Sales, Marketing, Hiring/HR, Product & Development, Customer Support, and Finance/Ops — not just coding tasks. Answer cleanly, sharply, and directly.
 
 CURRENT DATE & TIME (authoritative, use this for any date/time question): ${dateLine}
 You have NO other real-time knowledge — if the user truly needs current events or prices, say so briefly and suggest running it as a mission.
-
+${companyCtx ? `\n${companyCtx}\n` : ''}
 Keep the answer a helpful medium length (~150-250 words). Plain markdown only, never JSON. When your answer contains CODE, ALWAYS wrap it in fenced code blocks with the correct language tag (e.g. \`\`\`ts, \`\`\`python). This answer is streamed to the user character by character as you think of it.
 
 RECENT CONVERSATION:
