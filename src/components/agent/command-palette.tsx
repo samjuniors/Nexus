@@ -340,7 +340,6 @@ export function CommandPalette({
         },
       },
     ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [layoutMode, voice.isActive, wake.sleepMode, activeConvId, resolvedTheme, brainConnected]
   )
 

@@ -1,7 +1,7 @@
 import { promises as fs, type Dirent } from 'fs'
 import path from 'path'
 import { NextResponse } from 'next/server'
-import { mimeFor, safeWorkspacePath, WORKSPACE_DIR } from '@/lib/agent/workspace'
+import { ensureWorkspace, mimeFor, safeWorkspacePath, WORKSPACE_DIR } from '@/lib/agent/workspace'
 
 export const runtime = 'nodejs'
 
@@ -66,7 +66,7 @@ async function listArtifacts() {
     }
     return out
   }
-  await fs.mkdir(WORKSPACE_DIR, { recursive: true })
+  await ensureWorkspace()
   const all = await walk(WORKSPACE_DIR, '', 0)
   all.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   return all

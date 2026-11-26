@@ -71,6 +71,94 @@ export function validateExternalWebsiteUrl(rawUrl: string): { ok: true; url: URL
   return { ok: true, url: parsed }
 }
 
+/**
+ * Validates and DNS-resolves an external HTTP(S) URL before server-side fetch
+ * to prevent SSRF and DNS rebinding attacks against loopback, LAN, or metadata IPs.
+ */
+export async function resolvePublicExternalUrl(rawUrl: string): Promise<URL> {
+  const validation = validateExternalWebsiteUrl(rawUrl)
+  if (!validation.ok) {
+    throw new Error(validation.error)
+  }
+  const url = validation.url
+  const hostname = url.hostname.replace(/^\[|\]$/g, '')
+  if (net.isIP(hostname) === 0) {
+    const addresses = await dns.lookup(hostname, { all: true })
+    if (!addresses.length) {
+      throw new Error('Could not resolve external host')
+    }
+    for (const addr of addresses) {
+      if (isPrivateOrReservedIp(addr.address)) {
+        throw new Error('Resolved destination points to a private or blocked network address')
+      }
+    }
+  }
+  return url
+}
+
+export class SsrfBlockedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SsrfBlockedError'
+  }
+}
+
+const MAX_EXTERNAL_REDIRECTS = 3
+
+/**
+ * Fetches an external HTTP(S) URL while validating every redirect hop against
+ * SSRF rules. Non-GET/HEAD requests fail closed on any 3xx redirect.
+ */
+export async function fetchPublicExternalUrl(
+  rawUrl: string,
+  init: RequestInit = {},
+  maxRedirects = MAX_EXTERNAL_REDIRECTS
+): Promise<Response> {
+  const method = (init.method ?? 'GET').toUpperCase()
+  let currentUrl = await resolvePublicExternalUrl(rawUrl).catch((err) => {
+    throw new SsrfBlockedError(err instanceof Error ? err.message : String(err))
+  })
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const res = await fetch(currentUrl.toString(), {
+      ...init,
+      redirect: 'manual',
+    })
+
+    if (res.status < 300 || res.status >= 400) {
+      return res
+    }
+
+    await res.body?.cancel().catch(() => {})
+
+    if (method !== 'GET' && method !== 'HEAD') {
+      throw new SsrfBlockedError(`Redirects are blocked for ${method} external requests`)
+    }
+
+    if (hop >= maxRedirects) {
+      throw new SsrfBlockedError('Too many redirects while fetching external URL')
+    }
+
+    const location = res.headers.get('location')
+    if (!location) {
+      throw new SsrfBlockedError('Redirect response missing Location header')
+    }
+
+    let nextRaw: string
+    try {
+      nextRaw = new URL(location, currentUrl).toString()
+    } catch {
+      throw new SsrfBlockedError('Invalid redirect Location URL')
+    }
+
+    currentUrl = await resolvePublicExternalUrl(nextRaw).catch((err) => {
+      throw new SsrfBlockedError(err instanceof Error ? err.message : String(err))
+    })
+  }
+
+  throw new SsrfBlockedError('Too many redirects while fetching external URL')
+}
+
 function stripHtmlToReadableText(html: string): { title: string; description: string; text: string } {
   const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
   const descMatch =
@@ -142,9 +230,8 @@ export async function ingestWebsiteSource(rawUrl: string, customLabel?: string):
   }
 
   try {
-    const res = await fetch(url.toString(), {
+    const res = await fetchPublicExternalUrl(url.toString(), {
       method: 'GET',
-      redirect: 'follow',
       headers: {
         'User-Agent': 'NexusCompanyOS/1.0 (Product Context Reader)',
         Accept: 'text/html, text/plain, application/json;q=0.9',
@@ -198,6 +285,9 @@ export async function ingestWebsiteSource(rawUrl: string, customLabel?: string):
       ingestedAt: now,
     }
   } catch (err) {
+    if (err instanceof SsrfBlockedError) {
+      throw err
+    }
     return {
       id: `src_${randomUUID().slice(0, 8)}`,
       type: 'website',

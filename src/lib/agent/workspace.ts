@@ -49,11 +49,11 @@ export async function ensureWorkspace() {
 
 /** Resolve a name to a safe absolute path inside the workspace (no traversal or symlink components). */
 export function safeWorkspacePath(name: string): string | null {
-  if (!name || typeof name !== 'string') return null
-  const cleaned = name.replace(/\\/g, '/').split('/').filter((p) => p && p !== '.' && p !== '..')
-  if (cleaned.length === 0) return null
+  if (!name || typeof name !== 'string' || name.includes('\0')) return null
+  const rawParts = name.replace(/\\/g, '/').split('/').filter((p) => p && p !== '.')
+  if (rawParts.length === 0 || rawParts.includes('..')) return null
   const root = path.resolve(WORKSPACE_DIR)
-  const abs = path.resolve(root, ...cleaned)
+  const abs = path.resolve(root, ...rawParts)
   if (!isWithin(root, abs) || hasUnsafeExistingComponent(abs)) return null
   return abs
 }
