@@ -37,11 +37,13 @@ const POLICIES: { value: PermissionPolicy; label: string }[] = [
 export function PermissionsPanel() {
   const grants = useEvaControl((s) => s.grants)
   const auditLog = useEvaControl((s) => s.auditLog)
+  const pendingPermissions = useEvaControl((s) => s.pendingPermissions)
   const connectedFolders = useEvaControl((s) => s.connectedFolders)
   const allowedApps = useEvaControl((s) => s.allowedApps)
   const computerBusy = useEvaControl((s) => s.computerControlBusy)
 
   const refreshPermissions = useEvaControl((s) => s.refreshPermissions)
+  const respondPermission = useEvaControl((s) => s.respondPermission)
   const refreshComputerControl = useEvaControl((s) => s.refreshComputerControl)
   const updateGrantPolicy = useEvaControl((s) => s.updateGrantPolicy)
   const addConnectedFolder = useEvaControl((s) => s.addConnectedFolder)
@@ -162,6 +164,71 @@ export function PermissionsPanel() {
       {/* CAPABILITIES TAB */}
       {tab === 'capabilities' && (
         <>
+          {pendingPermissions.length > 0 && (
+            <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/8 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-300">
+                  <ShieldAlert className="h-3.5 w-3.5" />
+                  Pending &amp; Deferred Approvals
+                </span>
+                <span className="font-mono text-[10px] tabular-nums text-amber-600 dark:text-amber-300">
+                  {pendingPermissions.length} queued
+                </span>
+              </div>
+              <div className="mt-2 space-y-2">
+                {pendingPermissions.map((req) => {
+                  const singleUseOnly = requiresSingleUseApproval(req.capability)
+                  return (
+                    <div
+                      key={req.requestId}
+                      className="rounded-md border border-border bg-background/90 p-2.5 text-xs"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-foreground">{req.title}</span>
+                        {req.automationId && (
+                          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-[9.5px] text-amber-600 dark:text-amber-300">
+                            Deferred Automation
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 break-words font-mono text-[11px] text-foreground">
+                        {req.actionSummary}
+                      </div>
+                      <div className="mt-1 font-mono text-[10px] text-muted-foreground" title={req.actionHash}>
+                        {req.actor} · {req.capability} · sha256:{req.actionHash.slice(0, 12)}
+                      </div>
+                      <div className={cn('mt-2 grid gap-1.5', singleUseOnly ? 'grid-cols-2' : 'grid-cols-3')}>
+                        {!singleUseOnly && (
+                          <button
+                            type="button"
+                            onClick={() => void respondPermission(req.requestId, 'always')}
+                            className="rounded border border-emerald-500/40 bg-emerald-500/12 px-2 py-1 font-mono text-[10.5px] font-medium text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-200"
+                          >
+                            Allow Always
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => void respondPermission(req.requestId, 'once')}
+                          className="rounded border border-border bg-secondary px-2 py-1 font-mono text-[10.5px] font-medium text-secondary-foreground hover:bg-accent"
+                        >
+                          Allow Once
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void respondPermission(req.requestId, 'deny')}
+                          className="rounded border border-destructive/35 bg-destructive/10 px-2 py-1 font-mono text-[10.5px] font-medium text-destructive hover:bg-destructive/20"
+                        >
+                          Deny
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="mt-3 divide-y divide-border rounded-lg border border-border bg-card/40">
             {grants.map((grant) => (
               <div key={grant.capability} className="flex flex-col gap-2.5 p-3">

@@ -980,11 +980,13 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
       const data = (await res.json()) as {
         grants?: PermissionGrantDTO[]
         audit?: PermissionAuditDTO[]
+        pending?: PermissionRequestPayload[]
       }
-      if (data.grants || data.audit) {
+      if (data.grants || data.audit || Array.isArray(data.pending)) {
         set({
           ...(data.grants ? { grants: data.grants } : {}),
           ...(data.audit ? { auditLog: data.audit } : {}),
+          ...(Array.isArray(data.pending) ? { pendingPermissions: data.pending } : {}),
         })
       }
     } catch {
@@ -1007,11 +1009,13 @@ export const useEvaControl = create<EvaControlState>((set, get) => ({
       const data = (await res.json()) as {
         grants?: PermissionGrantDTO[]
         audit?: PermissionAuditDTO[]
+        pending?: PermissionRequestPayload[]
       }
-      if (data.grants || data.audit) {
+      if (data.grants || data.audit || Array.isArray(data.pending)) {
         set({
           ...(data.grants ? { grants: data.grants } : {}),
           ...(data.audit ? { auditLog: data.audit } : {}),
+          ...(Array.isArray(data.pending) ? { pendingPermissions: data.pending } : {}),
         })
       }
     } catch {

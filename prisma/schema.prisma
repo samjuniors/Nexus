@@ -309,6 +309,31 @@ model PermissionAuditLog {
   @@index([createdAt])
 }
 
+// Durable pending/resolved permission requests & single-use action-hash approval leases
+model PermissionRequest {
+  id            String    @id @default(cuid())
+  requestId     String    @unique
+  actionHash    String
+  capability    String
+  actionName    String    @default("")
+  actionSummary String
+  actor         String    @default("Eva")
+  details       String    @default("")
+  status        String    @default("pending") // pending | approved | denied | expired | consumed
+  decision      String?   // always | once | deny | timeout
+  automationId  String?
+  runId         String?
+  expiresAt     DateTime
+  resolvedAt    DateTime?
+  consumedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status, expiresAt])
+  @@index([actionHash, status])
+  @@index([automationId, status])
+}
+
 // Optional paired local desktop computers via Local OS Companion Bridge
 model ConnectedDevice {
   id               String    @id @default(cuid())

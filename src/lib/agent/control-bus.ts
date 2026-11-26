@@ -176,7 +176,10 @@ export interface PermissionRequestPayload {
   actionSummary: string
   actor: string
   details?: string
+  automationId?: string | null
+  runId?: string | null
   createdAt: string
+  expiresAt?: string
 }
 
 export type PermissionDecision = 'always' | 'once' | 'deny' | 'timeout'
@@ -222,6 +225,7 @@ class NexusControlBus {
   private uiClients = new Set<WebSocket>()
   private deviceSockets = new Map<string, ConnectedDeviceSocket>()
   private pendingPermissions = new Map<string, PendingPermission>()
+  private resolvingPermissions = new Set<string>()
   private pendingDeviceCommands = new Map<string, PendingDeviceCommand>()
   private latestBrowserFrame: BrowserFramePayload | null = null
   private latestDesktopFrame: DesktopFramePayload | null = null
@@ -390,21 +394,24 @@ class NexusControlBus {
   }
 
   waitForPermission(request: PermissionRequestPayload, timeoutMs = 45_000): Promise<PermissionDecision> {
+    const expiresAt = request.expiresAt ?? new Date(Date.now() + timeoutMs).toISOString()
+    const payload: PermissionRequestPayload = { ...request, expiresAt }
     return new Promise<PermissionDecision>((resolve) => {
       const timer = setTimeout(() => {
-        if (this.pendingPermissions.delete(request.requestId)) {
+        this.resolvingPermissions.delete(payload.requestId)
+        if (this.pendingPermissions.delete(payload.requestId)) {
           this.broadcast({
             type: 'permission:resolved',
-            requestId: request.requestId,
+            requestId: payload.requestId,
             decision: 'timeout',
-            capability: request.capability,
+            capability: payload.capability,
           })
           resolve('timeout')
         }
       }, timeoutMs)
 
-      this.pendingPermissions.set(request.requestId, { request, resolve, timer })
-      this.broadcast({ type: 'permission:request', request })
+      this.pendingPermissions.set(payload.requestId, { request: payload, resolve, timer })
+      this.broadcast({ type: 'permission:request', request: payload })
     })
   }
 
@@ -412,8 +419,41 @@ class NexusControlBus {
     return this.pendingPermissions.get(requestId)?.request ?? null
   }
 
+  hasLiveOrResolvingPermission(requestId: string): boolean {
+    return this.pendingPermissions.has(requestId) || this.resolvingPermissions.has(requestId)
+  }
+
+  /** Atomically claims an unexpired pending permission for single-flight audit & resolution. */
+  beginPermissionResolution(requestId: string, actionHash: string): PermissionRequestPayload | null {
+    const entry = this.pendingPermissions.get(requestId)
+    if (!entry || this.resolvingPermissions.has(requestId)) return null
+    if (!/^[a-f0-9]{64}$/.test(actionHash) || entry.request.actionHash !== actionHash) return null
+    if (entry.request.expiresAt) {
+      const expiresMs = Date.parse(entry.request.expiresAt)
+      if (!Number.isFinite(expiresMs) || Date.now() > expiresMs) {
+        clearTimeout(entry.timer)
+        this.pendingPermissions.delete(requestId)
+        this.broadcast({
+          type: 'permission:resolved',
+          requestId,
+          decision: 'timeout',
+          capability: entry.request.capability,
+        })
+        entry.resolve('timeout')
+        return null
+      }
+    }
+    this.resolvingPermissions.add(requestId)
+    return entry.request
+  }
+
+  abortPermissionResolution(requestId: string) {
+    this.resolvingPermissions.delete(requestId)
+  }
+
   resolvePermission(requestId: string, decision: PermissionDecision, actionHash: string): PermissionRequestPayload | null {
     const entry = this.pendingPermissions.get(requestId)
+    this.resolvingPermissions.delete(requestId)
     if (!entry || !/^[a-f0-9]{64}$/.test(actionHash) || entry.request.actionHash !== actionHash) return null
     clearTimeout(entry.timer)
     this.pendingPermissions.delete(requestId)
@@ -446,6 +486,15 @@ class NexusControlBus {
     if (!cur) return
     if (ws && cur.ws !== ws) return
     this.deviceSockets.delete(deviceId)
+    if (!ws) {
+      // Explicit revocation (no socket parameter): terminate the live connection immediately.
+      try {
+        if (typeof cur.ws.terminate === 'function') cur.ws.terminate()
+        else cur.ws.close(4003, 'Device pairing revoked')
+      } catch {
+        /* ignore closed socket */
+      }
+    }
     // Reject any in-flight commands for this device
     for (const [cmdId, pending] of this.pendingDeviceCommands.entries()) {
       if (pending.deviceId === deviceId) {
@@ -458,12 +507,17 @@ class NexusControlBus {
   }
 
   isDeviceOnline(deviceId: string): boolean {
+    if (deviceId === 'local_host' || deviceId === 'host') return true
     const s = this.deviceSockets.get(deviceId)
     return Boolean(s && s.ws.readyState === 1)
   }
 
   getOnlineDeviceIds(): string[] {
-    return Array.from(this.deviceSockets.keys()).filter((id) => this.isDeviceOnline(id))
+    const online = Array.from(this.deviceSockets.keys()).filter((id) => this.isDeviceOnline(id))
+    if (!online.includes('local_host')) {
+      online.unshift('local_host')
+    }
+    return online
   }
 
   broadcastDeviceStatus() {
@@ -488,12 +542,17 @@ class NexusControlBus {
     }
   }
 
-  sendDeviceCommand(
+  async sendDeviceCommand(
     deviceId: string,
     action: string,
     args: Record<string, unknown>,
     timeoutMs = 20_000
   ): Promise<DeviceCommandResult> {
+    if (deviceId === 'local_host' || deviceId === 'host') {
+      const { executeLocalDeviceCommand } = await import('@/lib/agent/host-device-executor')
+      return executeLocalDeviceCommand(action, args, timeoutMs)
+    }
+
     const sock = this.deviceSockets.get(deviceId)
     if (!sock || sock.ws.readyState !== 1) {
       return Promise.resolve({

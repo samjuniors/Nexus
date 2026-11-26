@@ -1,9 +1,26 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { db } from '@/lib/db'
 import { computeActionHash } from '@/lib/agent/action-binding'
 import { requiresSingleUseApproval } from '@/lib/agent/permission-policy'
 export { requiresSingleUseApproval } from '@/lib/agent/permission-policy'
-import { controlBus, type PermissionDecision } from '@/lib/agent/control-bus'
+import { controlBus, type PermissionDecision, type PermissionRequestPayload } from '@/lib/agent/control-bus'
+
+export interface PermissionExecutionContext {
+  automationId?: string
+  runId?: string
+}
+
+const permissionContextStorage = new AsyncLocalStorage<PermissionExecutionContext>()
+const DEFERRED_LEASE_TTL_MS = 15 * 60_000
+
+/** Runs an async block under a scoped automation/run context so offline requests defer cleanly. */
+export function runWithPermissionContext<T>(
+  ctx: PermissionExecutionContext,
+  fn: () => Promise<T>
+): Promise<T> {
+  return permissionContextStorage.run(ctx, fn)
+}
 
 export type CapabilityKey =
   | 'app_ui'
@@ -111,8 +128,10 @@ export async function listPermissionGrants(): Promise<PermissionGrantDTO[]> {
   const byKey = new Map(rows.map((r) => [r.capability, r]))
   return CAPABILITY_SPECS.map((spec) => {
     const row = byKey.get(spec.capability)
+    const defaultPolicy: PermissionPolicy =
+      spec.capability === 'app_ui' ? 'always' : 'ask'
     const configuredPolicy: PermissionPolicy =
-      row && isValidPolicy(row.policy) ? row.policy : 'ask'
+      row && isValidPolicy(row.policy) ? row.policy : defaultPolicy
     const policy: PermissionPolicy = requiresSingleUseApproval(spec.capability) && configuredPolicy === 'always'
       ? 'ask'
       : configuredPolicy
@@ -181,53 +200,278 @@ export async function recordPermissionAudit(opts: {
         actor: opts.actor || 'Eva',
       },
     })
-  } catch {
-    /* audit logging is best-effort */
+  } catch (err) {
+    // Only deny/timeout audit entries reach here (grants fail closed inline above).
+    console.warn('[permissions] Failed to persist denial/timeout audit entry:', err)
   }
+}
+
+async function expireStalePermissionRequests(now = new Date()): Promise<void> {
+  await db.permissionRequest
+    .updateMany({
+      where: { status: 'pending', expiresAt: { lte: now } },
+      data: { status: 'expired', decision: 'timeout', resolvedAt: now },
+    })
+    .catch(() => {})
+}
+
+/** Lists active live and persisted deferred pending permission requests (unexpired). */
+export async function listPendingPermissionRequests(): Promise<PermissionRequestPayload[]> {
+  const now = new Date()
+  await expireStalePermissionRequests(now)
+  const live = controlBus.getPendingPermissions()
+  const byId = new Map<string, PermissionRequestPayload>(live.map((p) => [p.requestId, p]))
+  const rows = await db.permissionRequest
+    .findMany({
+      where: { status: 'pending' },
+      orderBy: { createdAt: 'desc' },
+    })
+    .catch(() => [])
+  for (const r of rows) {
+    if (new Date(r.expiresAt).getTime() <= now.getTime()) continue
+    if (!byId.has(r.requestId)) {
+      const spec = SPEC_BY_KEY.get(r.capability as CapabilityKey)
+      byId.set(r.requestId, {
+        requestId: r.requestId,
+        actionHash: r.actionHash,
+        capability: r.capability,
+        title: spec?.title ?? r.capability,
+        description: spec?.description ?? r.actionSummary,
+        actionSummary: r.actionSummary,
+        actor: r.actor,
+        details: r.details || undefined,
+        automationId: r.automationId,
+        runId: r.runId,
+        createdAt: new Date(r.createdAt).toISOString(),
+        expiresAt: new Date(r.expiresAt).toISOString(),
+      })
+    }
+  }
+  return Array.from(byId.values())
+}
+
+/** Returns true when an automation currently has at least one unexpired pending approval request. */
+export async function hasPendingPermissionForAutomation(automationId: string): Promise<boolean> {
+  const now = new Date()
+  await expireStalePermissionRequests(now)
+  const row = await db.permissionRequest
+    .findFirst({
+      where: { automationId, status: 'pending', expiresAt: { gt: now } },
+    })
+    .catch(() => null)
+  return Boolean(row)
+}
+
+async function consumeApprovedLease(opts: {
+  capability: CapabilityKey
+  actionHash: string
+  actionSummary: string
+  actor: string
+}): Promise<boolean> {
+  const now = new Date()
+  const lease = await db.permissionRequest
+    .findFirst({
+      where: {
+        actionHash: opts.actionHash,
+        capability: opts.capability,
+        status: 'approved',
+        consumedAt: null,
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+    .catch(() => null)
+  if (!lease) return false
+
+  if (new Date(lease.expiresAt).getTime() <= now.getTime()) {
+    await db.permissionRequest
+      .updateMany({
+        where: { id: lease.id, status: 'approved' },
+        data: { status: 'expired' },
+      })
+      .catch(() => {})
+    return false
+  }
+
+  // Atomic single-use claim prevents replay of the same actionHash lease.
+  const claimed = await db.permissionRequest.updateMany({
+    where: { id: lease.id, status: 'approved', consumedAt: null },
+    data: { status: 'consumed', consumedAt: now },
+  })
+  if (claimed.count !== 1) return false
+
+  // Fail closed if durable audit cannot be written.
+  await db.permissionAuditLog.create({
+    data: {
+      capability: opts.capability,
+      actionSummary: opts.actionSummary.slice(0, 140) + ' [sha256:' + opts.actionHash + ']',
+      decision: 'once',
+      actor: opts.actor,
+    },
+  })
+  await db.permissionGrant
+    .update({
+      where: { capability: opts.capability },
+      data: { lastUsedAt: now },
+    })
+    .catch(() => {})
+  return true
 }
 
 export async function resolvePermissionDecision(
   requestId: string,
   decision: PermissionDecision,
   actionHash: string
-): Promise<{ ok: boolean; capability?: string; decision: PermissionDecision }> {
-  const pending = controlBus.getPendingPermission(requestId)
-  if (!pending || pending.actionHash !== actionHash ||
-      !['always', 'once', 'deny'].includes(decision)) return { ok: false, decision }
-  if (decision === 'always' && requiresSingleUseApproval(pending.capability)) {
+): Promise<{ ok: boolean; capability?: string; decision: PermissionDecision; automationId?: string | null }> {
+  if (!['always', 'once', 'deny'].includes(decision)) return { ok: false, decision }
+  const now = new Date()
+  const isLive = controlBus.hasLiveOrResolvingPermission(requestId)
+  const livePending = isLive ? controlBus.beginPermissionResolution(requestId, actionHash) : null
+
+  if (isLive) {
+    if (!livePending) return { ok: false, decision }
+    if (decision === 'always' && requiresSingleUseApproval(livePending.capability)) {
+      controlBus.abortPermissionResolution(requestId)
+      return { ok: false, decision: 'deny' }
+    }
+    // A granted action is never released when the durable audit cannot be written.
+    if (decision === 'always' || decision === 'once') {
+      try {
+        await db.permissionAuditLog.create({
+          data: {
+            capability: livePending.capability,
+            actionSummary: livePending.actionSummary.slice(0, 150) + ' [sha256:' + actionHash + ']',
+            decision,
+            actor: livePending.actor || 'Nexus owner',
+          },
+        })
+      } catch (err) {
+        controlBus.abortPermissionResolution(requestId)
+        throw err
+      }
+    }
+    await db.permissionRequest
+      .updateMany({
+        where: { requestId, status: 'pending' },
+        data: {
+          status: decision === 'deny' ? 'denied' : 'consumed',
+          decision,
+          resolvedAt: now,
+          ...(decision === 'deny' ? {} : { consumedAt: now }),
+        },
+      })
+      .catch(() => {})
+
+    const req = controlBus.resolvePermission(requestId, decision, actionHash)
+    if (!req) return { ok: false, decision }
+
+    if (decision === 'always' && isValidCapability(req.capability)) {
+      await setPermissionPolicy(req.capability, 'always')
+    }
+    if (decision === 'always' || decision === 'once') {
+      controlBus.broadcastEvaMood('happy', `Permission granted: ${req.title}`, 1800)
+    } else {
+      controlBus.broadcastEvaMood('idle', `Permission declined: ${req.title}`, 1200)
+    }
+    if (decision === 'deny') {
+      await recordPermissionAudit({
+        capability: req.capability,
+        actionSummary: req.actionSummary,
+        decision,
+        actor: req.actor,
+      })
+    }
+    return { ok: true, capability: req.capability, decision, automationId: req.automationId ?? null }
+  }
+
+  // Durable fallback path: resolve a persisted pending/deferred request (survives restarts & offline runs)
+  const row = await db.permissionRequest.findUnique({ where: { requestId } }).catch(() => null)
+  if (!row || row.status !== 'pending' || row.actionHash !== actionHash) {
+    return { ok: false, decision }
+  }
+  const expiresMs = new Date(row.expiresAt).getTime()
+  if (!Number.isFinite(expiresMs) || Date.now() > expiresMs) {
+    await db.permissionRequest
+      .updateMany({
+        where: { id: row.id, status: 'pending' },
+        data: { status: 'expired', decision: 'timeout', resolvedAt: now },
+      })
+      .catch(() => {})
+    return { ok: false, decision: 'timeout' }
+  }
+  if (decision === 'always' && requiresSingleUseApproval(row.capability)) {
     return { ok: false, decision: 'deny' }
   }
-  // A granted action is never released when the durable audit cannot be written.
-  if (decision === 'always' || decision === 'once') {
-    await db.permissionAuditLog.create({
+
+  // Atomically claim single-flight lock in DB before writing audit log
+  const claimed = await db.permissionRequest.updateMany({
+    where: { id: row.id, status: 'pending' },
+    data: { status: 'resolving' },
+  })
+  if (claimed.count !== 1) return { ok: false, decision }
+
+  try {
+    // Write durable audit BEFORE releasing an approved lease.
+    if (decision === 'always' || decision === 'once') {
+      await db.permissionAuditLog.create({
+        data: {
+          capability: row.capability,
+          actionSummary: row.actionSummary.slice(0, 150) + ' [sha256:' + actionHash + ']',
+          decision,
+          actor: row.actor || 'Nexus owner',
+        },
+      })
+    } else {
+      await recordPermissionAudit({
+        capability: row.capability,
+        actionSummary: row.actionSummary,
+        decision: 'deny',
+        actor: row.actor,
+      })
+    }
+
+    const leaseExpiresAt =
+      decision === 'deny'
+        ? row.expiresAt
+        : new Date(Math.max(expiresMs, Date.now() + DEFERRED_LEASE_TTL_MS))
+
+    await db.permissionRequest.updateMany({
+      where: { id: row.id, status: 'resolving' },
       data: {
-        capability: pending.capability,
-        actionSummary: pending.actionSummary.slice(0, 150) + ' [sha256:' + actionHash + ']',
+        status: decision === 'deny' ? 'denied' : 'approved',
         decision,
-        actor: pending.actor || 'Nexus owner',
+        resolvedAt: now,
+        expiresAt: leaseExpiresAt,
       },
     })
+  } catch (err) {
+    await db.permissionRequest
+      .updateMany({
+        where: { id: row.id, status: 'resolving' },
+        data: { status: 'pending' },
+      })
+      .catch(() => {})
+    throw err
   }
-  const req = controlBus.resolvePermission(requestId, decision, actionHash)
-  if (!req) return { ok: false, decision }
 
-  if (decision === 'always' && isValidCapability(req.capability)) {
-    await setPermissionPolicy(req.capability, 'always')
+  if (decision === 'always' && isValidCapability(row.capability)) {
+    await setPermissionPolicy(row.capability, 'always')
   }
-  if (decision === 'always' || decision === 'once') {
-    controlBus.broadcastEvaMood('happy', `Permission granted: ${req.title}`, 1800)
-  } else {
-    controlBus.broadcastEvaMood('idle', `Permission declined: ${req.title}`, 1200)
+
+  controlBus.broadcast({
+    type: 'permission:resolved',
+    requestId,
+    decision,
+    capability: row.capability,
+  })
+  const spec = SPEC_BY_KEY.get(row.capability as CapabilityKey)
+  if (spec) {
+    if (decision === 'always' || decision === 'once') {
+      controlBus.broadcastEvaMood('happy', `Permission granted: ${spec.title}`, 1800)
+    } else {
+      controlBus.broadcastEvaMood('idle', `Permission declined: ${spec.title}`, 1200)
+    }
   }
-  if (decision === 'deny') {
-    await recordPermissionAudit({
-      capability: req.capability,
-      actionSummary: req.actionSummary,
-      decision,
-      actor: req.actor,
-    })
-  }
-  return { ok: true, capability: req.capability, decision }
+  return { ok: true, capability: row.capability, decision, automationId: row.automationId ?? null }
 }
 
 /**
@@ -245,33 +489,47 @@ export async function requireCapabilityPermission(opts: {
   actionName?: string
   target?: unknown
   payload?: unknown
-}): Promise<{ allowed: boolean; decision: PermissionDecision; reason?: string; actionHash: string }> {
+  deferWhenOffline?: boolean
+}): Promise<{
+  allowed: boolean
+  decision: PermissionDecision
+  deferred?: boolean
+  requestId?: string
+  reason?: string
+  actionHash: string
+}> {
   const actor = opts.actor || 'Eva'
+  const actionName = opts.actionName ?? opts.capability + ':' + opts.actionSummary
   const actionHash = computeActionHash({
-    actionName: opts.actionName ?? opts.capability + ':' + opts.actionSummary,
+    actionName,
     target: opts.target ?? null,
     payload: opts.payload ?? null,
   })
   const spec = SPEC_BY_KEY.get(opts.capability)!
   const row = await db.permissionGrant.findUnique({ where: { capability: opts.capability } })
-  const configuredPolicy: PermissionPolicy = row && isValidPolicy(row.policy) ? row.policy : 'ask'
+  const defaultPolicy: PermissionPolicy =
+    opts.capability === 'app_ui' ? 'always' : 'ask'
+  const configuredPolicy: PermissionPolicy = row && isValidPolicy(row.policy) ? row.policy : defaultPolicy
   const policy: PermissionPolicy = requiresSingleUseApproval(opts.capability) && configuredPolicy === 'always'
     ? 'ask'
     : configuredPolicy
 
   if (policy === 'always') {
+    // Fail-closed durable audit even for standing non-sensitive grants.
+    await db.permissionAuditLog.create({
+      data: {
+        capability: opts.capability,
+        actionSummary: opts.actionSummary.slice(0, 150) + ' [sha256:' + actionHash + ']',
+        decision: 'always',
+        actor,
+      },
+    })
     await db.permissionGrant
       .update({
         where: { capability: opts.capability },
         data: { lastUsedAt: new Date() },
       })
       .catch(() => {})
-    await recordPermissionAudit({
-      capability: opts.capability,
-      actionSummary: opts.actionSummary,
-      decision: 'always',
-      actor,
-    })
     return { allowed: true, decision: 'always', actionHash }
   }
 
@@ -290,8 +548,65 @@ export async function requireCapabilityPermission(opts: {
     }
   }
 
-  // Policy is 'ask' -> request interactive one-time decision from the active browser client
+  // Check for an approved, unexpired, single-use durable lease matching this exact actionHash.
+  if (
+    await consumeApprovedLease({
+      capability: opts.capability,
+      actionHash,
+      actionSummary: opts.actionSummary,
+      actor,
+    })
+  ) {
+    return { allowed: true, decision: 'once', actionHash }
+  }
+
+  const ctx = permissionContextStorage.getStore()
+  const shouldDeferOffline = Boolean(ctx?.automationId || opts.deferWhenOffline)
+
+  // Policy is 'ask' -> request interactive one-time decision or queue a deferred approval for unattended runs
   if (!controlBus.hasUiClients()) {
+    if (shouldDeferOffline) {
+      const now = new Date()
+      const expiresAt = new Date(now.getTime() + DEFERRED_LEASE_TTL_MS)
+      const existingPending = await db.permissionRequest
+        .findFirst({
+          where: {
+            actionHash,
+            capability: opts.capability,
+            status: 'pending',
+            expiresAt: { gt: now },
+          },
+        })
+        .catch(() => null)
+      const requestId = existingPending?.requestId ?? 'perm_' + randomUUID()
+      if (!existingPending) {
+        await db.permissionRequest
+          .create({
+            data: {
+              requestId,
+              actionHash,
+              capability: opts.capability,
+              actionName: actionName.slice(0, 120),
+              actionSummary: opts.actionSummary.slice(0, 260),
+              actor,
+              details: (opts.details ?? '').slice(0, 500),
+              status: 'pending',
+              automationId: ctx?.automationId ?? null,
+              runId: ctx?.runId ?? null,
+              expiresAt,
+            },
+          })
+          .catch(() => {})
+      }
+      return {
+        allowed: false,
+        decision: 'timeout',
+        deferred: true,
+        requestId,
+        reason: `Queued "${spec.title}" in Deferred Approvals Inbox awaiting owner approval.`,
+        actionHash,
+      }
+    }
     return {
       allowed: false,
       decision: 'timeout',
@@ -301,7 +616,29 @@ export async function requireCapabilityPermission(opts: {
   }
 
   const requestId = 'perm_' + randomUUID()
-  controlBus.broadcastEvaMood('curious', `Waiting for approval: ${spec.title}`, 45_000)
+  const timeoutMs = opts.timeoutMs ?? 45_000
+  const createdAt = new Date()
+  const expiresAt = new Date(createdAt.getTime() + timeoutMs)
+
+  await db.permissionRequest
+    .create({
+      data: {
+        requestId,
+        actionHash,
+        capability: opts.capability,
+        actionName: actionName.slice(0, 120),
+        actionSummary: opts.actionSummary.slice(0, 260),
+        actor,
+        details: (opts.details ?? '').slice(0, 500),
+        status: 'pending',
+        automationId: ctx?.automationId ?? null,
+        runId: ctx?.runId ?? null,
+        expiresAt,
+      },
+    })
+    .catch(() => {})
+
+  controlBus.broadcastEvaMood('curious', `Waiting for approval: ${spec.title}`, timeoutMs)
   const decision = await controlBus.waitForPermission(
     {
       requestId,
@@ -312,13 +649,16 @@ export async function requireCapabilityPermission(opts: {
       actionSummary: opts.actionSummary,
       actor,
       details: opts.details,
-      createdAt: new Date().toISOString(),
+      automationId: ctx?.automationId ?? null,
+      runId: ctx?.runId ?? null,
+      createdAt: createdAt.toISOString(),
+      expiresAt: expiresAt.toISOString(),
     },
-    opts.timeoutMs ?? 45_000
+    timeoutMs
   )
 
   if (decision === 'always' || decision === 'once') {
-    if (decision === 'always') {
+    if (decision === 'always' && !requiresSingleUseApproval(opts.capability)) {
       await db.permissionGrant
         .upsert({
           where: { capability: opts.capability },
@@ -331,6 +671,12 @@ export async function requireCapabilityPermission(opts: {
   }
 
   if (decision === 'timeout') {
+    await db.permissionRequest
+      .updateMany({
+        where: { requestId, status: 'pending' },
+        data: { status: 'expired', decision: 'timeout', resolvedAt: new Date() },
+      })
+      .catch(() => {})
     await recordPermissionAudit({
       capability: opts.capability,
       actionSummary: opts.actionSummary,

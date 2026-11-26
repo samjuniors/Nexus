@@ -23,6 +23,7 @@ interface MemoryStore {
   automationRun: Row[]
   permissionGrant: Row[]
   permissionAuditLog: Row[]
+  permissionRequest: Row[]
   connectedDevice: Row[]
   connectedFolder: Row[]
   allowedDesktopApp: Row[]
@@ -148,6 +149,19 @@ const DEFAULTS: Record<keyof MemoryStore, () => Row> = {
     actor: 'Eva',
     createdAt: new Date(),
   }),
+  permissionRequest: () => ({
+    actionName: '',
+    actor: 'Eva',
+    details: '',
+    status: 'pending',
+    decision: null,
+    automationId: null,
+    runId: null,
+    resolvedAt: null,
+    consumedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }),
   connectedDevice: () => ({
     platform: 'unknown',
     status: 'offline',
@@ -214,8 +228,16 @@ function matchesWhere(row: Row, where?: Row): boolean {
         if (row[key] == null || compareValues(row[key], c.lte) > 0) return false
         continue
       }
+      if ('lt' in c) {
+        if (row[key] == null || compareValues(row[key], c.lt) >= 0) return false
+        continue
+      }
       if ('gte' in c) {
         if (row[key] == null || compareValues(row[key], c.gte) < 0) return false
+        continue
+      }
+      if ('gt' in c) {
+        if (row[key] == null || compareValues(row[key], c.gt) <= 0) return false
         continue
       }
     }
@@ -295,6 +317,7 @@ function createInMemoryPrisma(): PrismaClient {
       automationRun: [],
       permissionGrant: [],
       permissionAuditLog: [],
+      permissionRequest: [],
       connectedDevice: [],
       connectedFolder: [],
       allowedDesktopApp: [],
@@ -413,6 +436,16 @@ function createInMemoryPrisma(): PrismaClient {
         store[model][idx] = updated
         return { ...updated }
       },
+      async updateMany(args: { where?: Row; data: Row }) {
+        let count = 0
+        for (let i = 0; i < store[model].length; i++) {
+          if (matchesWhere(store[model][i], args.where)) {
+            store[model][i] = applyPatch(store[model][i], args.data)
+            count++
+          }
+        }
+        return { count }
+      },
       async upsert(args: { where: Row; create: Row; update: Row }) {
         const idx = store[model].findIndex((r) => matchesWhere(r, args.where))
         if (idx !== -1) {
@@ -472,6 +505,8 @@ function createInMemoryPrisma(): PrismaClient {
     }
   }
 
+  const delegates = new Map<keyof MemoryStore, ReturnType<typeof makeDelegate>>()
+
   return new Proxy(
     {
       $connect: async () => undefined,
@@ -480,7 +515,15 @@ function createInMemoryPrisma(): PrismaClient {
     {
       get(target, prop: string) {
         if (prop in target) return target[prop]
-        if (prop in store) return makeDelegate(prop as keyof MemoryStore)
+        if (prop in store) {
+          const key = prop as keyof MemoryStore
+          let del = delegates.get(key)
+          if (!del) {
+            del = makeDelegate(key)
+            delegates.set(key, del)
+          }
+          return del
+        }
         return undefined
       },
     }
