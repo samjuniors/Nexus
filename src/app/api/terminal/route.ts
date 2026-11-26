@@ -89,12 +89,42 @@ export async function POST(request: Request) {
     }
 
     if (action === 'exec') {
-      const execBinding = { actionName: 'terminal.exec', target: body.target ?? 'auto', payload: body }
-      const approval = await requireCapabilityPermission({ capability: 'workspace_shell', actionSummary: 'Execute a terminal command', actor: 'Nexus owner', ...execBinding })
-      if (!approval.allowed || !verifyActionHash(approval.actionHash, execBinding)) return NextResponse.json({ ok: false, error: approval.reason || 'Terminal command denied' }, { status: 403 })
-      if (body.target === 'windows_pc') {
-        const remote = await requireCapabilityPermission({ capability: 'desktop_bridge', actionSummary: 'Execute a command on a paired desktop', actor: 'Nexus owner', ...execBinding })
-        if (!remote.allowed || !verifyActionHash(remote.actionHash, execBinding)) return NextResponse.json({ ok: false, error: remote.reason || 'Remote desktop command denied' }, { status: 403 })
+      const devices = await listConnectedDevices()
+      const hasOnlineRemoteDesktop = devices.some(
+        (d) => d.id !== 'local_host' && d.status === 'online' && d.platform !== 'android' && d.platform !== 'ios'
+      )
+      const isRemoteTarget = body.target === 'windows_pc' && body.deviceId !== 'local_host' && hasOnlineRemoteDesktop
+
+      const execBinding = {
+        actionName: 'terminal.exec',
+        target: isRemoteTarget ? body.deviceId || 'windows_pc' : 'host',
+        payload: body,
+      }
+      const approval = await requireCapabilityPermission({
+        capability: 'workspace_shell',
+        actionSummary: 'Execute a terminal command: ' + String(body.command ?? '').slice(0, 90),
+        actor: 'Nexus owner',
+        ...execBinding,
+      })
+      if (!approval.allowed || !verifyActionHash(approval.actionHash, execBinding)) {
+        return NextResponse.json(
+          { ok: false, error: approval.reason || 'Terminal command denied' },
+          { status: 403 }
+        )
+      }
+      if (isRemoteTarget) {
+        const remote = await requireCapabilityPermission({
+          capability: 'desktop_bridge',
+          actionSummary: 'Execute a command on a paired desktop: ' + String(body.command ?? '').slice(0, 90),
+          actor: 'Nexus owner',
+          ...execBinding,
+        })
+        if (!remote.allowed || !verifyActionHash(remote.actionHash, execBinding)) {
+          return NextResponse.json(
+            { ok: false, error: remote.reason || 'Remote desktop command denied' },
+            { status: 403 }
+          )
+        }
       }
       const command = String(body.command ?? '').trim()
       if (!command) {

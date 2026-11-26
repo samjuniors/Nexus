@@ -7,6 +7,7 @@ import { controlBus, type BrowserElementHint, type BrowserFramePayload } from '@
 import { provisionAgentEmail, waitForVerificationCode } from '@/lib/agent/agent-identity'
 import { reasoningChain } from '@/lib/agent/reasoning-chain'
 import { automationSession } from '@/lib/agent/computer-control'
+import { resolvePublicExternalUrl } from '@/lib/agent/product-source-ingest'
 
 const VIEWPORT_W = 1280
 const VIEWPORT_H = 800
@@ -696,7 +697,36 @@ class LiveBrowserManager {
   }
 
   async navigate(rawUrl: string): Promise<BrowserActionResult> {
-    const url = /^https?:\/\//i.test(rawUrl.trim()) ? rawUrl.trim() : `https://${rawUrl.trim()}`
+    const trimmed = rawUrl.trim()
+    if (!trimmed) {
+      return {
+        ok: false,
+        summary: 'Navigation failed: URL is required',
+        url: '',
+        title: 'Navigation Error',
+        textExcerpt: '',
+        elements: [],
+        frame: controlBus.getLatestBrowserFrame(),
+        error: 'URL is required',
+      }
+    }
+    const candidate = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`
+    let url: string
+    try {
+      url = (await resolvePublicExternalUrl(candidate)).toString()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return {
+        ok: false,
+        summary: `Blocked navigation: ${msg}`,
+        url: candidate,
+        title: 'Navigation Blocked',
+        textExcerpt: '',
+        elements: [],
+        frame: controlBus.getLatestBrowserFrame(),
+        error: msg,
+      }
+    }
     const directVideoId = extractYouTubeVideoId(url)
     if (directVideoId && /youtube\.com|youtu\.be/i.test(url)) {
       return this.playMedia(url)

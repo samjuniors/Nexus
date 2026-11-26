@@ -208,7 +208,7 @@ function createOwnerGateway({ env = process.env, port = 3000 } = {}) {
       send(res, 403, '{"error":"Cross-origin request denied"}'); return false;
     }
 
-    if (path === '/api/health' && req.method === 'GET') return true;
+    if ((path === '/api/health' || path === '/api/devices/runner' || path === '/api/devices/mobile-runner') && req.method === 'GET') return true;
     if (path === '/access') { await handleAccess(req, res, expected); return false; }
     if (path === '/access/logout') { handleLogout(req, res, expected); return false; }
     if (!isAuthenticated(req)) {

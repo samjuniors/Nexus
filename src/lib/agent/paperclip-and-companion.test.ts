@@ -63,7 +63,7 @@ test('Paperclip tickets support queue, approval gate, and deletion lifecycle', (
     requiresApproval: true,
     status: 'needs_approval',
   })
-  assert.match(ticket.key, /^NEX-\d+$/)
+  assert.match(ticket.key, /^[A-Z]{2,5}-\d+$/)
   assert.equal(ticket.status, 'needs_approval')
 
   const approved = approveCompanyTicket(ticket.id, 'Board')

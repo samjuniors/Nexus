@@ -111,6 +111,23 @@ export function evaluateFolderAccess(
 /**
  * Evaluates whether an application launch or focus command is permitted by the per-app allowlist.
  */
+const SYSTEM_APP_ALIASES: Record<string, string> = {
+  'my computer': 'explorer.exe',
+  'this pc': 'explorer.exe',
+  'computer': 'explorer.exe',
+  'file explorer': 'explorer.exe',
+  'explorer': 'explorer.exe',
+  'files': 'explorer.exe',
+  'browser': 'chrome.exe',
+  'internet': 'chrome.exe',
+  'web browser': 'chrome.exe',
+  'terminal': 'powershell.exe',
+  'console': 'powershell.exe',
+  'cmd': 'cmd.exe',
+  'editor': 'notepad.exe',
+  'text editor': 'notepad.exe',
+}
+
 export function evaluateAppPolicy(
   appQuery: string,
   apps: Pick<AllowedDesktopAppDTO, 'name' | 'executable' | 'policy'>[]
@@ -122,6 +139,7 @@ export function evaluateAppPolicy(
   if (!clean) return { policy: 'deny', matchedApp: null }
   const bareExe = clean.split(/[\\/]/).pop() ?? clean
   const bareNoExt = bareExe.replace(/\.exe$/i, '')
+  const aliasExe = SYSTEM_APP_ALIASES[clean]?.toLowerCase()
 
   for (const app of apps) {
     const exeLower = app.executable.toLowerCase()
@@ -131,7 +149,8 @@ export function evaluateAppPolicy(
       bareExe === exeLower ||
       bareNoExt === exeNoExt ||
       clean === nameLower ||
-      nameLower.includes(clean)
+      nameLower.includes(clean) ||
+      (aliasExe && (aliasExe === exeLower || aliasExe === exeNoExt))
     ) {
       return { policy: app.policy, matchedApp: app }
     }

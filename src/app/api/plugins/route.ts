@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { ensureSeeded } from '@/lib/agent/seed'
+import { validateExternalWebsiteUrl } from '@/lib/agent/product-source-ingest'
 
 export const runtime = 'nodejs'
 
@@ -107,11 +108,17 @@ export async function POST(request: Request) {
     if (!name) return NextResponse.json({ ok: false, error: 'Plugin name is required' }, { status: 400 })
     const config = body.config ?? {}
     const type = config.type === 'http' ? 'http' : 'llm'
-    if (type === 'http' && !config.endpoint) {
-      return NextResponse.json(
-        { ok: false, error: 'HTTP plugins require an "endpoint" URL in config' },
-        { status: 400 }
-      )
+    if (type === 'http') {
+      if (!config.endpoint) {
+        return NextResponse.json(
+          { ok: false, error: 'HTTP plugins require an "endpoint" URL in config' },
+          { status: 400 }
+        )
+      }
+      const check = validateExternalWebsiteUrl(config.endpoint)
+      if (!check.ok) {
+        return NextResponse.json({ ok: false, error: check.error }, { status: 400 })
+      }
     }
     if (type === 'llm' && !config.instructions) {
       return NextResponse.json(

@@ -126,7 +126,7 @@ class RealTerminalManager {
   constructor() {
     this.shell = this.hostShellInfo.defaultShell
     this.pushSystemNotice(
-      `Real ${this.shell} terminal ready on ${os.hostname()} (${process.platform}). Pair a Windows PC in Devices or below to run native Windows PowerShell.`
+      `Real ${this.shell} terminal ready on ${os.hostname()} (${process.platform}). This computer is automatically connected with full native access.`
     )
   }
 
@@ -347,59 +347,33 @@ class RealTerminalManager {
 
     // Resolve target
     const devices = await listConnectedDevices()
-    const onlineDesktop =
-      (params.deviceId
+    const remoteDesktop =
+      (params.deviceId && params.deviceId !== 'local_host'
         ? devices.find((d) => d.id === params.deviceId && d.status === 'online')
         : null) ??
-      devices.find((d) => d.status === 'online' && d.platform === 'windows') ??
-      devices.find((d) => d.status === 'online' && d.platform !== 'android' && d.platform !== 'ios')
+      devices.find((d) => d.id !== 'local_host' && d.status === 'online' && d.platform === 'windows') ??
+      devices.find((d) => d.id !== 'local_host' && d.status === 'online' && d.platform !== 'android' && d.platform !== 'ios')
 
     let resolvedTarget: TerminalTarget = this.target
     if (params.target === 'windows_pc') {
-      resolvedTarget = 'windows_pc'
+      resolvedTarget = remoteDesktop ? 'windows_pc' : 'host'
     } else if (params.target === 'host') {
       resolvedTarget = 'host'
     } else if (params.target === 'auto') {
-      if ((params.shell === 'powershell' || params.shell === 'pwsh') && onlineDesktop) {
+      if ((params.shell === 'powershell' || params.shell === 'pwsh') && remoteDesktop) {
         resolvedTarget = 'windows_pc'
       } else {
-        resolvedTarget = this.target === 'windows_pc' && onlineDesktop ? 'windows_pc' : 'host'
+        resolvedTarget = this.target === 'windows_pc' && remoteDesktop ? 'windows_pc' : 'host'
       }
     }
 
     // ---- Path A: Connected Windows PC Real PowerShell via Companion Bridge ----
-    if (resolvedTarget === 'windows_pc') {
-      if (!onlineDesktop) {
-        // Fallback if host ITSELF is Windows or has pwsh installed
-        if (this.hostShellInfo.available.includes('powershell') || this.hostShellInfo.available.includes('pwsh')) {
-          resolvedTarget = 'host'
-        } else {
-          const msg =
-            'No online Windows PC Companion Bridge is connected yet. Use "Pair Windows PC" in the Terminal or Devices panel to link your Windows PC and run real Windows PowerShell.'
-          this.pushSystemNotice(msg)
-          return {
-            ok: false,
-            exitCode: 1,
-            stdout: '',
-            stderr: msg,
-            output: msg,
-            cwd: this.getCurrentCwd(),
-            target: 'windows_pc',
-            shell: 'powershell',
-            targetLabel: 'Windows PC (Offline)',
-            durationMs: 0,
-            error: msg,
-          }
-        }
-      }
-    }
-
-    if (resolvedTarget === 'windows_pc' && onlineDesktop) {
+    if (resolvedTarget === 'windows_pc' && remoteDesktop) {
       this.target = 'windows_pc'
-      this.deviceId = onlineDesktop.id
-      this.deviceName = onlineDesktop.name
-      const activeCwd = params.cwd?.trim() || this.remoteCwdByDevice.get(onlineDesktop.id) || ''
-      const targetLabel = `${onlineDesktop.name} · PowerShell`
+      this.deviceId = remoteDesktop.id
+      this.deviceName = remoteDesktop.name
+      const activeCwd = params.cwd?.trim() || this.remoteCwdByDevice.get(remoteDesktop.id) || ''
+      const targetLabel = `${remoteDesktop.name} · PowerShell`
       const startTime = Date.now()
 
       this.running = true
@@ -418,7 +392,7 @@ class RealTerminalManager {
 
       try {
         const res = await controlBus.sendDeviceCommand(
-          onlineDesktop.id,
+          remoteDesktop.id,
           'powershell',
           {
             script: command,
@@ -449,7 +423,7 @@ class RealTerminalManager {
             alreadyStreamed = Boolean(parsed.streamed)
             if (typeof parsed.cwd === 'string' && parsed.cwd.trim()) {
               nextCwd = parsed.cwd.trim()
-              this.remoteCwdByDevice.set(onlineDesktop.id, nextCwd)
+              this.remoteCwdByDevice.set(remoteDesktop.id, nextCwd)
             }
           }
         } catch {
@@ -531,13 +505,19 @@ class RealTerminalManager {
     const chosenShell: TerminalShellKind =
       params.shell && this.hostShellInfo.available.includes(params.shell)
         ? params.shell
-        : this.hostShellInfo.available.includes(this.shell)
-          ? this.shell
-          : this.hostShellInfo.defaultShell
+        : (params.target === 'windows_pc' || this.hostShellInfo.defaultShell === 'powershell' || process.platform === 'win32') &&
+            this.hostShellInfo.available.includes('powershell')
+          ? 'powershell'
+          : this.hostShellInfo.available.includes(this.shell)
+            ? this.shell
+            : this.hostShellInfo.defaultShell
     this.shell = chosenShell
     const shellBinary = this.hostShellInfo.binaries[chosenShell] ?? chosenShell
     const execCwd = params.cwd?.trim() ? path.resolve(this.hostCwd, params.cwd.trim()) : this.hostCwd
-    const targetLabel = `${os.hostname()} · ${chosenShell}`
+    const targetLabel =
+      chosenShell === 'powershell' || chosenShell === 'pwsh'
+        ? `${os.hostname()} (Windows Host) · ${chosenShell}`
+        : `${os.hostname()} · ${chosenShell}`
     const timeoutMs = Math.min(120_000, Math.max(2000, params.timeoutMs ?? DEFAULT_TIMEOUT_MS))
     const startTime = Date.now()
 
@@ -558,7 +538,17 @@ class RealTerminalManager {
     const isPowerShell = chosenShell === 'powershell' || chosenShell === 'pwsh'
     let spawnArgs: string[]
     if (isPowerShell) {
-      const wrapped = `${command}\n$__nxs_code = if ($LASTEXITCODE -ne $null) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 }\nWrite-Output ("${CWD_MARKER}" + (Get-Location).Path)\nexit $__nxs_code`
+      // Flush PowerShell formatting buffers (e.g. Format-Table from pwd/Get-ChildItem) synchronously
+      // via Out-Default before emitting the CWD marker and exiting.
+      const wrapped = [
+        '$ProgressPreference = "SilentlyContinue"',
+        '& {',
+        command,
+        '} | Out-Default',
+        '$__nxs_code = if ($LASTEXITCODE -ne $null) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 }',
+        `Write-Output ("${CWD_MARKER}" + (Get-Location).Path)`,
+        'exit $__nxs_code',
+      ].join('\n')
       const encoded = Buffer.from(wrapped, 'utf16le').toString('base64')
       spawnArgs = ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded]
     } else {

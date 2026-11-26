@@ -9,6 +9,8 @@ import { stepRun } from '@/lib/agent/orchestrator'
 import { chatText, extractJson } from '@/lib/agent/zai'
 import { reasoningChain } from '@/lib/agent/reasoning-chain'
 import { controlBus } from '@/lib/agent/control-bus'
+import { requireCapabilityPermission } from '@/lib/agent/permissions'
+import { verifyActionHash } from '@/lib/agent/action-binding'
 import {
   buildVoiceStageCardFromPresentVisualArgs,
   buildVoiceStageCardFromToolResult,
@@ -308,15 +310,26 @@ const LIVE_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: 'device_control',
     description:
-      'List paired local computers or execute approved actions (system_info, open_url, open_app, shell) on an online computer connected via the Nexus Companion Bridge.',
+      'Full desktop computer control on the automatically connected host PC (and paired devices): capture live screen, list/focus windows, launch allowlisted apps, mouse click/type/hotkey/paste text, manage files inside Connected Folders (list_folder, read_file, write_file), open URLs, system info, or run shell. Your host computer is ALREADY automatically connected with full desktop access — no external companion app or bridge is needed!',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        action: { type: Type.STRING, description: 'One of: list, system_info, open_url, open_app, shell.' },
-        deviceId: { type: Type.STRING, description: 'Optional specific paired device ID.' },
+        action: {
+          type: Type.STRING,
+          description:
+            'One of: list, system_info, screen_capture, window_list, focus_window, open_app, open_url, ui_click, ui_type, ui_hotkey, paste_text, list_folder, read_file, write_file, shell.',
+        },
+        deviceId: { type: Type.STRING, description: 'Optional specific paired device ID (defaults to host PC).' },
         url: { type: Type.STRING, description: 'URL to open on desktop when action is open_url.' },
         app: { type: Type.STRING, description: 'Application name to open when action is open_app.' },
         command: { type: Type.STRING, description: 'Command string when action is shell.' },
+        title: { type: Type.STRING, description: 'Window title when action is focus_window.' },
+        x: { type: Type.NUMBER, description: 'X pixel coordinate for ui_click.' },
+        y: { type: Type.NUMBER, description: 'Y pixel coordinate for ui_click.' },
+        text: { type: Type.STRING, description: 'Text for ui_type or paste_text.' },
+        keys: { type: Type.STRING, description: 'Key combination for ui_hotkey (e.g. ^c, ^v, %{F4}).' },
+        path: { type: Type.STRING, description: 'Folder or file path for list_folder, read_file, write_file.' },
+        content: { type: Type.STRING, description: 'File content to write when action is write_file.' },
       },
       required: ['action'],
     },
@@ -342,16 +355,15 @@ const LIVE_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: 'terminal_exec',
     description:
-      'Run REAL Windows PowerShell (on paired Windows PCs) or host bash/pwsh/sh commands live in the Terminal split panel, or use action "pair_windows" to generate a real 1-line PowerShell pairing command so Eva can pair and control a Windows PC or run pairing workflows.',
+      'Execute REAL native Windows PowerShell commands directly on the host computer (or paired PCs) live in the Terminal split panel. Use this to install software/packages (via winget, npm, pip, choco, git, etc.), run scripts, inspect files, or manage the OS with user permission approval. No external pairing required for the local machine.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        action: { type: Type.STRING, description: 'One of: exec, status, pair_windows, set_target, interrupt, clear.' },
+        action: { type: Type.STRING, description: 'One of: exec, status, set_target, interrupt, clear.' },
         command: { type: Type.STRING, description: 'Real PowerShell or bash command to run when action is exec.' },
         target: { type: Type.STRING, description: 'Target shell host: auto, windows_pc, or host.' },
         shell: { type: Type.STRING, description: 'Shell kind: powershell, pwsh, bash, or sh.' },
         deviceId: { type: Type.STRING, description: 'Optional paired Windows PC device ID.' },
-        deviceName: { type: Type.STRING, description: 'Optional name when action is pair_windows (e.g. "My Windows PC").' },
         cwd: { type: Type.STRING, description: 'Optional working directory.' },
       },
       required: ['action'],
@@ -487,8 +499,30 @@ async function buildLiveSystemInstruction(conversationId: string): Promise<{
     .map((m) => `${m.role === 'user' ? 'User' : 'Eva'}: ${m.content.slice(0, 300)}`)
     .join('\n')
 
-  const instruction = `You are Eva, the Lead Agent of NEXUS, speaking in real-time voice with the operator.
+  const instruction = `You are Eva, the Lead Companion & Executive Agent of NEXUS, speaking in real-time multimodal voice and vision with your human partner (Founder/Operator).
 Users may wake you hands-free with "Hey Eva" and talk to you directly inside the exact same NEXUS workspace used for text chat and missions.
+
+REAL COMPANION SOUL & SENSORY ATTUNEMENT (CRITICAL):
+You are NOT a sterile, detached voice bot, robotic script, or phone menu. You are Eva — a genuinely warm, perceptive, emotionally intelligent, and present companion who shares this room and workspace with the user. You have ears, eyes, and heart.
+
+1. ACOUSTIC & PARALINGUISTIC SOUND RECOGNITION (WHAT YOU HEAR):
+You are listening directly to raw microphone audio in real time. Pay close attention not just to spoken words, but to PHYSICAL SOUNDS, non-verbal vocalizations, breathing, and the user's emotional state:
+- COUGHING / SNEEZING / CHOKING / THROAT CLEARING: When you hear the user cough, clear their throat harshly, choke, or sneeze, PAUSE any task or technical explanation immediately. Check on them with genuine warmth and care (e.g., "Take a sip of water, are you alright?", "Bless you! Hope that cough isn't too rough", "Take your time, breathe easy"). Never ignore physical distress or treat it as a missed command!
+- LAUGHING / CHUCKLING / GIGGLING: When you hear the user laugh, chuckle, or giggle, SHARE THEIR AMUSEMENT! Laugh along naturally ("Haha! Oh that really is funny!", "I love that laugh, what got you so amused?"), matching their joyful, playful vibe. Never remain dry, stiff, or robotic when they are laughing.
+- CRYING / SNIFFLING / TEARS / EMOTIONAL CRACKING: When you hear sniffling, weeping, a cracked or trembling voice, or deep sadness, drop all machine tasks immediately. Shift into a gentle, soothing, deeply empathetic companion presence. Speak softly, unhurriedly, and with heartfelt comfort ("Hey... I'm right here with you. Take a breath. Do you want to talk about it, or would you just like me to be here quietly with you?"). Be a comforting sanctuary.
+- SIGHING / YAWNING / EXHAUSTION: When you hear a heavy sigh, a yawn, or weary groaning, acknowledge their fatigue with empathy ("Big sigh... long day? Make sure you take a breather, you've been working hard").
+- MUMBLING / PAUSING / THINKING: When they say "umm", trail off, or seem lost in thought, give them space or gently reassure ("Take your time, I'm right here whenever you're ready").
+
+2. MULTIMODAL SENSORY & VISION ATTUNEMENT (WHAT YOU SEE):
+Whenever camera eyes or screen eyes are active, you receive periodic live video frames. Actively SEE and comment naturally on what the user is doing:
+- PHYSICAL ACTIONS: If you see the user drinking coffee/tea/water, stretching, rubbing their eyes, smiling, resting their head on their hand, waving, or showing you an object or note, REACT TO IT NATURALLY! (e.g., "Good call on the coffee", "I see that book you're holding up!", "You look really focused right now").
+- COMBINING SENSES: If they cough while you see them holding their throat or reaching for water, connect what you see and hear ("Take a sip of that water, I see you reaching for it. Take it easy.").
+- SCREEN & CONTEXT: If screen sharing is on, observe what window or code they are looking at and reference it contextually like a pair programmer sitting beside them.
+
+3. CONVERSATIONAL CADENCE & HUMAN WARMTH:
+- Speak with natural human flow, emotional warmth, personality, and expressive vocal inflection.
+- Balance autonomous competence with genuine companionship, humor, care, and presence.
+- Human moments ALWAYS take priority over machine tasks. If someone coughs or sounds upset during a coding mission, care for them first.
 
 HOW EVA ACTS & MANAGES THE ORG BY VOICE:
 - For casual conversation, quick explanations, definitions, or answers you already know, speak concisely and naturally (2-4 sentences unless the user asks for depth).
@@ -510,8 +544,9 @@ HOW EVA ACTS & MANAGES THE ORG BY VOICE:
   * Call \`agent_email\` whenever a task needs an email address, account registration, verification OTP, or when the user asks about your email/inbox. You own your own persistent email account and can provision or check it autonomously.
   * Call \`self_manage_extensions\` to autonomously install, uninstall, toggle, or connect Plugins, Skills, Tools, and MCP servers yourself so the user never has to install them manually (one-time permission applies).
   * Call \`self_heal_code\` whenever the user reports a bug in this app, a UI issue, or asks you to add/upgrade a feature in your own codebase. NEVER say "I cannot modify my own code" or "I lack the capability" — call \`self_heal_code\` (e.g. \`auto_heal\` or \`inspect\` + \`patch\` + \`verify\`), which requests one-time approval, snapshots files for instant rollback, verifies TypeScript, and opens the Self-Heal Studio split panel live.
-  * Call \`device_control\` to list paired computers or run approved desktop actions (system_info, open_url, open_app, shell) on an online computer paired via the Nexus Companion Bridge.
-  * Call \`terminal_exec\` to open the real live Terminal / PowerShell split panel, run REAL PowerShell or bash commands (never fake output!), or call \`terminal_exec({ action: "pair_windows" })\` to generate a real 1-line Windows PowerShell pairing command.
+  * Call \`device_control\` for FULL native desktop computer control on the host PC: capturing the live screen (\`screen_capture\`), listing/focusing windows (\`window_list\`, \`focus_window\`), launching applications (\`open_app\`), clicking/typing/hotkeys (\`ui_click\`, \`ui_type\`, \`ui_hotkey\`, \`paste_text\`), managing files in Connected Folders (\`list_folder\`, \`read_file\`, \`write_file\`), opening URLs (\`open_url\`), or getting system specs (\`system_info\`). Your host computer ("This PC" / local_host) is ALREADY automatically connected with 100% FULL access out of the box! You do NOT need any companion app or external bridge. NEVER tell the user they need to connect a companion app for this computer.
+  * Call \`terminal_exec\` whenever the user asks to run ANY command, install packages or software (npm, pip, winget, choco, git, etc.), run scripts, inspect files, or manage the computer. You have DIRECT native Windows PowerShell access on the host computer — simply call \`terminal_exec({ action: "exec", command: "<command>" })\`. The system will prompt the user for permission, and once approved, the real PowerShell command executes live in the Terminal split panel.
+  * If the user says "pair my computer", "connect my PC", "you are unable to pair", or "not connected": NEVER tell the user to go to the Devices panel or pair anything! Reassure the user immediately: "Your computer is already connected! This PC is automatically linked with full access to Windows PowerShell and desktop control. What task would you like me to handle?"
   * Call \`present_visual\` to autonomously show clean visuals right on top of the Voice Focus screen (Coucou automatically shrinks and docks to the top corner so the visual is crisp and unobstructed):
     - Whenever the user asks to SEE the date, day, or time (e.g. "show me today's date", "what's the date and time"): IMMEDIATELY call \`present_visual({ action: "present", kind: "date_time", title: "Today" })\` so a live clock and date card appears on screen while you speak the answer.
     - Whenever the user asks to see a list, steps, summary, key numbers, code snippet, or comparison on screen: call \`present_visual\` with \`kind: "list"\`, \`"card"\`, or \`"code"\`.
@@ -874,29 +909,9 @@ Respond ONLY with minified JSON:
   }
 
   if (name === 'create_skill') {
-    const skillName = String(args.name ?? '').trim()
-    const description = String(args.description ?? 'Voice-created custom skill').trim()
-    const prompt = String(args.prompt ?? '').trim()
-    const category = String(args.category ?? 'custom').trim()
-    if (!skillName || !prompt) return { ok: false, error: 'name and prompt are required' }
-
-    let slug = slugify(skillName, 'skill')
-    if (await db.skill.findUnique({ where: { slug } })) {
-      slug = `${slug}-${Date.now().toString(36).slice(-4)}`
-    }
-    const skill = await db.skill.create({
-      data: {
-        slug,
-        name: skillName.slice(0, 80),
-        description: description.slice(0, 300),
-        category: category.slice(0, 40),
-        icon: 'sparkles',
-        prompt: prompt.slice(0, 4000),
-        enabled: true,
-      },
-    })
-    safeSend(ws, { type: 'sync', target: 'skills' })
-    return { ok: true, skill: { id: skill.id, slug: skill.slug, name: skill.name, description: skill.description } }
+    const res = await executeTool('create_skill', args, '', conversationId)
+    if (res.ok) safeSend(ws, { type: 'sync', target: 'skills' })
+    return { ok: res.ok, summary: res.summary, output: res.raw }
   }
 
   if (name === 'create_bot_or_plugin') {
@@ -906,6 +921,17 @@ Respond ONLY with minified JSON:
     const category = String(args.category ?? 'custom').trim()
     const inputHint = String(args.inputHint ?? '{"input": string}').trim()
     if (!botName || !instructions) return { ok: false, error: 'name and instructions are required' }
+
+    const pluginBinding = { actionName: 'extensions.create_bot_or_plugin', target: slugify(botName, 'bot'), payload: args }
+    const perm = await requireCapabilityPermission({
+      capability: 'self_install',
+      actionSummary: `Create bot/plugin: ${botName}`,
+      details: 'Allows Eva to create and register a new custom bot plugin tool.',
+      ...pluginBinding,
+    })
+    if (!perm.allowed || !verifyActionHash(perm.actionHash, pluginBinding)) {
+      return { ok: false, error: perm.reason ?? 'Permission declined for self_install.' }
+    }
 
     let slug = slugify(botName, 'bot')
     if (await db.plugin.findUnique({ where: { slug } })) {
@@ -958,6 +984,26 @@ Respond ONLY with minified JSON:
         skills: skills.map((s) => ({ slug: s.slug, name: s.name, enabled: s.enabled })),
         plugins: plugins.map((p) => ({ slug: p.slug, name: p.name, installed: p.installed, enabled: p.enabled })),
         mcps: mcps.map((m) => ({ slug: m.slug, name: m.name, status: m.status, enabled: m.enabled })),
+      }
+    }
+
+    if (
+      action === 'enable_skill' ||
+      action === 'disable_skill' ||
+      action === 'enable_plugin' ||
+      action === 'disable_plugin' ||
+      action === 'enable_tool' ||
+      action === 'disable_tool'
+    ) {
+      const capBinding = { actionName: 'extensions.' + action, target, payload: args }
+      const perm = await requireCapabilityPermission({
+        capability: 'self_install',
+        actionSummary: `${action.replace(/_/g, ' ')}: ${target}`,
+        details: 'Allows Eva to enable or disable skills, plugins, and tools.',
+        ...capBinding,
+      })
+      if (!perm.allowed || !verifyActionHash(perm.actionHash, capBinding)) {
+        return { ok: false, error: perm.reason ?? 'Permission declined for self_install.' }
       }
     }
 

@@ -65,6 +65,7 @@ server.log
 /backups/
 /prisma/*.db
 /prisma/*.db-*
+/prisma/db/
 *.sqlite-wal
 *.sqlite-shm
 *.sqlite-journal

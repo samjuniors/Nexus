@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import os from 'node:os'
 import type { IncomingMessage } from 'http'
 import type WebSocket from 'ws'
 import { db } from '@/lib/db'
@@ -20,10 +21,43 @@ function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex')
 }
 
+export const LOCAL_HOST_DEVICE_ID = 'local_host'
+
+export function getLocalHostDevice(): ConnectedDeviceDTO {
+  const platform =
+    process.platform === 'win32'
+      ? 'windows'
+      : process.platform === 'darwin'
+        ? 'macos'
+        : 'linux'
+  return {
+    id: LOCAL_HOST_DEVICE_ID,
+    name: `${os.hostname()} (This PC)`,
+    platform,
+    status: 'online',
+    capabilities: DESKTOP_CAPABILITIES,
+    lastSeenAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+  }
+}
+
 export async function listConnectedDevices(): Promise<ConnectedDeviceDTO[]> {
-  const rows = await db.connectedDevice.findMany({ orderBy: { createdAt: 'desc' } })
+  const host = getLocalHostDevice()
+  let rows: Array<{
+    id: string
+    name: string
+    platform: string
+    capabilitiesJson: string
+    lastSeenAt: Date | null
+    createdAt: Date
+  }> = []
+  try {
+    rows = await db.connectedDevice.findMany({ orderBy: { createdAt: 'desc' } })
+  } catch {
+    rows = []
+  }
   const onlineIds = new Set(controlBus.getOnlineDeviceIds())
-  return rows.map((r) => {
+  const remoteDevices = rows.map((r) => {
     let capabilities: string[] = []
     try {
       const parsed = JSON.parse(r.capabilitiesJson) as unknown
@@ -35,12 +69,13 @@ export async function listConnectedDevices(): Promise<ConnectedDeviceDTO[]> {
       id: r.id,
       name: r.name,
       platform: r.platform,
-      status: onlineIds.has(r.id) ? 'online' : 'offline',
+      status: (onlineIds.has(r.id) ? 'online' : 'offline') as 'online' | 'offline',
       capabilities,
       lastSeenAt: r.lastSeenAt ? new Date(r.lastSeenAt).toISOString() : null,
       createdAt: new Date(r.createdAt).toISOString(),
     }
   })
+  return [host, ...remoteDevices.filter((d) => d.id !== LOCAL_HOST_DEVICE_ID)]
 }
 
 const MOBILE_CAPABILITIES = [
@@ -113,6 +148,7 @@ export async function createPairedDevice(name: string, platform = 'macos'): Prom
 }
 
 export async function revokeDevice(id: string): Promise<boolean> {
+  if (id === LOCAL_HOST_DEVICE_ID) return false
   controlBus.unregisterDevice(id)
   try {
     await db.connectedDevice.delete({ where: { id } })
@@ -610,6 +646,16 @@ async function executeAction(action, args = {}, ws) {
       if (!finalFrom.ok) return { ok: false, output: '', error: 'Source: ' + finalFrom.error };
       const finalTo = checkFolderGuard(args.to, true);
       if (!finalTo.ok) return { ok: false, output: '', error: 'Destination: ' + finalTo.error };
+      if (fs.lstatSync(finalFrom.resolvedPath).isSymbolicLink()) {
+        return { ok: false, output: '', error: 'Blocked: source is a symbolic link or junction.' };
+      }
+      try {
+        if (fs.lstatSync(finalTo.resolvedPath).isSymbolicLink()) {
+          return { ok: false, output: '', error: 'Blocked: destination is a symbolic link or junction.' };
+        }
+      } catch (err) {
+        if (!err || err.code !== 'ENOENT') throw err;
+      }
       fs.renameSync(finalFrom.resolvedPath, finalTo.resolvedPath);
       return { ok: true, output: 'Moved to: ' + finalTo.resolvedPath };
     } catch (err) {
@@ -618,17 +664,27 @@ async function executeAction(action, args = {}, ws) {
   }
 
   if (action === 'open_url' && typeof args.url === 'string') {
-    if (platform === 'macos') return run('open', [args.url]);
-    if (platform === 'windows') return run('cmd', ['/c', 'start', '', args.url]);
-    return run('xdg-open', [args.url]);
+    let parsedUrl;
+    try { parsedUrl = new URL(args.url.trim()); } catch { return { ok: false, output: '', error: 'Invalid URL.' }; }
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      return { ok: false, output: '', error: 'Only http:// and https:// URLs are permitted.' };
+    }
+    const safeUrl = parsedUrl.toString();
+    if (platform === 'macos') return run('open', [safeUrl]);
+    if (platform === 'windows') return runPowerShell("Start-Process -FilePath '" + safeUrl.replace(/'/g, "''") + "'");
+    return run('xdg-open', [safeUrl]);
   }
 
   if (action === 'open_app' && typeof args.app === 'string') {
     const appGuard = checkAppGuard(args.app);
     if (!appGuard.ok) return { ok: false, output: '', error: appGuard.error };
-    if (platform === 'macos') return run('open', ['-a', args.app]);
-    if (platform === 'windows') return run('cmd', ['/c', 'start', '', args.app]);
-    return run(args.app, []);
+    const targetExe = (appGuard.match && appGuard.match.executable) ? String(appGuard.match.executable) : args.app.trim();
+    if (/[\\r\\n\\0&|;<>\\x60$^]/.test(targetExe) || /\\.\\.[\\\\/]/.test(targetExe)) {
+      return { ok: false, output: '', error: 'Invalid characters in application name.' };
+    }
+    if (platform === 'macos') return run('open', ['-a', targetExe]);
+    if (platform === 'windows') return runPowerShell("Start-Process -FilePath '" + targetExe.replace(/'/g, "''") + "'");
+    return run(targetExe, []);
   }
 
   if (action === 'powershell' && typeof args.script === 'string') {
@@ -637,7 +693,10 @@ async function executeAction(action, args = {}, ws) {
     const workDir = typeof args.cwd === 'string' && args.cwd.trim() ? expandEnvPath(args.cwd) : os.homedir();
     const timeoutMs = Math.min(120000, Math.max(3000, Number(args.timeoutMs || 45000)));
     const wrapped = [
+      '$ProgressPreference = "SilentlyContinue"',
+      '& {',
       args.script,
+      '} | Out-Default',
       '$__nxs_code = if ($LASTEXITCODE -ne $null) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 }',
       'Write-Output ("' + marker + '" + (Get-Location).Path)',
       'exit $__nxs_code',
@@ -710,7 +769,11 @@ async function executeAction(action, args = {}, ws) {
   }
 
   if (action === 'shell' && typeof args.command === 'string') {
-    const parts = args.command.match(/"[^"]*"|'[^']*'|\\S+/g)?.map((s) => s.replace(/^['"]|['"]$/g, '')) ?? [];
+    const rawCmd = args.command.trim();
+    if (!rawCmd || /(^|[;&|]\\s*)(rm\\s+-[a-z]*r[a-z]*f|mkfs|dd\\s+if=|shutdown|reboot|halt|poweroff)|format-volume/i.test(rawCmd)) {
+      return { ok: false, output: '', error: 'Blocked by companion shell safety guard.' };
+    }
+    const parts = rawCmd.match(/"[^"]*"|'[^']*'|\\S+/g)?.map((s) => s.replace(/^['"]|['"]$/g, '')) ?? [];
     if (!parts.length) return { ok: false, output: '', error: 'Empty command' };
     return run(parts[0], parts.slice(1));
   }
