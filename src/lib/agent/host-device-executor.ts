@@ -246,7 +246,7 @@ export async function executeLocalDeviceCommand(
       command,
       actor: 'eva',
       target: 'host',
-      shell: 'powershell',
+      shell: normAction === 'powershell' ? 'powershell' : undefined,
       cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
       timeoutMs,
     })

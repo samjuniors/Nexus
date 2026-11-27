@@ -9,6 +9,7 @@ import {
 } from '@/lib/agent/device-bridge'
 import { controlBus } from '@/lib/agent/control-bus'
 import { executeLocalDeviceCommand } from '@/lib/agent/host-device-executor'
+import { detectHostShells } from '@/lib/agent/terminal-manager'
 
 describe('Local Host Automatic Connection & Executor', () => {
   it('identifies local host device as online with desktop capabilities', () => {
@@ -50,12 +51,23 @@ describe('Local Host Automatic Connection & Executor', () => {
     assert.ok(typeof parsed.cpus === 'number' && parsed.cpus > 0)
   })
 
-  it('executes real PowerShell script on local host', async () => {
-    const res = await executeLocalDeviceCommand('powershell', {
+  it('executes real shell/PowerShell script on local host', async () => {
+    const shellRes = await executeLocalDeviceCommand('shell', {
+      command: 'echo NEXUS_LOCAL_TEST_OK',
+    })
+    assert.equal(shellRes.ok, true)
+    assert.match(shellRes.output, /NEXUS_LOCAL_TEST_OK/)
+
+    const { available } = detectHostShells()
+    const psRes = await executeLocalDeviceCommand('powershell', {
       script: 'Write-Output "NEXUS_LOCAL_TEST_OK"',
     })
-    assert.equal(res.ok, true)
-    assert.match(res.output, /NEXUS_LOCAL_TEST_OK/)
+    if (available.includes('powershell') || available.includes('pwsh')) {
+      assert.equal(psRes.ok, true)
+      assert.match(psRes.output, /NEXUS_LOCAL_TEST_OK/)
+    } else {
+      assert.equal(psRes.ok, false)
+    }
   })
 
   it('rejects path traversal or unconfigured folder paths for folder operations', async () => {
