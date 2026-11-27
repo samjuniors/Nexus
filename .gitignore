@@ -44,6 +44,8 @@ next-env.d.ts
 local-*
 .claude
 .z-ai-config
+.orbit/
+.agents/
 *.log
 dev.log
 dev.out.log
@@ -65,6 +67,7 @@ server.log
 /backups/
 /prisma/*.db
 /prisma/*.db-*
+/prisma/db/
 *.sqlite-wal
 *.sqlite-shm
 *.sqlite-journal

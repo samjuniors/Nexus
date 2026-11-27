@@ -22,7 +22,7 @@ const hostname = ownerGateway.bindHost
 const startedAt = Date.now()
 const app = next({ dev, hostname, port })
 const handle = app.getRequestHandler()
-const wss = new WebSocketServer({ noServer: true })
+const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 })
 
 let nextReady = false
 let nextPrepareError: Error | null = null

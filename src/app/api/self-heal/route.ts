@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireCapabilityPermission } from '@/lib/agent/permissions'
+import { verifyActionHash } from '@/lib/agent/action-binding'
 import { controlBus } from '@/lib/agent/control-bus'
 import {
   applySelfHealPatch,
@@ -67,18 +68,42 @@ export async function POST(req: NextRequest) {
       if (!body.sessionId) {
         return NextResponse.json({ ok: false, error: 'sessionId is required for rollback' }, { status: 400 })
       }
+      const rollbackBinding = {
+        actionName: 'self_heal.rollback',
+        target: body.sessionId,
+        payload: body,
+      }
+      const perm = await requireCapabilityPermission({
+        capability: 'self_code_edit',
+        actionSummary: `Rollback self-heal snapshot: ${body.sessionId}`,
+        actor: 'Nexus owner',
+        ...rollbackBinding,
+      })
+      if (!perm.allowed || !verifyActionHash(perm.actionHash, rollbackBinding)) {
+        return NextResponse.json(
+          { ok: false, error: perm.reason || 'Permission denied for self_code_edit rollback' },
+          { status: 403 }
+        )
+      }
       const res = await rollbackSelfHealSession(body.sessionId)
       controlBus.broadcastEvaMood('happy', 'Rolled back self-heal snapshot cleanly', 2000)
       return NextResponse.json(res)
     }
 
     if (body.action === 'patch') {
+      const patchBinding = {
+        actionName: 'self_heal.patch',
+        target: body.sessionId || 'nexus_source',
+        payload: body,
+      }
       const perm = await requireCapabilityPermission({
         capability: 'self_code_edit',
         actionSummary: `Self-heal patch: ${body.title || 'Update app source code'}`,
+        actor: 'Nexus owner',
         details: (body.edits ?? []).map((e) => `${e.mode} ${e.path}`).join(', '),
+        ...patchBinding,
       })
-      if (!perm.allowed) {
+      if (!perm.allowed || !verifyActionHash(perm.actionHash, patchBinding)) {
         return NextResponse.json(
           { ok: false, error: perm.reason || 'Permission denied for self_code_edit' },
           { status: 403 }
@@ -106,12 +131,19 @@ export async function POST(req: NextRequest) {
           message: `Build scan passed cleanly with 0 TypeScript errors (${verification.durationMs}ms).`,
         })
       }
+      const scanBinding = {
+        actionName: 'self_heal.scan_and_heal',
+        target: 'nexus_source',
+        payload: body,
+      }
       const perm = await requireCapabilityPermission({
         capability: 'self_code_edit',
         actionSummary: 'Scan & auto-fix TypeScript compiler errors',
+        actor: 'Nexus owner',
         details: verification.output.slice(0, 220),
+        ...scanBinding,
       })
-      if (!perm.allowed) {
+      if (!perm.allowed || !verifyActionHash(perm.actionHash, scanBinding)) {
         return NextResponse.json(
           {
             ok: false,
@@ -152,12 +184,19 @@ export async function POST(req: NextRequest) {
           { status: 400 }
         )
       }
+      const healBinding = {
+        actionName: 'self_heal.auto_heal',
+        target: body.targetFileHint || body.viewName || 'nexus_source',
+        payload: body,
+      }
       const perm = await requireCapabilityPermission({
         capability: 'self_code_edit',
         actionSummary: `Auto-heal app error: ${errMsg.slice(0, 120)}`,
+        actor: 'Nexus owner',
         details: body.viewName ? `View: ${body.viewName}` : body.targetFileHint,
+        ...healBinding,
       })
-      if (!perm.allowed) {
+      if (!perm.allowed || !verifyActionHash(perm.actionHash, healBinding)) {
         return NextResponse.json(
           { ok: false, error: perm.reason || 'Permission denied for self_code_edit' },
           { status: 403 }

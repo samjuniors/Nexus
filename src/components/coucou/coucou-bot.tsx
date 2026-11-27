@@ -177,7 +177,6 @@ export function CoucouBot({
       engineRef.current = null
     }
     // Re-create engine only when size or mini mode changes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size, mini])
 
   // Sync dynamic state, color, outfit, dancing, 4 senses (eyes/ears/mouth/hands), and emotions

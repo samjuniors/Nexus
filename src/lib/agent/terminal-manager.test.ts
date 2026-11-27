@@ -55,8 +55,9 @@ test('terminalManager executes real host commands, tracks real exit codes and pe
 
   // 3. Real persistent cd tracking across commands
   const tmpDir = os.tmpdir()
+  const sep = process.platform === 'win32' ? ';' : '&&'
   const cdRes = await terminalManager.execute({
-    command: `cd "${tmpDir}" && pwd`,
+    command: `cd "${tmpDir}" ${sep} pwd`,
     actor: 'user',
     target: 'host',
   })

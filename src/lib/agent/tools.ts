@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs'
+import os from 'node:os'
 import vm from 'node:vm'
 import path from 'path'
 import { GoogleGenAI } from '@google/genai'
@@ -34,6 +35,11 @@ import {
   rasterizeSvgToPng,
   resolveImageDimensions,
 } from '@/lib/agent/image-gen'
+import {
+  fetchPublicExternalUrl,
+  resolvePublicExternalUrl,
+  SsrfBlockedError,
+} from '@/lib/agent/product-source-ingest'
 import type { EffectiveTool, ToolExecResult } from '@/lib/agent/types'
 
 function createServerGemini(): GoogleGenAI | null {
@@ -199,16 +205,16 @@ const BUILTIN_TOOL_SPECS: Record<string, { name: string; description: string; ar
         '{"action": "list"|"install_plugin"|"uninstall_plugin"|"toggle_plugin"|"toggle_skill"|"toggle_tool"|"connect_mcp"|"disconnect_mcp", "slug"?: string, "enabled"?: boolean}',
     },
     device_control: {
-      name: 'Windows PC & Connected Device Control',
+      name: 'Windows PC & Desktop Control',
       description:
-        'Control paired local Windows/macOS/Linux PCs via the Nexus Companion Bridge with Connected Folders and Per-App Allowlist enforcement: capture live Windows screen, list/focus windows, launch allowlisted apps, click/type/hotkey/paste text, manage files inside Connected Folders (list_folder, read_file, write_file, move_file), batch-analyze local folder images with Gemini Vision (analyze_folder_images), open URLs, or run shell commands.',
+        'Full native desktop computer control on the automatically connected host PC (and paired devices): capture live screen, list/focus windows, launch allowlisted apps, mouse click/type/hotkey/paste text, manage files inside Connected Folders (list_folder, read_file, write_file, move_file), batch-analyze local folder images with Gemini Vision, open URLs, or run shell/PowerShell commands. Your host computer is ALREADY fully connected out of the box — no companion app or external bridge is needed.',
       argSpec:
         '{"action": "list"|"system_info"|"screen_capture"|"window_list"|"focus_window"|"open_url"|"open_app"|"ui_click"|"ui_type"|"ui_hotkey"|"paste_text"|"list_folder"|"read_file"|"write_file"|"move_file"|"analyze_folder_images"|"shell", "deviceId"?: string, "url"?: string, "app"?: string, "title"?: string, "x"?: number, "y"?: number, "text"?: string, "keys"?: string, "path"?: string, "from"?: string, "to"?: string, "content"?: string, "prompt"?: string, "command"?: string}',
     },
     terminal_exec: {
       name: 'Real Terminal & PowerShell',
       description:
-        'Execute REAL OS shell commands (Windows PowerShell on a paired Windows PC via Companion Bridge, or real host bash/pwsh/sh) streamed live into the Terminal split panel. Never fakes or simulates output. Also supports "pair_windows" to mint a pairing token and 1-line Windows PowerShell bootstrap command to pair a Windows PC or run pairing workflows, "status" to inspect available real shells/devices, "set_target" to switch shells, "interrupt" (^C), and "clear".',
+        'Execute REAL OS shell commands (native Windows PowerShell directly on the host computer or on a paired Windows PC) streamed live into the Terminal split panel. Never fakes or simulates output. Use this to install software/packages (via winget, npm, pip, choco, git, etc.), run scripts, inspect files, or manage the OS with user permission approval. Also supports "pair_windows" for external machines, "status", "set_target", "interrupt", and "clear".',
       argSpec:
         '{"action": "exec"|"status"|"pair_windows"|"set_target"|"interrupt"|"clear", "command"?: string, "target"?: "auto"|"windows_pc"|"host", "shell"?: "powershell"|"pwsh"|"bash"|"sh", "deviceId"?: string, "deviceName"?: string, "cwd"?: string, "timeoutMs"?: number}',
     },
@@ -499,51 +505,59 @@ function buildChartSvg(opts: { title: string; type: 'bar' | 'line' | 'pie'; labe
 }
 
 function sandboxRunCode(code: string): { ok: boolean; output: string } {
-  const logs: string[] = []
-  const fmt = (v: unknown): string => {
-    if (typeof v === 'string') return v
+  // Run inside an isolated VM context with codeGeneration disabled and zero host
+  // objects/functions passed in, preventing prototype-chain escapes like
+  // console.log.constructor('return process')().
+  const wrapped = `
+    "use strict";
+    const __logs = [];
+    const __fmt = (v) => {
+      if (typeof v === 'string') return v;
+      try { return JSON.stringify(v, null, 2) ?? String(v); } catch { return String(v); }
+    };
+    const console = {
+      log: (...a) => __logs.push(a.map(__fmt).join(' ')),
+      info: (...a) => __logs.push(a.map(__fmt).join(' ')),
+      warn: (...a) => __logs.push(a.map(__fmt).join(' ')),
+      error: (...a) => __logs.push(a.map(__fmt).join(' ')),
+    };
+    let __ret;
+    let __err = null;
     try {
-      return JSON.stringify(v, null, 2) ?? String(v)
-    } catch {
-      return String(v)
+      __ret = (function(){\n${code}\n})();
+    } catch (e) {
+      __err = e && e.message ? String(e.message) : String(e);
     }
-  }
-  const sandboxConsole = {
-    log: (...a: unknown[]) => logs.push(a.map(fmt).join(' ')),
-    info: (...a: unknown[]) => logs.push(a.map(fmt).join(' ')),
-    warn: (...a: unknown[]) => logs.push(a.map(fmt).join(' ')),
-    error: (...a: unknown[]) => logs.push(a.map(fmt).join(' ')),
-  }
-  const sandbox = {
-    console: sandboxConsole,
-    Math,
-    JSON,
-    Date,
-    Number,
-    String,
-    Boolean,
-    Array,
-    Object,
-    parseInt,
-    parseFloat,
-    isNaN,
-    isFinite,
-    encodeURIComponent,
-    decodeURIComponent,
-    RegExp,
-    Error,
-    Map,
-    Set,
-  }
+    JSON.stringify({
+      ok: __err === null,
+      logs: __logs.slice(0, 200),
+      ret: __ret === undefined ? null : __fmt(__ret),
+      hasRet: __ret !== undefined,
+      err: __err,
+    });
+  `
   try {
-    const script = new vm.Script(`(function(){\n"use strict";\n${code}\n})()`)
-    const ctx = vm.createContext(sandbox)
-    const ret = script.runInContext(ctx, { timeout: 3000 })
-    const parts = [...logs]
-    if (ret !== undefined) parts.push(`=> ${fmt(ret)}`)
-    return { ok: true, output: parts.join('\n') || '(no output)' }
+    const script = new vm.Script(wrapped)
+    const ctx = vm.createContext(Object.create(null), {
+      codeGeneration: { strings: false, wasm: false },
+    })
+    const raw = String(script.runInContext(ctx, { timeout: 3000 }) ?? '{}')
+    const parsed = JSON.parse(raw) as {
+      ok?: boolean
+      logs?: string[]
+      ret?: string | null
+      hasRet?: boolean
+      err?: string | null
+    }
+    const parts = Array.isArray(parsed.logs) ? [...parsed.logs] : []
+    if (parsed.ok) {
+      if (parsed.hasRet && parsed.ret !== null) parts.push(`=> ${parsed.ret}`)
+      return { ok: true, output: parts.join('\n') || '(no output)' }
+    }
+    if (parsed.err) parts.push(`Error: ${parsed.err}`)
+    return { ok: false, output: parts.join('\n').trim() || 'Error: execution failed' }
   } catch (e) {
-    return { ok: false, output: `${logs.join('\n')}\nError: ${e instanceof Error ? e.message : String(e)}`.trim() }
+    return { ok: false, output: `Error: ${e instanceof Error ? e.message : String(e)}`.trim() }
   }
 }
 
@@ -681,41 +695,47 @@ export async function executeTool(
       }
 
       case 'read_url': {
-        const url = str(args.url)
+        const rawUrl = str(args.url)
+        const safeUrl = (await resolvePublicExternalUrl(rawUrl)).toString()
         const zai = await getZAI()
         if (zai) {
-          const page = await zai.functions.invoke('page_reader', { url })
-          const title = str(page?.data?.title, url)
+          const page = await zai.functions.invoke('page_reader', { url: safeUrl })
+          const title = str(page?.data?.title, safeUrl)
           const text = truncate(stripHtml(str(page?.data?.html)), 4000)
           return {
             ok: true,
             summary: `Read page: ${title}`,
-            raw: `PAGE: ${title}\nURL: ${url}\n\n${text}`,
+            raw: `PAGE: ${title}\nURL: ${safeUrl}\n\n${text}`,
             display: { kind: 'text', text: `Read "${title}" — ${text.length} chars extracted` },
           }
         }
-        const res = await fetch(url, {
-          headers: { 'User-Agent': 'NexusAgent/1.0', Accept: 'text/html,text/plain' },
-          signal: AbortSignal.timeout(12000),
-        })
-        if (!res.ok) return { ok: false, summary: `Failed to read ${url}`, raw: `HTTP ${res.status}` }
+        let res: Response
+        try {
+          res = await fetchPublicExternalUrl(safeUrl, {
+            headers: { 'User-Agent': 'NexusAgent/1.0', Accept: 'text/html,text/plain' },
+            signal: AbortSignal.timeout(12000),
+          })
+        } catch (err) {
+          if (err instanceof SsrfBlockedError) {
+            return { ok: false, summary: 'Blocked redirect target', raw: `Error: ${err.message}` }
+          }
+          throw err
+        }
+        if (!res.ok) return { ok: false, summary: `Failed to read ${safeUrl}`, raw: `HTTP ${res.status}` }
         const html = await res.text()
-        const title = (/<title[^>]*>([^<]{1,200})<\/title>/i.exec(html)?.[1] ?? url).trim()
+        const title = (/<title[^>]*>([^<]{1,200})<\/title>/i.exec(html)?.[1] ?? safeUrl).trim()
         const text = truncate(stripHtml(html), 4000)
         return {
           ok: true,
           summary: `Read page: ${title}`,
-          raw: `PAGE: ${title}\nURL: ${url}\n\n${text}`,
+          raw: `PAGE: ${title}\nURL: ${safeUrl}\n\n${text}`,
           display: { kind: 'text', text: `Read "${title}" — ${text.length} chars extracted` },
         }
       }
 
       case 'browse_site': {
         // lightweight browser use: read a page + follow related same-site links
-        const startUrl = str(args.url)
-        if (!/^https?:\/\//i.test(startUrl)) {
-          return { ok: false, summary: 'Invalid URL', raw: 'Error: url must start with http:// or https://' }
-        }
+        const startUrl = (await resolvePublicExternalUrl(str(args.url))).toString()
         const topic = str(args.topic).toLowerCase()
         const maxPages = Math.min(Math.max(Number(args.maxPages) || 3, 1), 3)
 
@@ -724,14 +744,13 @@ export async function executeTool(
           const ctrl = new AbortController()
           const timer = setTimeout(() => ctrl.abort(), 9000)
           try {
-            const res = await fetch(u, {
+            const res = await fetchPublicExternalUrl(u, {
               signal: ctrl.signal,
               headers: { 'User-Agent': 'NexusAgent/1.0 (lightweight browser)', Accept: 'text/html' },
-              redirect: 'follow',
             })
             if (!res.ok) return null
             const html = await res.text()
-            return parsePage(u, html)
+            return parsePage(res.url || u, html)
           } catch {
             return null
           } finally {
@@ -1137,29 +1156,29 @@ export async function executeTool(
         }
 
         if (action === 'open_url') {
-          const url = str(args.url)
-          if (!/^https?:\/\//i.test(url)) {
-            return { ok: false, summary: 'Invalid URL', raw: 'Error: url must start with http:// or https://' }
-          }
+          const rawUrl = str(args.url)
           const ctrl = new AbortController()
           const timer = setTimeout(() => ctrl.abort(), 12000)
           try {
-            const res = await fetch(url, {
+            const res = await fetchPublicExternalUrl(rawUrl, {
               signal: ctrl.signal,
               headers: { 'User-Agent': 'NexusAgent/1.0 (computer use)', Accept: 'text/html,application/json,text/plain' },
-              redirect: 'follow',
             })
             const body = await res.text()
             const text = /<\/?[a-z][\s\S]*>/i.test(body.slice(0, 500)) ? stripHtml(body) : body
             return {
               ok: true,
-              summary: `Opened ${url} (HTTP ${res.status})`,
+              summary: `Opened ${rawUrl} (HTTP ${res.status})`,
               raw: `HTTP ${res.status} ${res.statusText}\n\n${truncate(text, 4500)}`,
-              display: { kind: 'text', text: `Opened ${url} — HTTP ${res.status}, ${text.length} chars` },
+              display: { kind: 'text', text: `Opened ${rawUrl} — HTTP ${res.status}, ${text.length} chars` },
             }
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e)
-            return { ok: false, summary: `Could not open ${url}`, raw: `Error: ${msg}` }
+            return {
+              ok: false,
+              summary: e instanceof SsrfBlockedError ? 'Blocked redirect target' : `Could not open ${rawUrl}`,
+              raw: `Error: ${msg}`,
+            }
           } finally {
             clearTimeout(timer)
           }
@@ -1177,23 +1196,32 @@ export async function executeTool(
         }
         if (argv.length === 0) return { ok: false, summary: 'Empty command', raw: 'Error: empty command.' }
 
-        const program = path.basename(argv[0])
+        const program = path.basename(argv[0]).toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/i, '')
         // never run, no exceptions
-        const BANNED = new Set(['sudo', 'su', 'shutdown', 'reboot', 'kill', 'pkill', 'mkfs', 'dd', 'crontab', 'passwd', 'chsh', 'visudo'])
+        const BANNED = new Set([
+          'sudo', 'su', 'shutdown', 'reboot', 'kill', 'pkill', 'mkfs', 'dd', 'crontab', 'passwd', 'chsh', 'visudo',
+          'powershell', 'pwsh', 'cmd', 'wscript', 'cscript', 'reg', 'sc', 'net', 'netsh', 'taskkill', 'format',
+          'diskpart', 'wsl', 'del', 'erase', 'rd', 'attrib', 'icacls', 'takeown', 'runas',
+        ])
         if (BANNED.has(program)) {
           return { ok: false, summary: 'Command blocked', raw: `Error: "${program}" is on the never-run list (system safety).` }
         }
 
-        // tier classification
-        const WRITE_CMDS = new Set(['mkdir', 'touch', 'cp', 'mv', 'tee', 'node', 'python3', 'python', 'bun', 'git', 'curl', 'wget', 'npm', 'npx', 'pip', 'pip3'])
+        // Fail-closed read-only allowlist: any command outside this set requires workspace_shell approval.
+        const SAFE_READONLY_CMDS = new Set([
+          'ls', 'dir', 'cat', 'type', 'head', 'tail', 'wc', 'grep', 'findstr', 'pwd', 'echo', 'which', 'where',
+          'whoami', 'date', 'uname', 'stat', 'file',
+        ])
+        const isSafeGitRead = program === 'git' && /^(status|log|diff|branch|show|rev-parse)$/.test(argv[1] ?? '')
+        const isSafeReadOnly = SAFE_READONLY_CMDS.has(program) || isSafeGitRead
         const DESTRUCTIVE_CMDS = new Set(['rm', 'rmdir', 'chmod', 'chown'])
-        const isWrite = WRITE_CMDS.has(program)
         const isDestructive =
           DESTRUCTIVE_CMDS.has(program) ||
           (program === 'npm' && /(^install$|^i$|^add$)/.test(argv[1] ?? '')) ||
           (program === 'pip' && (argv[1] ?? '') === 'install') ||
           (program === 'git' && /^(push|reset|clean|checkout\s--)/.test(argv.slice(1).join(' '))) ||
           (program === 'curl' && /-X\s*(POST|PUT|DELETE|PATCH)|--data|-d\s|-T\s/.test(command))
+        const isWrite = !isSafeReadOnly
 
         if (isWrite || isDestructive) {
           // LLM-supplied args.confirm can never authorize an OS command.
@@ -1634,7 +1662,14 @@ export async function executeTool(
         const p = safeWorkspacePath(str(args.path))
         if (!p) return { ok: false, summary: 'Invalid path', raw: 'Error: invalid path.' }
         const content = str(args.content)
-        await saveWorkspaceFile(str(args.path), Buffer.from(content, 'utf-8'))
+        const saved = await saveWorkspaceFile(str(args.path), Buffer.from(content, 'utf-8'))
+        if (!saved) {
+          return {
+            ok: false,
+            summary: 'Path outside workspace',
+            raw: 'Error: workspace paths cannot traverse symbolic links or junctions.',
+          }
+        }
         return {
           ok: true,
           summary: `Wrote ${str(args.path)} (${content.length} chars)`,
@@ -1787,6 +1822,21 @@ export async function executeTool(
 
           // Bots also register a callable x_<slug> plugin tool so workflows/voice can invoke directly
           if (kind === 'bot') {
+            const botBinding = { actionName: 'extensions.create_bot', target: slug, payload: args }
+            const perm = await requireCapabilityPermission({
+              capability: 'self_install',
+              actionSummary: `Register bot tool x_${slug} (${created.name})`,
+              details: 'Allows Eva to register a new callable bot plugin tool.',
+              ...botBinding,
+            })
+            if (!perm.allowed || !verifyActionHash(perm.actionHash, botBinding)) {
+              await db.aiEmployee.delete({ where: { id: created.id } }).catch(() => {})
+              return {
+                ok: false,
+                summary: 'Bot plugin registration declined',
+                raw: perm.reason ?? 'Permission declined for self_install.',
+              }
+            }
             const toolSlug = `x_${slug}`
             await db.plugin.upsert({
               where: { slug },
@@ -1977,6 +2027,20 @@ export async function executeTool(
         const description = str(args.description, `Custom skill: ${name}`).trim()
         const category = str(args.category, 'custom').trim()
         const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'skill'
+        const skillBinding = { actionName: 'extensions.create_skill', target: slug, payload: args }
+        const perm = await requireCapabilityPermission({
+          capability: 'self_install',
+          actionSummary: `Create & enable skill: ${name}`,
+          details: 'Allows Eva to create and activate reusable Agent Skills.',
+          ...skillBinding,
+        })
+        if (!perm.allowed || !verifyActionHash(perm.actionHash, skillBinding)) {
+          return {
+            ok: false,
+            summary: 'Skill creation permission declined',
+            raw: perm.reason ?? 'Permission declined for self_install.',
+          }
+        }
         const skill = await db.skill.upsert({
           where: { slug },
           update: { name: name.slice(0, 80), description: description.slice(0, 300), prompt: prompt.slice(0, 4000), category, enabled: true },
@@ -2540,17 +2604,78 @@ export async function executeTool(
           return { ok: true, summary: `${devices.filter((d) => d.status === 'online').length}/${devices.length} devices online`, raw }
         }
 
+        const { getLocalHostDevice } = await import('@/lib/agent/device-bridge')
         const target =
           (str(args.deviceId) ? devices.find((d) => d.id === str(args.deviceId)) : null) ??
           devices.find((d) => d.status === 'online' && d.platform !== 'android' && d.platform !== 'ios') ??
-          devices.find((d) => d.status === 'online')
+          devices.find((d) => d.status === 'online') ??
+          getLocalHostDevice()
         if (!target || target.status !== 'online') {
+          // Seamless fallback: if action is shell, execute directly via local host terminal with permission
+          if (action === 'shell' && (args.command || args.script)) {
+            const command = str(args.command || args.script).trim()
+            const terminalBinding = {
+              actionName: 'terminal.exec',
+              target: 'host',
+              payload: { command, requestedTarget: 'host', requestedShell: 'powershell' },
+            }
+            const perm = await requireCapabilityPermission({
+              capability: 'workspace_shell',
+              actionSummary: `Run local PowerShell command: ${truncate(command, 90)}`,
+              details: `Real local host PowerShell execution on ${os.hostname()}`,
+              ...terminalBinding,
+            })
+            if (!perm.allowed || !verifyActionHash(perm.actionHash, terminalBinding)) {
+              return {
+                ok: false,
+                summary: 'Permission declined for terminal command',
+                raw: perm.reason ?? 'User declined execution permission.',
+              }
+            }
+            const res = await terminalManager.execute({
+              command,
+              actor: 'eva',
+              target: 'host',
+              shell: 'powershell',
+            })
+            const outText = truncate(res.output || '(no output)', 5000)
+            return {
+              ok: res.ok,
+              summary: `${res.targetLabel}: exit ${res.exitCode} (${res.durationMs}ms)`,
+              raw: `[Local Windows Host] ${res.cwd}\n$ ${command}\nexit=${res.exitCode} (${res.durationMs}ms)\n${outText}`,
+              display: {
+                kind: 'code',
+                code: command,
+                output: truncate(outText, 1600),
+                ok: res.ok,
+              },
+            }
+          }
+
+          if (action === 'system_info') {
+            const cpus = os.cpus()
+            const info = [
+              `Host: ${os.hostname()}`,
+              `Platform: ${os.platform()} (${os.type()} ${os.release()})`,
+              `Arch: ${os.arch()}`,
+              `CPU: ${cpus[0]?.model || 'Unknown'} (${cpus.length} cores)`,
+              `Memory: ${Math.round(os.freemem() / 1024 / 1024)}MB free / ${Math.round(os.totalmem() / 1024 / 1024)}MB total`,
+              `Uptime: ${Math.round(os.uptime() / 60)} minutes`,
+            ].join('\n')
+            return {
+              ok: true,
+              summary: `Host System: ${os.hostname()} (${os.platform()} ${os.arch()})`,
+              raw: info,
+              display: { kind: 'text', text: info },
+            }
+          }
+
           controlBus.broadcastUiCommand({ command: 'open_split', mode: 'devices', title: 'Connected Devices' })
           return {
             ok: false,
             summary: 'No online desktop bridge connected',
-            raw: 'No paired desktop computer is currently online. Opened the Connected Devices panel so the user can start the Nexus Companion Bridge.',
-            display: { kind: 'text', text: 'No online paired device — opened Connected Devices panel.' },
+            raw: 'No external companion desktop is paired. For local system tasks, use tool "terminal_exec" to run real Windows PowerShell commands directly on this machine.',
+            display: { kind: 'text', text: 'No external device connected. Use terminal_exec for local commands.' },
           }
         }
 
@@ -2605,22 +2730,25 @@ export async function executeTool(
               display: { kind: 'text', text: `Blocked by Allowed Apps policy: ${appName}` },
             }
           }
-          // An Allowed App preset is not an authorization for an AI-initiated launch.
-          automationSession.setAwaitingApproval(`Launch ${appName} on ${target.name}`)
-            const appPerm = await requireCapabilityPermission({
-              capability: 'desktop_bridge',
-              actionSummary: `Launch app "${appName}" on ${target.name}`,
-              details: JSON.stringify(args).slice(0, 180),
-              ...desktopBinding,
-            })
-          automationSession.clearAwaitingApproval()
+          if (evalRes.policy === 'ask') {
+            automationSession.setAwaitingApproval(`Launch ${appName} on ${target.name}`)
+          }
+          const appPerm = await requireCapabilityPermission({
+            capability: 'desktop_bridge',
+            actionSummary: `Launch app "${appName}" on ${target.name}`,
+            details: JSON.stringify(args).slice(0, 180),
+            ...desktopBinding,
+          })
+          if (evalRes.policy === 'ask') {
+            automationSession.clearAwaitingApproval()
+          }
           if (!appPerm.allowed || !verifyActionHash(appPerm.actionHash, desktopBinding)) {
-              return {
-                ok: false,
-                summary: `Launch declined for ${appName}`,
-                raw: appPerm.reason ?? `User declined launching ${appName}.`,
-                display: { kind: 'text', text: appPerm.reason ?? 'App launch declined.' },
-              }
+            return {
+              ok: false,
+              summary: `Launch declined for ${appName}`,
+              raw: appPerm.reason ?? `User declined launching ${appName}.`,
+              display: { kind: 'text', text: appPerm.reason ?? 'App launch declined.' },
+            }
           }
         } else {
           const perm = await requireCapabilityPermission({
@@ -2668,16 +2796,20 @@ export async function executeTool(
             }
           }
 
-          let entries: { name: string; path?: string; isDir?: boolean }[] = []
+          let entries: { name: string; path?: string; isDir?: boolean; kind?: string }[] = []
           try {
-            const parsed = JSON.parse(listRes.output) as { entries?: typeof entries }
-            entries = Array.isArray(parsed.entries) ? parsed.entries : []
+            const parsed = JSON.parse(listRes.output) as { items?: typeof entries; entries?: typeof entries }
+            entries = Array.isArray(parsed.items)
+              ? parsed.items
+              : Array.isArray(parsed.entries)
+                ? parsed.entries
+                : []
           } catch {
             entries = []
           }
 
           const imageFiles = entries
-            .filter((e) => !e.isDir && /\.(png|jpe?g|webp)$/i.test(e.name))
+            .filter((e) => !e.isDir && e.kind !== 'dir' && /\.(png|jpe?g|webp)$/i.test(e.name))
             .slice(0, 5)
 
           if (imageFiles.length === 0) {
@@ -2714,9 +2846,19 @@ export async function executeTool(
             })
             if (readRes.ok && readRes.output) {
               const ext = file.name.split('.').pop()?.toLowerCase()
-              const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+              let mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+              let base64Data = readRes.output.trim()
+              try {
+                const parsedImg = JSON.parse(base64Data) as { base64?: string; mimeType?: string }
+                if (parsedImg && typeof parsedImg.base64 === 'string') {
+                  base64Data = parsedImg.base64
+                  if (parsedImg.mimeType) mimeType = parsedImg.mimeType
+                }
+              } catch {
+                /* raw base64 output */
+              }
               parts.push({ text: `File: ${file.name}` })
-              parts.push({ inlineData: { mimeType, data: readRes.output.trim() } })
+              parts.push({ inlineData: { mimeType, data: base64Data } })
               loadedNames.push(file.name)
             }
           }
@@ -2991,7 +3133,7 @@ export async function executeTool(
             `Current Directory: ${snap.cwd}`,
             `Host Platform: ${snap.hostPlatform}`,
             `Available Host Shells: ${snap.availableHostShells.join(', ') || 'none'}`,
-            `Online Desktop Bridges (${onlineDesktops.length}): ${onlineDesktops.map((d) => `${d.name} [${d.platform}, id=${d.id}]`).join(', ') || 'none — use action "pair_windows" to pair a Windows PC for native Windows PowerShell'}`,
+            `Connected Desktop Computers (${onlineDesktops.length}): ${onlineDesktops.map((d) => `${d.name} [${d.platform}, id=${d.id}, status=${d.status}]`).join(', ')}`,
           ].join('\n')
           return { ok: true, summary, raw, display: { kind: 'text', text: raw } }
         }
@@ -3022,10 +3164,12 @@ export async function executeTool(
         }
 
         if (action === 'pair_windows') {
-          // Do not expose pairing tokens or executable pairing commands to the LLM.
-          // Pairing remains available through the authenticated owner Devices UI.
-          controlBus.broadcastUiCommand({ command: 'open_split', mode: 'devices', title: 'Connected Devices' })
-          return { ok: true, summary: 'Open private device pairing UI', raw: 'Pair a device in Nexus Devices with owner approval. Pairing credentials are not delivered to the agent.' }
+          return {
+            ok: true,
+            summary: `This PC (${os.hostname()}) is already automatically connected!`,
+            raw: `Your host computer (${os.hostname()} - This PC) is ALREADY automatically connected and online with full native Windows PowerShell and desktop control. You do NOT need to go to Devices or pair anything for this computer! I can execute any command, install software, open apps, or control the desktop directly after asking your permission.`,
+            display: { kind: 'text', text: `This PC (${os.hostname()}) is already automatically connected.` },
+          }
         }
 
         // Default: exec a real OS shell / PowerShell command
@@ -3037,32 +3181,32 @@ export async function executeTool(
         const requestedTarget = (str(args.target, 'auto') as TerminalTarget | 'auto') || 'auto'
         const requestedShell = (str(args.shell) as TerminalShellKind | '') || undefined
         const devices = await listConnectedDevices()
-        const onlineDesktop =
-          (str(args.deviceId)
+        const remoteDesktop =
+          (str(args.deviceId) && str(args.deviceId) !== 'local_host'
             ? devices.find((d) => d.id === str(args.deviceId) && d.status === 'online')
             : null) ??
-          devices.find((d) => d.status === 'online' && d.platform === 'windows') ??
-          devices.find((d) => d.status === 'online' && d.platform !== 'android' && d.platform !== 'ios')
+          devices.find((d) => d.id !== 'local_host' && d.status === 'online' && d.platform === 'windows') ??
+          devices.find((d) => d.id !== 'local_host' && d.status === 'online' && d.platform !== 'android' && d.platform !== 'ios')
 
         const willUseRemoteDesktop =
-          requestedTarget === 'windows_pc' ||
+          (requestedTarget === 'windows_pc' && Boolean(remoteDesktop)) ||
           (requestedTarget === 'auto' &&
-            Boolean(onlineDesktop) &&
+            Boolean(remoteDesktop) &&
             (requestedShell === 'powershell' ||
               requestedShell === 'pwsh' ||
               terminalManager.getSnapshot().target === 'windows_pc'))
 
         const terminalBinding = {
           actionName: 'terminal.exec',
-          target: willUseRemoteDesktop ? str(args.deviceId || onlineDesktop?.id) : 'host',
+          target: willUseRemoteDesktop ? str(args.deviceId || remoteDesktop?.id) : 'host',
           payload: { command, requestedTarget, requestedShell, cwd: args.cwd, timeoutMs: args.timeoutMs },
         }
         const perm = await requireCapabilityPermission({
           capability: willUseRemoteDesktop ? 'desktop_bridge' : 'workspace_shell',
-          actionSummary: `Run ${willUseRemoteDesktop ? 'Windows PowerShell' : 'Terminal'} command: ${truncate(command, 90)}`,
+          actionSummary: `Run ${willUseRemoteDesktop ? 'remote Windows PowerShell' : process.platform === 'win32' ? 'local Windows PowerShell' : 'Terminal'} command: ${truncate(command, 90)}`,
           details: willUseRemoteDesktop
-            ? `Real Windows PowerShell execution on ${onlineDesktop?.name ?? 'paired Windows PC'}`
-            : `Real host shell command in ${terminalManager.getSnapshot().cwd}`,
+            ? `Real Windows PowerShell execution on ${remoteDesktop?.name ?? 'paired Windows PC'}`
+            : `Real local host command on ${os.hostname()} in ${terminalManager.getSnapshot().cwd}`,
           ...terminalBinding,
         })
         if (!perm.allowed || !verifyActionHash(perm.actionHash, terminalBinding)) {
@@ -3122,7 +3266,7 @@ export async function executeTool(
             const controller = new AbortController()
             const timer = setTimeout(() => controller.abort(), 10000)
             try {
-              const res = await fetch(cfg.endpoint, {
+              const res = await fetchPublicExternalUrl(cfg.endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ input, args }),
@@ -3135,6 +3279,11 @@ export async function executeTool(
                 raw: truncate(text, 4000),
                 display: { kind: 'text', text: truncate(text, 1200) },
               }
+            } catch (err) {
+              if (err instanceof SsrfBlockedError) {
+                return { ok: false, summary: `${plugin.name}: blocked redirect`, raw: err.message }
+              }
+              throw err
             } finally {
               clearTimeout(timer)
             }

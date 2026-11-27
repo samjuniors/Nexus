@@ -78,6 +78,8 @@ test('all protected owner API routes reject requests without an owner session', 
   }
   assert.equal((await hit(g, { path: '/' })).status, 303);
   assert.equal((await hit(g, { path: '/api/health' })).passed, true);
+  assert.equal((await hit(g, { path: '/api/devices/runner' })).passed, true);
+  assert.equal((await hit(g, { path: '/api/devices/mobile-runner' })).passed, true);
   assert.equal((await hit(g, { path: '/access' })).status, 200);
 });
 

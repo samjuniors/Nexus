@@ -1579,11 +1579,12 @@ export async function runAgentHeartbeat(
   try {
     if (cfg.byoaWebhookUrl) {
       via = 'byoa'
+      const { fetchPublicExternalUrl } = await import('@/lib/agent/product-source-ingest')
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (cfg.byoaSecretHeader) {
         headers['X-Paperclip-Signature'] = cfg.byoaSecretHeader
       }
-      const res = await fetch(cfg.byoaWebhookUrl, {
+      const res = await fetchPublicExternalUrl(cfg.byoaWebhookUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify({

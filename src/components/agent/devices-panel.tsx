@@ -357,6 +357,11 @@ export function DevicesPanel() {
                       )}
                     />
                     <span className="truncate text-xs font-semibold text-foreground">{dev.name}</span>
+                    {dev.id === 'local_host' && (
+                      <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[9px] font-medium text-emerald-600 dark:text-emerald-400">
+                        Host PC
+                      </span>
+                    )}
                   </div>
                   <div className="mt-0.5 font-mono text-[10.5px] text-muted-foreground">
                     {dev.platform} · {dev.status}
@@ -378,15 +383,17 @@ export function DevicesPanel() {
                       Capture Screen
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => void revokeDevice(dev.id)}
-                    aria-label={`Revoke ${dev.name}`}
-                    title="Revoke device token"
-                    className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  {dev.id !== 'local_host' && (
+                    <button
+                      type="button"
+                      onClick={() => void revokeDevice(dev.id)}
+                      aria-label={`Revoke ${dev.name}`}
+                      title="Revoke device token"
+                      className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
               </div>
             ))}

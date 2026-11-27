@@ -18,7 +18,7 @@ import {
   type AppAllowPolicy,
   type FolderAccessMode,
 } from '@/lib/agent/computer-control'
-import { DESKTOP_CAPABILITIES, listConnectedDevices } from '@/lib/agent/device-bridge'
+import { DESKTOP_CAPABILITIES, getLocalHostDevice, listConnectedDevices } from '@/lib/agent/device-bridge'
 
 export const dynamic = 'force-dynamic'
 
@@ -162,23 +162,14 @@ export async function POST(req: Request) {
         }
       }
       const devices = await listConnectedDevices()
-      const onlineDesktop = devices.find(
-        (d) =>
-          d.status === 'online' &&
-          d.platform !== 'android' &&
-          d.platform !== 'ios' &&
-          (!body.deviceId || d.id === String(body.deviceId))
-      )
-      if (!onlineDesktop) {
-        return NextResponse.json(
-          {
-            ok: false,
-            error:
-              'No online Windows/Desktop Companion Bridge detected. Pair your PC in Devices and run nexus-companion.mjs.',
-          },
-          { status: 400 }
-        )
-      }
+      const onlineDesktop =
+        devices.find(
+          (d) =>
+            d.status === 'online' &&
+            d.platform !== 'android' &&
+            d.platform !== 'ios' &&
+            (!body.deviceId || d.id === String(body.deviceId) || (String(body.deviceId) === 'host' && d.id === 'local_host'))
+        ) ?? getLocalHostDevice()
 
       if (action === 'capture_windows_screen') {
         const res = await controlBus.sendDeviceCommand(onlineDesktop.id, 'screen_capture', {

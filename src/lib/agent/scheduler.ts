@@ -2,6 +2,10 @@ import { db } from '@/lib/db'
 import { ensureSeeded } from '@/lib/agent/seed'
 import { stepRun } from '@/lib/agent/orchestrator'
 import { chatText } from '@/lib/agent/zai'
+import {
+  hasPendingPermissionForAutomation,
+  runWithPermissionContext,
+} from '@/lib/agent/permissions'
 
 const globalScheduler = globalThis as unknown as {
   __nexusSchedulerStarted?: boolean
@@ -79,7 +83,7 @@ export function computeNextRunAt(triggerType: string, schedule: string, from = n
 /** Execute one automation immediately and record its AutomationRun log. */
 export async function executeAutomation(automationId: string): Promise<{
   ok: boolean
-  status: 'success' | 'error'
+  status: 'success' | 'error' | 'awaiting_approval'
   summary: string
   runId?: string
 }> {
@@ -135,63 +139,84 @@ export async function executeAutomation(automationId: string): Promise<{
       data: { conversationId: conv.id, role: 'user', content: effectivePrompt, runId: run.id },
     })
 
-    let summary = ''
-    let status: 'success' | 'error' = 'success'
-
-    // If assigned to an active employee/bot with no heavy multi-step requirement, still run full orchestrator
-    let finalAnswer = ''
-    let stepErr = ''
-    for (let guard = 0; guard < 36; guard++) {
-      const step = await stepRun(run.id)
-      for (const ev of step.events) {
-        if (ev.type === 'final' && typeof ev.data.answer === 'string') {
-          finalAnswer = ev.data.answer
+    const loopResult = await runWithPermissionContext(
+      { automationId: auto.id, runId: run.id },
+      async (): Promise<{
+        finalAnswer: string
+        stepErr: string
+        status: 'success' | 'error'
+      }> => {
+        let finalAnswer = ''
+        let stepErr = ''
+        let stepStatus: 'success' | 'error' = 'success'
+        for (let guard = 0; guard < 36; guard++) {
+          const step = await stepRun(run.id)
+          for (const ev of step.events) {
+            if (ev.type === 'final' && typeof ev.data.answer === 'string') {
+              finalAnswer = ev.data.answer
+            }
+          }
+          if (!step.ok && step.error) {
+            stepErr = step.error
+            stepStatus = 'error'
+            break
+          }
+          if (step.busy) {
+            await new Promise((r) => setTimeout(r, 500))
+            continue
+          }
+          if (['done', 'error', 'stopped'].includes(step.status)) {
+            if (step.status === 'error') stepStatus = 'error'
+            break
+          }
         }
+        return { finalAnswer, stepErr, status: stepStatus }
       }
-      if (!step.ok && step.error) {
-        stepErr = step.error
-        status = 'error'
-        break
-      }
-      if (step.busy) {
-        await new Promise((r) => setTimeout(r, 500))
-        continue
-      }
-      if (['done', 'error', 'stopped'].includes(step.status)) {
-        if (step.status === 'error') status = 'error'
-        break
-      }
-    }
+    )
 
-    if (!finalAnswer && status === 'success') {
-      finalAnswer = await chatText(
-        [
-          {
-            role: 'system',
-            content: assignee
-              ? `You are ${assignee.name} (${assignee.title}). ${assignee.systemPrompt}`
-              : 'You are NEXUS, an autonomous agent.',
-          },
-          { role: 'user', content: auto.prompt },
-        ],
-        { maxTokens: 600 }
-      ).catch(() => 'Automation completed.')
-    }
+    let { finalAnswer, stepErr } = loopResult
+    let status: 'success' | 'error' | 'awaiting_approval' = loopResult.status
+    let summary = ''
 
-    summary = (status === 'error' ? stepErr || 'Automation execution failed.' : finalAnswer || 'Completed.')
-      .replace(/\s+/g, ' ')
-      .slice(0, 800)
+    if (await hasPendingPermissionForAutomation(auto.id)) {
+      status = 'awaiting_approval'
+      summary = 'Paused awaiting owner approval in Permissions Vault.'
+    } else {
+      if (!finalAnswer && status === 'success') {
+        finalAnswer = await chatText(
+          [
+            {
+              role: 'system',
+              content: assignee
+                ? `You are ${assignee.name} (${assignee.title}). ${assignee.systemPrompt}`
+                : 'You are NEXUS, an autonomous agent.',
+            },
+            { role: 'user', content: auto.prompt },
+          ],
+          { maxTokens: 600 }
+        ).catch(() => 'Automation completed.')
+      }
+
+      summary = (status === 'error' ? stepErr || 'Automation execution failed.' : finalAnswer || 'Completed.')
+        .replace(/\s+/g, ' ')
+        .slice(0, 800)
+    }
 
     const finishedAt = new Date()
     const isOnce = auto.triggerType === 'once'
-    const nextRun = isOnce ? null : computeNextRunAt(auto.triggerType, auto.schedule, finishedAt)
+    const nextRun =
+      status === 'awaiting_approval'
+        ? auto.nextRunAt
+        : isOnce
+          ? null
+          : computeNextRunAt(auto.triggerType, auto.schedule, finishedAt)
 
     await db.automationRun.update({
       where: { id: logRow.id },
       data: {
         status,
         runId: run.id,
-        summary: status === 'success' ? summary : '',
+        summary: status === 'success' || status === 'awaiting_approval' ? summary : '',
         error: status === 'error' ? summary : '',
         finishedAt,
       },
@@ -205,7 +230,7 @@ export async function executeAutomation(automationId: string): Promise<{
         lastStatus: status,
         lastResult: summary,
         runCount: { increment: 1 },
-        ...(isOnce ? { enabled: false } : {}),
+        ...(isOnce && status !== 'awaiting_approval' ? { enabled: false } : {}),
       },
     })
 
@@ -243,7 +268,7 @@ export async function tickDueAutomations(): Promise<number> {
     const all = await db.automation.findMany({ where: { enabled: true } })
     let triggered = 0
     for (const a of all) {
-      if (a.lastStatus === 'running' || runningAutomations.has(a.id)) continue
+      if (a.lastStatus === 'running' || a.lastStatus === 'awaiting_approval' || runningAutomations.has(a.id)) continue
       if (!a.nextRunAt) {
         const next = computeNextRunAt(a.triggerType, a.schedule, now)
         await db.automation.update({ where: { id: a.id }, data: { nextRunAt: next } })

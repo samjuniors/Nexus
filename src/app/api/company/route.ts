@@ -425,6 +425,18 @@ export async function POST(req: NextRequest) {
     if (action === 'update_agent_config') {
       const agentId = String(body.agentId ?? '')
       if (!agentId) return NextResponse.json({ error: 'agentId required' }, { status: 400 })
+      let validatedWebhookUrl: string | null | undefined = undefined
+      if (body.byoaWebhookUrl !== undefined) {
+        if (typeof body.byoaWebhookUrl === 'string' && body.byoaWebhookUrl.trim()) {
+          const check = validateExternalWebsiteUrl(body.byoaWebhookUrl.trim())
+          if (!check.ok) {
+            return NextResponse.json({ error: check.error }, { status: 400 })
+          }
+          validatedWebhookUrl = check.url.toString()
+        } else {
+          validatedWebhookUrl = null
+        }
+      }
       const config = updateAgentPaperclipConfig(
         agentId,
         {
@@ -435,12 +447,7 @@ export async function POST(req: NextRequest) {
           heartbeatEnabled:
             typeof body.heartbeatEnabled === 'boolean' ? body.heartbeatEnabled : undefined,
           autoThrottle: typeof body.autoThrottle === 'boolean' ? body.autoThrottle : undefined,
-          byoaWebhookUrl:
-            body.byoaWebhookUrl !== undefined
-              ? typeof body.byoaWebhookUrl === 'string' && body.byoaWebhookUrl.trim()
-                ? body.byoaWebhookUrl.trim()
-                : null
-              : undefined,
+          byoaWebhookUrl: validatedWebhookUrl,
           byoaProvider:
             body.byoaProvider !== undefined
               ? typeof body.byoaProvider === 'string' && body.byoaProvider.trim()

@@ -17,7 +17,10 @@ import {
 } from './paperclip-company'
 import {
   buildDocumentSource,
+  fetchPublicExternalUrl,
   ingestRepoOrFolderSource,
+  ingestWebsiteSource,
+  SsrfBlockedError,
   validateExternalWebsiteUrl,
 } from './product-source-ingest'
 
@@ -41,6 +44,78 @@ test('Product URL validator blocks SSRF loopback, private IPs, metadata endpoint
 
   const allowed = validateExternalWebsiteUrl('https://example.com/product')
   assert.equal(allowed.ok, true)
+})
+
+test('fetchPublicExternalUrl and ingestWebsiteSource block SSRF redirects and POST redirects', async () => {
+  const originalFetch = globalThis.fetch
+  const requestedUrls: string[] = []
+  try {
+    // 1. GET redirect to loopback is blocked without fetching the redirect target
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const target = String(input)
+      requestedUrls.push(target)
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'http://127.0.0.1:3000/api/company' },
+      })
+    }) as typeof fetch
+
+    await assert.rejects(
+      () => fetchPublicExternalUrl('https://93.184.216.34/start'),
+      SsrfBlockedError
+    )
+    await assert.rejects(
+      () => ingestWebsiteSource('https://93.184.216.34/page'),
+      SsrfBlockedError
+    )
+    assert.deepEqual(requestedUrls, [
+      'https://93.184.216.34/start',
+      'https://93.184.216.34/page',
+    ])
+
+    // 2. POST redirect is always blocked even to a public IP
+    requestedUrls.length = 0
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requestedUrls.push(String(input))
+      return new Response(null, {
+        status: 307,
+        headers: { location: 'https://93.184.216.34/other' },
+      })
+    }) as typeof fetch
+
+    await assert.rejects(
+      () => fetchPublicExternalUrl('https://93.184.216.34/webhook', { method: 'POST', body: '{}' }),
+      /Redirects are blocked for POST/
+    )
+    assert.deepEqual(requestedUrls, ['https://93.184.216.34/webhook'])
+
+    // 3. Legitimate public GET redirect succeeds cleanly
+    requestedUrls.length = 0
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const target = String(input)
+      requestedUrls.push(target)
+      if (target.endsWith('/start')) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: '/final' },
+        })
+      }
+      return new Response('<title>Public Product</title><body>Hello world</body>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      })
+    }) as typeof fetch
+
+    const okSrc = await ingestWebsiteSource('https://93.184.216.34/start')
+    assert.equal(okSrc.status, 'ready')
+    assert.equal(okSrc.label, 'Public Product')
+    assert.deepEqual(requestedUrls, [
+      'https://93.184.216.34/start',
+      'https://93.184.216.34/final',
+    ])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('Repo & folder source ingestion confines local paths strictly inside workspace and supports GitHub URLs', () => {

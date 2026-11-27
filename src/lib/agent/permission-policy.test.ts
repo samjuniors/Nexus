@@ -10,5 +10,6 @@ test('consequential capabilities do not permit standing Always grants', () => {
 
 test('ordinary app navigation remains eligible for user-configured policy', () => {
   assert.equal(requiresSingleUseApproval('app_ui'), false)
+  assert.equal(requiresSingleUseApproval('browser_control'), false)
   assert.equal(requiresSingleUseApproval('unknown_capability'), false)
 })

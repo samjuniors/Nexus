@@ -101,6 +101,27 @@ test('deriveEvaEmotion attunes to user sentiment and completion state', () => {
     justCompleted: true,
   })
   assert.equal(proud.id, 'proud')
+
+  const coughing = deriveEvaEmotion({
+    ...BASE_INPUT,
+    recentUserText: '*cough* sorry, my throat hurts',
+  })
+  assert.equal(coughing.id, 'concerned')
+  assert.match(coughing.reason, /wellbeing/)
+
+  const laughing = deriveEvaEmotion({
+    ...BASE_INPUT,
+    recentUserText: 'hahaha that is so hilarious!',
+  })
+  assert.equal(laughing.id, 'happy')
+  assert.match(laughing.reason, /laugh/)
+
+  const crying = deriveEvaEmotion({
+    ...BASE_INPUT,
+    recentUserText: 'I cannot stop crying today, it hurts',
+  })
+  assert.equal(crying.id, 'empathetic')
+  assert.match(crying.reason, /comfort/)
 })
 
 test('deriveEvaSenses tracks all 4 embodied senses accurately', () => {

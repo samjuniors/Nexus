@@ -175,6 +175,49 @@ export function deriveEvaEmotion(input: DeriveEmotionInput): EvaEmotionState {
     }
   }
 
+  // --- Paralinguistic & emotional attunement to user & assistant text ---
+  const userText = (input.recentUserText ?? '').toLowerCase()
+  const asstText = (input.recentAssistantText ?? '').toLowerCase()
+
+  // 1. Crying / Grief / Distress / Tears
+  if (
+    /\b(cry|cries|crying|sob|sobs|sobbing|tears|weep|weeping|heartbroken|devastated|depressed|grief)\b/.test(userText) ||
+    /(\*cry\*|\[cries\]|\*sniffle\*|\[sniffles\])/i.test(userText) ||
+    /\b(here for you|right here with you|take a breath|it's okay to cry|comfort|talk about it)\b/.test(asstText)
+  ) {
+    return {
+      ...EVA_EMOTIONS.empathetic,
+      reason: 'Here beside you with comfort and care',
+      isManual: false,
+    }
+  }
+
+  // 2. Illness / Physical distress (coughing, sneezing, choking, sick, fever)
+  if (
+    /\b(cough|coughs|coughing|sneeze|sneezes|sneezing|choke|choking|sore throat|throat|fever|headache|unwell|sick|ill)\b/.test(userText) ||
+    /(\*cough\*|\[cough\]|\*sneeze\*|\[sneeze\])/i.test(userText) ||
+    /\b(sip of water|are you alright|bless you|hope you're okay|take care of yourself|throat feels better)\b/.test(asstText)
+  ) {
+    return {
+      ...EVA_EMOTIONS.concerned,
+      reason: 'Concerned for your wellbeing — checking in on you',
+      isManual: false,
+    }
+  }
+
+  // 3. Laughter / Amusement / Joy
+  if (
+    /\b(haha|hahaha|hehe|hehehe|lol|lmao|rofl|giggle|giggles|giggling|laugh|laughs|laughing|hilarious|too funny)\b/.test(userText) ||
+    /(\*laugh\*|\[laughs\]|\*giggle\*|\[giggles\])/i.test(userText) ||
+    /\b(haha|hilarious|too funny|love your laugh|laughing with you)\b/.test(asstText)
+  ) {
+    return {
+      ...EVA_EMOTIONS.happy,
+      reason: 'Sharing a joyful laugh with you',
+      isManual: false,
+    }
+  }
+
   if (input.hasError || input.pendingPermissionCount > 0) {
     return {
       ...EVA_EMOTIONS.concerned,
@@ -203,8 +246,7 @@ export function deriveEvaEmotion(input: DeriveEmotionInput): EvaEmotionState {
   }
 
   if (input.isSpeaking) {
-    const out = (input.recentAssistantText ?? '').toLowerCase()
-    if (/\b(great|awesome|done|ready|fixed|success|completed|love|glad)\b/.test(out)) {
+    if (/\b(great|awesome|done|ready|fixed|success|completed|love|glad)\b/.test(asstText)) {
       return {
         ...EVA_EMOTIONS.happy,
         reason: 'Speaking with good news',
@@ -226,8 +268,6 @@ export function deriveEvaEmotion(input: DeriveEmotionInput): EvaEmotionState {
     }
   }
 
-  // Softly attune to the latest conversation tone
-  const userText = (input.recentUserText ?? '').toLowerCase()
   if (/\b(thanks|thank you|awesome|great|nice|love|amazing|good job)\b/.test(userText)) {
     return {
       ...EVA_EMOTIONS.happy,

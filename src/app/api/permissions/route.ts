@@ -3,21 +3,26 @@ import {
   isValidCapability,
   isValidPolicy,
   requiresSingleUseApproval,
+  listPendingPermissionRequests,
   listPermissionAudit,
   listPermissionGrants,
   resolvePermissionDecision,
   setPermissionPolicy,
 } from '@/lib/agent/permissions'
-import { controlBus, type PermissionDecision } from '@/lib/agent/control-bus'
+import { type PermissionDecision } from '@/lib/agent/control-bus'
 
 export async function GET() {
   try {
-    const [grants, audit] = await Promise.all([listPermissionGrants(), listPermissionAudit(30)])
+    const [grants, audit, pending] = await Promise.all([
+      listPermissionGrants(),
+      listPermissionAudit(30),
+      listPendingPermissionRequests(),
+    ])
     return NextResponse.json({
       ok: true,
       grants,
       audit,
-      pending: controlBus.getPendingPermissions(),
+      pending,
     })
   } catch (e) {
     return NextResponse.json(
@@ -50,8 +55,24 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: false, error: 'Missing action approval fingerprint' }, { status: 400 })
       }
       const res = await resolvePermissionDecision(requestId, decision, actionHash)
-      const [grants, audit] = await Promise.all([listPermissionGrants(), listPermissionAudit(30)])
-      return NextResponse.json({ ok: res.ok, decision: res.decision, grants, audit })
+      if (res.ok && res.automationId && (decision === 'once' || decision === 'always')) {
+        void import('@/lib/agent/scheduler')
+          .then(({ executeAutomation }) => executeAutomation(res.automationId!))
+          .catch(() => {})
+      }
+      const [grants, audit, pending] = await Promise.all([
+        listPermissionGrants(),
+        listPermissionAudit(30),
+        listPendingPermissionRequests(),
+      ])
+      return NextResponse.json({
+        ok: res.ok,
+        decision: res.decision,
+        resumedAutomationId: res.ok ? (res.automationId ?? null) : null,
+        grants,
+        audit,
+        pending,
+      })
     }
 
     // Directly update a capability grant policy ("always" | "ask" | "deny")
@@ -65,8 +86,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: 'Sensitive capabilities require action-by-action approval' }, { status: 400 })
     }
     const updated = await setPermissionPolicy(capability, policy)
-    const [grants, audit] = await Promise.all([listPermissionGrants(), listPermissionAudit(30)])
-    return NextResponse.json({ ok: true, grant: updated, grants, audit })
+    const [grants, audit, pending] = await Promise.all([
+      listPermissionGrants(),
+      listPermissionAudit(30),
+      listPendingPermissionRequests(),
+    ])
+    return NextResponse.json({ ok: true, grant: updated, grants, audit, pending })
   } catch (e) {
     return NextResponse.json(
       { ok: false, error: e instanceof Error ? e.message : String(e) },
