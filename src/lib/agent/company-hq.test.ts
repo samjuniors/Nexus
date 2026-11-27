@@ -4,16 +4,20 @@ import { db } from '@/lib/db'
 import {
   attachProductToCompany,
   createCompany,
+  createCompanyTicket,
   createSpendRequest,
   decideHiringProposal,
   decideSpendRequest,
   deleteCompany,
   deleteProductFromCompany,
+  findNextQueuedTicketForAgent,
   getActiveCompanyPromptContext,
   getCompanySnapshot,
   loadCompanyRegistry,
   proposeDepartmentPlanAndHires,
+  runAgentHeartbeat,
   setActiveCompanyContext,
+  updateAgentPaperclipConfig,
 } from './paperclip-company'
 import {
   buildDocumentSource,
@@ -246,6 +250,76 @@ test('Multi-company lifecycle, 4-source product attachment, Eva CEO planning, an
     for (const empId of createdEmployeeIds) {
       await db.aiEmployee.delete({ where: { id: empId } }).catch(() => {})
     }
+    deleteCompany(company.id)
+    setActiveCompanyContext(originalActiveId, null)
+  }
+})
+
+test('runAgentHeartbeat fails closed to blocked on execution failure and selects top-priority queued tickets', async () => {
+  const originalActiveId = loadCompanyRegistry().activeCompanyId
+  const company = createCompany({
+    companyName: 'FailClosed Heartbeat Co',
+    industry: 'Software',
+    stage: 'early',
+    mission: 'Verify fail-closed heartbeat execution',
+    monthlyBudgetUsd: 100,
+    founderApprovalRequired: false,
+  })
+  const emp = await db.aiEmployee.create({
+    data: {
+      slug: `test-eng-${Date.now()}`,
+      name: 'Test Engineer',
+      title: 'Staff Engineer',
+      department: 'Product & Development',
+      kind: 'employee',
+      role: 'Build and verify software',
+      systemPrompt: 'Test engineer',
+      status: 'active',
+      autonomy: 'autonomous',
+    },
+  })
+
+  try {
+    const lowTicket = createCompanyTicket({
+      companyId: company.id,
+      department: 'Product & Development',
+      title: 'Low priority task',
+      priority: 'low',
+      assigneeId: emp.id,
+      assigneeName: emp.name,
+    })
+    const urgentTicket = createCompanyTicket({
+      companyId: company.id,
+      department: 'Product & Development',
+      title: 'Urgent verification task',
+      priority: 'urgent',
+      assigneeId: null,
+      assigneeName: 'Unassigned',
+    })
+
+    const selected = findNextQueuedTicketForAgent([lowTicket, urgentTicket], emp)
+    assert.equal(selected?.id, urgentTicket.id)
+
+    // Configure an unreachable/mocked BYOA endpoint or offline LLM error -> must fail closed as blocked, NEVER done
+    updateAgentPaperclipConfig(
+      emp.id,
+      { byoaWebhookUrl: 'https://93.184.216.34/agent-hook' },
+      company.id
+    )
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response('Service unavailable', { status: 503 })) as typeof fetch
+    try {
+      const hb = await runAgentHeartbeat(emp.id, company.id)
+      assert.equal(hb.run.status, 'error')
+      assert.equal(hb.ticket?.id, urgentTicket.id)
+      assert.equal(hb.ticket?.status, 'blocked')
+      assert.equal(hb.run.tokensUsed, 0)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  } finally {
+    await db.aiEmployee.delete({ where: { id: emp.id } }).catch(() => {})
     deleteCompany(company.id)
     setActiveCompanyContext(originalActiveId, null)
   }

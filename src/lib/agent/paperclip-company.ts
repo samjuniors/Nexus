@@ -557,13 +557,24 @@ export function ensureAgentConfig(
   return cfg
 }
 
-function getScopedEmployees<T extends { id: string }>(company: CompanyRecord, allEmployees: T[], isPrimaryCompany: boolean): T[] {
-  if (company.employeeIds.length === 0) {
-    // Primary company inherits existing org employees automatically for seamless migration
-    return isPrimaryCompany ? allEmployees : []
+/** Returns employees belonging to a company without leaking employees explicitly hired for other companies. */
+export function getCompanyScopedEmployees<T extends { id: string }>(
+  registry: CompanyRegistryState,
+  company: CompanyRecord,
+  allEmployees: T[]
+): T[] {
+  if (company.employeeIds.length > 0) {
+    const set = new Set(company.employeeIds)
+    return allEmployees.filter((e) => set.has(e.id))
   }
-  const set = new Set(company.employeeIds)
-  return allEmployees.filter((e) => set.has(e.id))
+  const isPrimaryCompany = company.id === registry.companies[0]?.id
+  if (!isPrimaryCompany) return []
+  const claimedByOthers = new Set<string>()
+  for (const other of registry.companies) {
+    if (other.id === company.id) continue
+    for (const empId of other.employeeIds) claimedByOthers.add(empId)
+  }
+  return allEmployees.filter((e) => !claimedByOthers.has(e.id))
 }
 
 function countPendingApprovals(company: CompanyRecord): {
@@ -602,8 +613,7 @@ export async function getCompanySnapshot(options?: {
         : null
 
   const allEmployees = await db.aiEmployee.findMany({ orderBy: { createdAt: 'asc' } })
-  const isPrimaryCompany = activeCompany.id === registry.companies[0]?.id
-  const employees = getScopedEmployees(activeCompany, allEmployees, isPrimaryCompany)
+  const employees = getCompanyScopedEmployees(registry, activeCompany, allEmployees)
 
   let mutated = false
   for (const emp of employees) {
@@ -1108,8 +1118,7 @@ export async function proposeDepartmentPlanAndHires(
       : `Execute core company operations for ${company.companyName}`)
 
   const allEmployees = await db.aiEmployee.findMany({ orderBy: { createdAt: 'asc' } })
-  const isPrimaryCompany = company.id === registry.companies[0]?.id
-  const companyEmployees = getScopedEmployees(company, allEmployees, isPrimaryCompany)
+  const companyEmployees = getCompanyScopedEmployees(registry, company, allEmployees)
 
   let selectedBlueprints: DepartmentRoleBlueprint[]
   if (input.departments && input.departments.length > 0) {
@@ -1476,58 +1485,12 @@ const PRIORITY_RANK: Record<TicketPriority, number> = {
   low: 1,
 }
 
-/**
- * Executes a single Paperclip Heartbeat wake-up for an AI employee, subagent, or BYOA bot.
- * Enforces budget auto-throttle, picks the top queued ticket (injecting active Company + Product context),
- * runs via BYOA webhook or server-side Gemini, logs token + USD spend, and respects Founder approval gates.
- */
-export async function runAgentHeartbeat(
-  agentId: string,
-  companyId?: string
-): Promise<{
-  run: HeartbeatRun
-  ticket: PaperclipTicket | null
-  config: PaperclipAgentConfig
-}> {
-  const registry = loadCompanyRegistry()
-  const state = companyId
-    ? registry.companies.find((c) => c.id === companyId) ?? getCompanyRecord()
-    : getCompanyRecord()
-  const emp = await db.aiEmployee.findUnique({ where: { id: agentId } })
-  if (!emp) {
-    throw new Error('Agent not found in AI organization')
-  }
-
-  const cfg = ensureAgentConfig(state, emp.id)
-  const now = new Date().toISOString()
-  cfg.lastHeartbeatAt = now
-
-  // 1. Budget & Auto-Throttle check
-  const budgetCheck = isAgentOverBudget(cfg, state)
-  if (budgetCheck.over) {
-    const run: HeartbeatRun = {
-      id: `hb_${Date.now().toString(36)}`,
-      companyId: state.id,
-      agentId: emp.id,
-      agentName: emp.name,
-      department: emp.department,
-      ticketId: null,
-      ticketKey: null,
-      status: 'throttled',
-      summary: budgetCheck.reason ?? 'Throttled by budget policy',
-      tokensUsed: 0,
-      costUsd: 0,
-      via: 'local',
-      ranAt: now,
-    }
-    state.heartbeats.unshift(run)
-    state.heartbeats = state.heartbeats.slice(0, 80)
-    saveCompanyRegistry(registry)
-    return { run, ticket: null, config: cfg }
-  }
-
-  // 2. Select highest-priority queued ticket for this agent (or unassigned matching department ticket)
-  const candidates = state.tickets
+/** Selects the highest-priority queued ticket eligible for an employee/agent. */
+export function findNextQueuedTicketForAgent(
+  tickets: PaperclipTicket[],
+  emp: { id: string; department: string; status: string }
+): PaperclipTicket | null {
+  const candidates = tickets
     .filter((t) => {
       if (t.status !== 'queued') return false
       if (t.assigneeId === emp.id) return true
@@ -1538,67 +1501,158 @@ export async function runAgentHeartbeat(
       return false
     })
     .sort((a, b) => PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority])
+  return candidates[0] ?? null
+}
 
-  const ticket = candidates[0] ?? null
-  if (!ticket) {
-    const run: HeartbeatRun = {
-      id: `hb_${Date.now().toString(36)}`,
-      companyId: state.id,
-      agentId: emp.id,
-      agentName: emp.name,
-      department: emp.department,
-      ticketId: null,
-      ticketKey: null,
-      status: 'idle',
-      summary: `${emp.name} (${emp.department}) woke up on heartbeat — no queued tickets waiting.`,
-      tokensUsed: 0,
-      costUsd: 0,
-      via: 'local',
-      ranAt: now,
-    }
-    state.heartbeats.unshift(run)
-    state.heartbeats = state.heartbeats.slice(0, 80)
-    saveCompanyRegistry(registry)
-    return { run, ticket: null, config: cfg }
+let registryMutex: Promise<void> = Promise.resolve()
+
+async function withRegistryLock<T>(fn: () => Promise<T> | T): Promise<T> {
+  const prev = registryMutex
+  let release!: () => void
+  registryMutex = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await prev
+  try {
+    return await fn()
+  } finally {
+    release()
+  }
+}
+
+/**
+ * Executes a single Paperclip Heartbeat wake-up for an AI employee, subagent, or BYOA bot.
+ * Enforces budget auto-throttle, picks the top queued ticket (injecting active Company + Product context),
+ * runs via BYOA webhook or Nexus tool-calling orchestrator, logs token + USD spend, and fails closed on errors.
+ */
+export async function runAgentHeartbeat(
+  agentId: string,
+  companyId?: string
+): Promise<{
+  run: HeartbeatRun
+  ticket: PaperclipTicket | null
+  config: PaperclipAgentConfig
+}> {
+  const emp = await db.aiEmployee.findUnique({ where: { id: agentId } })
+  if (!emp) {
+    throw new Error('Agent not found in AI organization')
   }
 
-  const linkedProduct = ticket.productId
-    ? state.products.find((p) => p.id === ticket.productId) ?? null
-    : null
+  const claim = await withRegistryLock(() => {
+    const initialRegistry = loadCompanyRegistry()
+    const initialState = companyId
+      ? initialRegistry.companies.find((c) => c.id === companyId) ?? getCompanyRecord()
+      : getCompanyRecord()
+    const initialCfg = ensureAgentConfig(initialState, emp.id)
+    const now = new Date().toISOString()
+    initialCfg.lastHeartbeatAt = now
 
-  // Claim ticket
-  ticket.assigneeId = emp.id
-  ticket.assigneeName = emp.name
-  ticket.status = 'in_progress'
-  ticket.updatedAt = now
+    // 1. Budget & Auto-Throttle check
+    const budgetCheck = isAgentOverBudget(initialCfg, initialState)
+    if (budgetCheck.over) {
+      const run: HeartbeatRun = {
+        id: `hb_${Date.now().toString(36)}`,
+        companyId: initialState.id,
+        agentId: emp.id,
+        agentName: emp.name,
+        department: emp.department,
+        ticketId: null,
+        ticketKey: null,
+        status: 'throttled',
+        summary: budgetCheck.reason ?? 'Throttled by budget policy',
+        tokensUsed: 0,
+        costUsd: 0,
+        via: 'local',
+        ranAt: now,
+      }
+      initialState.heartbeats.unshift(run)
+      initialState.heartbeats = initialState.heartbeats.slice(0, 80)
+      saveCompanyRegistry(initialRegistry)
+      return { immediate: { run, ticket: null, config: initialCfg } }
+    }
+
+    // 2. Select highest-priority queued ticket for this agent (or unassigned matching department ticket)
+    const claimedTicket = findNextQueuedTicketForAgent(initialState.tickets, emp)
+    if (!claimedTicket) {
+      const run: HeartbeatRun = {
+        id: `hb_${Date.now().toString(36)}`,
+        companyId: initialState.id,
+        agentId: emp.id,
+        agentName: emp.name,
+        department: emp.department,
+        ticketId: null,
+        ticketKey: null,
+        status: 'idle',
+        summary: `${emp.name} (${emp.department}) woke up on heartbeat — no queued tickets waiting.`,
+        tokensUsed: 0,
+        costUsd: 0,
+        via: 'local',
+        ranAt: now,
+      }
+      initialState.heartbeats.unshift(run)
+      initialState.heartbeats = initialState.heartbeats.slice(0, 80)
+      saveCompanyRegistry(initialRegistry)
+      return { immediate: { run, ticket: null, config: initialCfg } }
+    }
+
+    const linkedProduct = claimedTicket.productId
+      ? initialState.products.find((p) => p.id === claimedTicket.productId) ?? null
+      : null
+
+    // Claim and persist in_progress before async execution so concurrent ticks cannot double-claim
+    claimedTicket.assigneeId = emp.id
+    claimedTicket.assigneeName = emp.name
+    claimedTicket.status = 'in_progress'
+    claimedTicket.updatedAt = now
+    saveCompanyRegistry(initialRegistry)
+
+    return {
+      immediate: null,
+      claimedTicket: { ...claimedTicket },
+      linkedProduct,
+      companySnapshotForPrompt: {
+        id: initialState.id,
+        companyName: initialState.companyName,
+        industry: initialState.industry,
+        mission: initialState.mission,
+      },
+      webhookUrl: initialCfg.byoaWebhookUrl,
+      webhookSecret: initialCfg.byoaSecretHeader,
+    }
+  })
+
+  if (claim.immediate) return claim.immediate
+  const { claimedTicket, linkedProduct, companySnapshotForPrompt, webhookUrl, webhookSecret } = claim
+  const ticketId = claimedTicket.id
 
   let output = ''
   let via: HeartbeatRun['via'] = 'gemini'
   let status: HeartbeatRun['status'] = 'ok'
+  let needsApprovalPause = false
 
   try {
-    if (cfg.byoaWebhookUrl) {
+    if (webhookUrl) {
       via = 'byoa'
       const { fetchPublicExternalUrl } = await import('@/lib/agent/product-source-ingest')
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (cfg.byoaSecretHeader) {
-        headers['X-Paperclip-Signature'] = cfg.byoaSecretHeader
+      if (webhookSecret) {
+        headers['X-Paperclip-Signature'] = webhookSecret
       }
-      const res = await fetchPublicExternalUrl(cfg.byoaWebhookUrl, {
+      const res = await fetchPublicExternalUrl(webhookUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          company: { id: state.id, name: state.companyName, mission: state.mission },
+          company: { id: companySnapshotForPrompt.id, name: companySnapshotForPrompt.companyName, mission: companySnapshotForPrompt.mission },
           product: linkedProduct
             ? { id: linkedProduct.id, name: linkedProduct.name, stage: linkedProduct.stage }
             : null,
           agent: { id: emp.id, name: emp.name, title: emp.title, department: emp.department },
           ticket: {
-            id: ticket.id,
-            key: ticket.key,
-            department: ticket.department,
-            title: ticket.title,
-            description: ticket.description,
+            id: claimedTicket.id,
+            key: claimedTicket.key,
+            department: claimedTicket.department,
+            title: claimedTicket.title,
+            description: claimedTicket.description,
           },
         }),
         signal: AbortSignal.timeout(12_000),
@@ -1621,90 +1675,145 @@ export async function runAgentHeartbeat(
             .join('\n')}`
         : ''
 
-      const prompt = `Company: ${state.companyName} (${state.industry})
-Mission: ${state.mission}${productContext}
+      const prompt = `Company: ${companySnapshotForPrompt.companyName} (${companySnapshotForPrompt.industry})
+Mission: ${companySnapshotForPrompt.mission}${productContext}
 
-Ticket ${ticket.key} [${ticket.department ?? emp.department}]: ${ticket.title}
-Priority: ${ticket.priority}
-Details: ${ticket.description || 'Execute according to your department role.'}
+Assigned Role: ${emp.name} (${emp.title}, ${emp.department}) — ${emp.role}
+Ticket ${claimedTicket.key} [${claimedTicket.department ?? emp.department}]: ${claimedTicket.title}
+Priority: ${claimedTicket.priority}
+Details: ${claimedTicket.description || 'Execute according to your department role.'}
 
-Produce a concrete, actionable business deliverable or execution report for Eva CEO and the Founder (max 200 words). Include clear next steps and note if any spend or external launch requires Founder approval.`
+Use real tools (web_search, read_url, browser_control, device_control, terminal_exec, computer_use, run_code, self_heal_code, doc_write, etc.) whenever the task requires real research, files, web/desktop actions, or verification. Produce a concrete, verifiable business deliverable or execution report for Eva CEO and the Founder, and note clearly if any spend, external publish, or permission gate blocks completion.`
 
-      output = await chatText(
-        [
-          {
-            role: 'system',
-            content:
-              emp.systemPrompt ||
-              `You are ${emp.name} (${emp.title}, ${emp.department}) operating inside ${state.companyName}, reporting to Eva CEO. Role: ${emp.role}. Be direct, grounded in the company/product brief, and practical.`,
-          },
-          { role: 'user', content: prompt },
-        ],
-        { temperature: 0.3, maxTokens: 450 }
+      const [{ ensureSeeded }, { executeRunLoop }, { hasPendingPermissionForRun, runWithPermissionContext }] =
+        await Promise.all([
+          import('@/lib/agent/seed'),
+          import('@/lib/agent/orchestrator'),
+          import('@/lib/agent/permissions'),
+        ])
+      await ensureSeeded()
+
+      const conv = await db.conversation.create({
+        data: { title: `${claimedTicket.key} · ${emp.name}`.slice(0, 60) },
+      })
+      const missionRun = await db.run.create({
+        data: {
+          conversationId: conv.id,
+          userMessage: prompt,
+          status: 'planning',
+          phase: 'plan',
+        },
+      })
+      await db.message.create({
+        data: { conversationId: conv.id, role: 'user', content: prompt, runId: missionRun.id },
+      })
+
+      const loopResult = await runWithPermissionContext(
+        { runId: missionRun.id, deferWhenOffline: true },
+        () => executeRunLoop(missionRun.id, { maxSteps: 18 })
       )
+
+      if (await hasPendingPermissionForRun(missionRun.id)) {
+        needsApprovalPause = true
+        output = 'Paused awaiting owner permission approval in Permissions Vault.'
+      } else if (loopResult.status === 'error') {
+        status = 'error'
+        output = loopResult.stepErr || 'Heartbeat execution failed.'
+      } else {
+        output = loopResult.finalAnswer.trim()
+        if (!output) {
+          output = await chatText(
+            [
+              {
+                role: 'system',
+                content:
+                  emp.systemPrompt ||
+                  `You are ${emp.name} (${emp.title}, ${emp.department}) operating inside ${companySnapshotForPrompt.companyName}, reporting to Eva CEO. Role: ${emp.role}. Be direct, grounded in the company/product brief, and practical.`,
+              },
+              { role: 'user', content: prompt },
+            ],
+            { temperature: 0.3, maxTokens: 450 }
+          )
+        }
+        if (loopResult.toolCallCount > 0) {
+          output = `[Tools executed: ${loopResult.toolCallCount}]\n\n${output}`
+        }
+      }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    if (via === 'byoa') {
-      status = 'error'
-      output = `BYOA dispatch failed: ${msg}`
-    } else {
-      via = 'local'
-      output = `Heartbeat deliverable logged by ${emp.name} (${emp.department}) for ${ticket.key}: structured execution checklist for "${ticket.title}"${linkedProduct ? ` (${linkedProduct.name})` : ''} and surfaced for Eva CEO review.`
+    status = 'error'
+    output = via === 'byoa' ? `BYOA dispatch failed: ${msg}` : `Heartbeat execution failed: ${msg}`
+  }
+
+  const finalized = await withRegistryLock(async () => {
+    // Reload latest registry before finalizing so concurrent mutations aren't clobbered
+    const finalRegistry = loadCompanyRegistry()
+    const state = finalRegistry.companies.find((c) => c.id === companySnapshotForPrompt.id) ?? getCompanyRecord()
+    const cfg = ensureAgentConfig(state, emp.id)
+    const ticket = state.tickets.find((t) => t.id === ticketId) ?? claimedTicket
+
+    const estimatedTokens =
+      status === 'error'
+        ? 0
+        : Math.max(
+            120,
+            Math.round(((ticket.title.length + ticket.description.length + output.length) / 3.8) * 1.25)
+          )
+    const costUsd = Number(((estimatedTokens / 1000) * COST_PER_1K_TOKENS_USD).toFixed(5))
+
+    cfg.tokensUsed += estimatedTokens
+    cfg.spentUsd = Number((cfg.spentUsd + costUsd).toFixed(5))
+
+    ticket.tokensSpent += estimatedTokens
+    ticket.costUsd = Number((ticket.costUsd + costUsd).toFixed(5))
+    ticket.outputSummary = output.trim()
+    if (needsApprovalPause) {
+      ticket.requiresApproval = true
+      ticket.approvalReason = 'Action paused in Permissions Vault awaiting owner approval.'
     }
-  }
+    ticket.status =
+      status === 'error'
+        ? 'blocked'
+        : needsApprovalPause || (ticket.requiresApproval && !ticket.approvedAt)
+          ? 'needs_approval'
+          : 'done'
+    ticket.updatedAt = new Date().toISOString()
 
-  const estimatedTokens = Math.max(
-    120,
-    Math.round(((ticket.title.length + ticket.description.length + output.length) / 3.8) * 1.25)
-  )
-  const costUsd = Number(((estimatedTokens / 1000) * COST_PER_1K_TOKENS_USD).toFixed(5))
+    if (status === 'ok' && !needsApprovalPause) {
+      await db.aiEmployee
+        .update({
+          where: { id: emp.id },
+          data: { tasksCompleted: { increment: 1 }, lastActiveAt: new Date() },
+        })
+        .catch(() => {})
+    }
 
-  cfg.tokensUsed += estimatedTokens
-  cfg.spentUsd = Number((cfg.spentUsd + costUsd).toFixed(5))
+    const run: HeartbeatRun = {
+      id: `hb_${Date.now().toString(36)}`,
+      companyId: state.id,
+      productId: ticket.productId ?? null,
+      agentId: emp.id,
+      agentName: emp.name,
+      department: emp.department,
+      ticketId: ticket.id,
+      ticketKey: ticket.key,
+      status,
+      summary: output.trim().slice(0, 280),
+      tokensUsed: estimatedTokens,
+      costUsd,
+      via,
+      ranAt: new Date().toISOString(),
+    }
 
-  ticket.tokensSpent += estimatedTokens
-  ticket.costUsd = Number((ticket.costUsd + costUsd).toFixed(5))
-  ticket.outputSummary = output.trim()
-  ticket.status =
-    status === 'error'
-      ? 'blocked'
-      : ticket.requiresApproval && !ticket.approvedAt
-        ? 'needs_approval'
-        : 'done'
-  ticket.updatedAt = new Date().toISOString()
+    state.heartbeats.unshift(run)
+    state.heartbeats = state.heartbeats.slice(0, 80)
+    saveCompanyRegistry(finalRegistry)
 
-  if (status === 'ok') {
-    await db.aiEmployee
-      .update({
-        where: { id: emp.id },
-        data: { tasksCompleted: { increment: 1 }, lastActiveAt: new Date() },
-      })
-      .catch(() => {})
-  }
+    return { run, ticket, config: cfg }
+  })
 
-  const run: HeartbeatRun = {
-    id: `hb_${Date.now().toString(36)}`,
-    companyId: state.id,
-    productId: ticket.productId ?? null,
-    agentId: emp.id,
-    agentName: emp.name,
-    department: emp.department,
-    ticketId: ticket.id,
-    ticketKey: ticket.key,
-    status,
-    summary: output.trim().slice(0, 280),
-    tokensUsed: estimatedTokens,
-    costUsd,
-    via,
-    ranAt: new Date().toISOString(),
-  }
-
-  state.heartbeats.unshift(run)
-  state.heartbeats = state.heartbeats.slice(0, 80)
-  saveCompanyRegistry(registry)
-
-  return { run, ticket, config: cfg }
+  return finalized
 }
 
 interface DisciplineBlueprint {

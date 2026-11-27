@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { PrismaClient } from '@prisma/client'
 
 type Row = Record<string, unknown>
@@ -534,9 +536,32 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
 }
 
+function shouldUseDatabase(url: string | undefined): boolean {
+  if (!url) return false
+  if (
+    process.env.NEXT_PHASE === 'phase-production-build' ||
+    process.env.npm_lifecycle_event === 'build' ||
+    (process.env.npm_lifecycle_event ?? '').startsWith('test') ||
+    Boolean(process.env.NODE_TEST_CONTEXT) ||
+    process.execArgv.includes('--test') ||
+    process.argv.includes('--test') ||
+    process.env.NODE_ENV === 'test' ||
+    process.env.NEXUS_USE_IN_MEMORY_DB === '1'
+  ) {
+    return false
+  }
+  if (!url.startsWith('file:')) return true
+  const rawPath = url.slice('file:'.length).split('?')[0].trim()
+  if (!rawPath || rawPath === ':memory:') return false
+  const candidates = path.isAbsolute(rawPath)
+    ? [rawPath]
+    : [path.resolve(process.cwd(), 'prisma', rawPath), path.resolve(process.cwd(), rawPath)]
+  return candidates.some((candidate) => fs.existsSync(/*turbopackIgnore: true*/ candidate))
+}
+
 function createDbClient(): PrismaClient {
   const url = process.env.DATABASE_URL?.trim()
-  if (url && !url.startsWith('file:')) {
+  if (shouldUseDatabase(url)) {
     try {
       const real = new PrismaClient({ log: ['error'] })
       const mem = createInMemoryPrisma()

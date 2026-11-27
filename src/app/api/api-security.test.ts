@@ -9,6 +9,8 @@ import { POST as selfHealPost } from './self-heal/route'
 import { POST as pluginsPost } from './plugins/route'
 import { GET as filesGet } from './files/route'
 import { POST as permissionsPost } from './permissions/route'
+import { GET as connectGet, POST as connectPost } from './connect/route'
+import { executeTool } from '@/lib/agent/tools'
 
 function jsonRequest(url: string, body: unknown): Request {
   return new Request(url, {
@@ -109,11 +111,25 @@ describe('HTTP API route security & fail-closed permission boundaries', () => {
 
     const alwaysSensitive = await permissionsPost(
       jsonRequest('http://127.0.0.1:3000/api/permissions', {
-        capability: 'desktop_bridge',
+        capability: 'self_code_edit',
         policy: 'always',
       })
     )
     assert.equal(alwaysSensitive.status, 400)
+
+    const alwaysDesktop = await permissionsPost(
+      jsonRequest('http://127.0.0.1:3000/api/permissions', {
+        capability: 'desktop_bridge',
+        policy: 'always',
+      })
+    )
+    assert.equal(alwaysDesktop.status, 200)
+    await permissionsPost(
+      jsonRequest('http://127.0.0.1:3000/api/permissions', {
+        capability: 'desktop_bridge',
+        policy: 'ask',
+      })
+    )
 
     const missingHash = await permissionsPost(
       jsonRequest('http://127.0.0.1:3000/api/permissions', {
@@ -123,5 +139,60 @@ describe('HTTP API route security & fail-closed permission boundaries', () => {
       })
     )
     assert.equal(missingHash.status, 400)
+  })
+
+  it('validates /api/connect SSRF bounds, masks stored secrets, and gates Composio execution', async () => {
+    const ssrfComposio = await connectPost(
+      jsonRequest('http://127.0.0.1:3000/api/connect', {
+        action: 'save_composio',
+        mcpUrl: 'http://127.0.0.1:3000/api/health',
+      })
+    )
+    assert.equal(ssrfComposio.status, 400)
+
+    const ssrfSvc = await connectPost(
+      jsonRequest('http://127.0.0.1:3000/api/connect', {
+        action: 'add_service',
+        kind: 'http',
+        name: 'Bad Hook',
+        endpoint: 'http://169.254.169.254/latest/meta-data/',
+      })
+    )
+    assert.equal(ssrfSvc.status, 400)
+
+    const saveRes = await connectPost(
+      jsonRequest('http://127.0.0.1:3000/api/connect', {
+        action: 'save_composio',
+        apiKey: 'ak_test_secret_9876',
+        toolkits: ['gmail', 'slack'],
+      })
+    )
+    assert.equal(saveRes.status, 200)
+
+    const getRes = await connectGet()
+    assert.equal(getRes.status, 200)
+    const getText = await getRes.text()
+    assert.equal(getText.includes('ak_test_secret_9876'), false)
+    const getJson = JSON.parse(getText) as {
+      composio: { configured: boolean; apiKeyMasked: string; toolkits: string[] }
+    }
+    assert.equal(getJson.composio.configured, true)
+    assert.equal(getJson.composio.apiKeyMasked, '••••••9876')
+    assert.deepEqual(getJson.composio.toolkits, ['gmail', 'slack'])
+
+    // Executing a Composio tool must fail closed without interactive owner approval
+    const execDenied = await executeTool(
+      'composio_action',
+      { action: 'execute', toolSlug: 'GMAIL_SEND_EMAIL', input: { to: 'a@example.com' } },
+      '',
+      null
+    )
+    assert.equal(execDenied.ok, false)
+
+    // Clean up
+    const discRes = await connectPost(
+      jsonRequest('http://127.0.0.1:3000/api/connect', { action: 'disconnect_composio' })
+    )
+    assert.equal(discRes.status, 200)
   })
 })

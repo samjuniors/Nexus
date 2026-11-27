@@ -139,8 +139,28 @@ function isTransientGeminiError(msg: string): boolean {
   )
 }
 
+function isModelNotFoundError(msg: string): boolean {
+  return /not found|404/i.test(msg)
+}
+
 function isFatalGeminiError(msg: string): boolean {
-  return /invalid|missing permissions|not found|401|403|404/i.test(msg)
+  return /invalid|missing permissions|401|403/i.test(msg)
+}
+
+function handleGeminiAttemptError(model: string, configuredModel: string, msg: string): { stop: boolean; transient: boolean } {
+  if (isFatalGeminiError(msg)) return { stop: true, transient: false }
+  if (isModelNotFoundError(msg)) {
+    if (model === configuredModel && configuredModel !== GEMINI_FALLBACK_MODEL) {
+      geminiPrimaryCooldownUntil = Date.now() + GEMINI_COOLDOWN_MS
+      return { stop: false, transient: false }
+    }
+    return { stop: true, transient: false }
+  }
+  const transient = isTransientGeminiError(msg)
+  if (transient && model === configuredModel && configuredModel !== GEMINI_FALLBACK_MODEL) {
+    geminiPrimaryCooldownUntil = Date.now() + GEMINI_COOLDOWN_MS
+  }
+  return { stop: false, transient }
 }
 
 function geminiThinkingConfig(model: string, level: ThinkingLevel) {
@@ -226,10 +246,8 @@ export async function generateGeminiWithFallback(
     } catch (rawErr) {
       const formatted = formatGeminiError(rawErr)
       lastErr = formatted
-      if (model === configured && configured !== GEMINI_FALLBACK_MODEL && isTransientGeminiError(formatted.message)) {
-        geminiPrimaryCooldownUntil = Date.now() + GEMINI_COOLDOWN_MS
-      }
-      if (isFatalGeminiError(formatted.message)) {
+      const { stop } = handleGeminiAttemptError(model, configured, formatted.message)
+      if (stop) {
         throw formatted
       }
     }
@@ -322,11 +340,8 @@ async function geminiStream(
       if (full.trim().length > 0) return full
       const formatted = formatGeminiError(err)
       lastErr = formatted
-      if (model === p.model && p.model !== GEMINI_FALLBACK_MODEL && isTransientGeminiError(formatted.message)) {
-        geminiPrimaryCooldownUntil = Date.now() + GEMINI_COOLDOWN_MS
-        continue
-      }
-      if (isFatalGeminiError(formatted.message)) {
+      const { stop } = handleGeminiAttemptError(model, p.model, formatted.message)
+      if (stop) {
         throw formatted
       }
     }
@@ -668,12 +683,14 @@ export async function chatText(messages: ChatMessage[], opts: LLMOptions = {}): 
       } catch (err) {
         lastErr = err
         const msg = err instanceof Error ? err.message : String(err)
-        const isTransient = isTransientGeminiError(msg)
-        if (p.kind === 'gemini' && activeModel === p.model && p.model !== GEMINI_FALLBACK_MODEL && isTransient) {
-          geminiPrimaryCooldownUntil = Date.now() + GEMINI_COOLDOWN_MS
+        if (p.kind === 'gemini') {
+          const { stop, transient } = handleGeminiAttemptError(activeModel, p.model, msg)
+          if (stop) break
+          if (!transient && attempt >= 1) break
+        } else {
+          if (isFatalGeminiError(msg)) break
+          if (!isTransientGeminiError(msg) && attempt >= 1) break
         }
-        if (isFatalGeminiError(msg)) break
-        if (!isTransient && attempt >= 1) break
       }
     }
     const zai = await getZAI()

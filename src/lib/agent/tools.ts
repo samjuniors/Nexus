@@ -7,7 +7,7 @@ import { db } from '@/lib/db'
 import { chatText, getZAI } from '@/lib/agent/zai'
 import { controlBus } from '@/lib/agent/control-bus'
 import { liveBrowser } from '@/lib/agent/browser-manager'
-import { requireCapabilityPermission } from '@/lib/agent/permissions'
+import { getCapabilityPolicy, requireCapabilityPermission } from '@/lib/agent/permissions'
 import { verifyActionHash } from '@/lib/agent/action-binding'
 import { listConnectedDevices } from '@/lib/agent/device-bridge'
 import { terminalManager } from '@/lib/agent/terminal-manager'
@@ -225,6 +225,13 @@ const BUILTIN_TOOL_SPECS: Record<string, { name: string; description: string; ar
       argSpec:
         '{"action": "inspect"|"patch"|"verify"|"rollback"|"auto_heal", "mode"?: "list"|"search"|"read", "path"?: string, "query"?: string, "startLine"?: number, "endLine"?: number, "title"?: string, "errorMessage"?: string, "edits"?: [{"path": string, "mode": "replace"|"write", "target"?: string, "replacement"?: string, "content"?: string, "summary"?: string}], "verify"?: boolean, "sessionId"?: string, "testFile"?: string}',
     },
+    composio_action: {
+      name: 'Composio Connected Apps',
+      description:
+        'List connected accounts/tools or execute external app actions (Gmail, Slack, GitHub, Notion, Stripe, etc.) via Composio configured in Settings > Connect.',
+      argSpec:
+        '{"action": "list_accounts"|"list_tools"|"execute", "toolSlug"?: string, "toolkit"?: string, "connectedAccountId"?: string, "input"?: object}',
+    },
   }
 
 const MCP_BUILTIN_HANDLERS = new Set([
@@ -338,7 +345,7 @@ export async function getEffectiveTools(): Promise<EffectiveTool[]> {
 
 async function bumpUsage(slug: string) {
   try {
-    await db.tool.update({ where: { slug }, data: { usageCount: { increment: 1 } } })
+    await db.tool.updateMany({ where: { slug }, data: { usageCount: { increment: 1 } } })
     const t = await db.tool.findUnique({ where: { slug } })
     if (t?.source.startsWith('plugin:')) {
       await db.plugin.update({
@@ -2730,7 +2737,8 @@ export async function executeTool(
               display: { kind: 'text', text: `Blocked by Allowed Apps policy: ${appName}` },
             }
           }
-          if (evalRes.policy === 'ask') {
+          const willPromptDesktop = evalRes.policy === 'ask' && (await getCapabilityPolicy('desktop_bridge')) === 'ask'
+          if (willPromptDesktop) {
             automationSession.setAwaitingApproval(`Launch ${appName} on ${target.name}`)
           }
           const appPerm = await requireCapabilityPermission({
@@ -2739,7 +2747,7 @@ export async function executeTool(
             details: JSON.stringify(args).slice(0, 180),
             ...desktopBinding,
           })
-          if (evalRes.policy === 'ask') {
+          if (willPromptDesktop) {
             automationSession.clearAwaitingApproval()
           }
           if (!appPerm.allowed || !verifyActionHash(appPerm.actionHash, desktopBinding)) {
@@ -3253,22 +3261,182 @@ export async function executeTool(
         }
       }
 
+      case 'composio_action': {
+        const plugin = await db.plugin.findUnique({ where: { slug: 'composio-connect' } })
+        if (!plugin || !plugin.installed || !plugin.enabled) {
+          return {
+            ok: false,
+            summary: 'Composio not configured',
+            raw: 'Composio is not connected. Configure your Composio API key or MCP URL in Settings > Connect.',
+          }
+        }
+        let cfg: { apiKey?: string; mcpUrl?: string; userId?: string } = {}
+        try {
+          cfg = JSON.parse(plugin.configJson) as typeof cfg
+        } catch { /* ignore */ }
+        const action = str(args.action, 'list_accounts').toLowerCase()
+
+        if (!cfg.apiKey && cfg.mcpUrl) {
+          // Proxy MCP JSON-RPC call when only a Composio MCP URL is configured
+          const binding = { actionName: 'composio.mcp', target: cfg.mcpUrl, payload: args }
+          const perm = await requireCapabilityPermission({
+            capability: 'self_install',
+            actionSummary: `Run Composio MCP action: ${str(args.toolSlug || action)}`,
+            details: 'External service action via Composio MCP URL',
+            ...binding,
+          })
+          if (!perm.allowed || !verifyActionHash(perm.actionHash, binding)) {
+            return { ok: false, summary: 'Composio action declined', raw: perm.reason ?? 'Permission declined.' }
+          }
+          const res = await fetchPublicExternalUrl(cfg.mcpUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: Date.now(),
+              method: action === 'list_tools' ? 'tools/list' : 'tools/call',
+              params:
+                action === 'list_tools'
+                  ? {}
+                  : { name: str(args.toolSlug), arguments: (args.input as Record<string, unknown>) ?? {} },
+            }),
+            signal: AbortSignal.timeout(15_000),
+          })
+          const text = await res.text()
+          return {
+            ok: res.ok,
+            summary: `Composio MCP: HTTP ${res.status}`,
+            raw: truncate(text, 4500),
+            display: { kind: 'text', text: truncate(text, 1200) },
+          }
+        }
+
+        if (!cfg.apiKey) {
+          return {
+            ok: false,
+            summary: 'Composio API key missing',
+            raw: 'No Composio API key saved. Add it in Settings > Connect.',
+          }
+        }
+
+        if (action === 'list_accounts') {
+          const qs = cfg.userId ? `?user_id=${encodeURIComponent(cfg.userId)}&limit=30` : '?limit=30'
+          const res = await fetchPublicExternalUrl(`https://backend.composio.dev/api/v3/connected_accounts${qs}`, {
+            headers: { 'x-api-key': cfg.apiKey, Accept: 'application/json' },
+            signal: AbortSignal.timeout(12_000),
+          })
+          const text = await res.text()
+          return {
+            ok: res.ok,
+            summary: `Composio connected accounts (HTTP ${res.status})`,
+            raw: truncate(text, 4500),
+            display: { kind: 'text', text: truncate(text, 1200) },
+          }
+        }
+
+        if (action === 'list_tools') {
+          const toolkit = str(args.toolkit).trim()
+          const qs = toolkit ? `?toolkit_slug=${encodeURIComponent(toolkit)}&limit=30` : '?limit=30'
+          const res = await fetchPublicExternalUrl(`https://backend.composio.dev/api/v3/tools${qs}`, {
+            headers: { 'x-api-key': cfg.apiKey, Accept: 'application/json' },
+            signal: AbortSignal.timeout(12_000),
+          })
+          const text = await res.text()
+          return {
+            ok: res.ok,
+            summary: `Composio tools${toolkit ? ` (${toolkit})` : ''} (HTTP ${res.status})`,
+            raw: truncate(text, 4500),
+            display: { kind: 'text', text: truncate(text, 1200) },
+          }
+        }
+
+        const toolSlug = str(args.toolSlug).trim()
+        if (!toolSlug) {
+          return { ok: false, summary: 'Missing toolSlug', raw: 'Error: provide "toolSlug" (e.g. GMAIL_SEND_EMAIL).' }
+        }
+        const composioBinding = { actionName: `composio.${toolSlug}`, target: 'composio', payload: args }
+        const perm = await requireCapabilityPermission({
+          capability: 'self_install',
+          actionSummary: `Execute Composio tool: ${toolSlug}`,
+          details: JSON.stringify(args.input ?? {}).slice(0, 200),
+          ...composioBinding,
+        })
+        if (!perm.allowed || !verifyActionHash(perm.actionHash, composioBinding)) {
+          return {
+            ok: false,
+            summary: `Composio action declined: ${toolSlug}`,
+            raw: perm.reason ?? 'Permission declined for Composio execution.',
+          }
+        }
+        const payload: Record<string, unknown> = {
+          input: (args.input && typeof args.input === 'object' ? args.input : {}) as Record<string, unknown>,
+        }
+        if (str(args.connectedAccountId)) payload.connected_account_id = str(args.connectedAccountId)
+        else if (cfg.userId) payload.user_id = cfg.userId
+
+        const res = await fetchPublicExternalUrl(
+          `https://backend.composio.dev/api/v3.1/tools/execute/${encodeURIComponent(toolSlug)}`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': cfg.apiKey,
+            },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(20_000),
+          }
+        )
+        const text = await res.text()
+        return {
+          ok: res.ok,
+          summary: `Composio ${toolSlug}: HTTP ${res.status}`,
+          raw: truncate(text, 4500),
+          display: { kind: 'text', text: truncate(text, 1200) },
+        }
+      }
+
       default: {
-        // ---- Custom plugins & simulated MCP tools ----
+        // ---- Custom plugins, connected HTTP services & MCP tools ----
         const plugin = await db.plugin.findFirst({ where: { toolSlug: slug, installed: true } })
         if (plugin) {
-          let cfg: { type?: string; instructions?: string; endpoint?: string } = {}
+          let cfg: {
+            type?: string
+            instructions?: string
+            endpoint?: string
+            authHeaderName?: string
+            authHeaderValue?: string
+          } = {}
           try {
             cfg = JSON.parse(plugin.configJson) as typeof cfg
           } catch { /* ignore */ }
           const input = str(args.input ?? args.text ?? args.query ?? JSON.stringify(args))
           if (cfg.type === 'http' && cfg.endpoint) {
+            if (plugin.source === 'connect') {
+              const svcBinding = { actionName: `connect.${plugin.slug}`, target: cfg.endpoint, payload: args }
+              const perm = await requireCapabilityPermission({
+                capability: 'self_install',
+                actionSummary: `Call connected service: ${plugin.name}`,
+                details: `${cfg.endpoint} · ${input.slice(0, 140)}`,
+                ...svcBinding,
+              })
+              if (!perm.allowed || !verifyActionHash(perm.actionHash, svcBinding)) {
+                return {
+                  ok: false,
+                  summary: `${plugin.name} declined`,
+                  raw: perm.reason ?? 'Permission declined for connected service.',
+                }
+              }
+            }
             const controller = new AbortController()
-            const timer = setTimeout(() => controller.abort(), 10000)
+            const timer = setTimeout(() => controller.abort(), 12000)
             try {
+              const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+              if (cfg.authHeaderName && cfg.authHeaderValue) {
+                headers[cfg.authHeaderName] = cfg.authHeaderValue
+              }
               const res = await fetchPublicExternalUrl(cfg.endpoint, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ input, args }),
                 signal: controller.signal,
               })
@@ -3307,7 +3475,7 @@ export async function executeTool(
           }
         }
 
-        // Simulated MCP tool (custom MCP server added by user)
+        // Remote or simulated MCP tool (custom MCP server added by user)
         if (slug.includes('.')) {
           const prefix = slug.split('.')[0]
           const servers = await db.mcpServer.findMany()
@@ -3317,8 +3485,52 @@ export async function executeTool(
             try {
               tools = JSON.parse(server.toolsJson) as typeof tools
             } catch { /* ignore */ }
+            let srvCfg: { endpoint?: string; authHeaderName?: string; authHeaderValue?: string } = {}
+            try {
+              srvCfg = JSON.parse(server.configJson) as typeof srvCfg
+            } catch { /* ignore */ }
             const toolDef = tools.find((t) => t.slug === slug)
             const input = str(args.input ?? args.text ?? args.query ?? JSON.stringify(args))
+
+            if (server.mode === 'remote' && srvCfg.endpoint) {
+              const mcpBinding = { actionName: `mcp.${slug}`, target: srvCfg.endpoint, payload: args }
+              const perm = await requireCapabilityPermission({
+                capability: 'self_install',
+                actionSummary: `Call remote MCP ${server.name}: ${toolDef?.name ?? slug}`,
+                details: srvCfg.endpoint,
+                ...mcpBinding,
+              })
+              if (!perm.allowed || !verifyActionHash(perm.actionHash, mcpBinding)) {
+                return {
+                  ok: false,
+                  summary: `${server.name} declined`,
+                  raw: perm.reason ?? 'Permission declined for remote MCP.',
+                }
+              }
+              const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+              if (srvCfg.authHeaderName && srvCfg.authHeaderValue) {
+                headers[srvCfg.authHeaderName] = srvCfg.authHeaderValue
+              }
+              const res = await fetchPublicExternalUrl(srvCfg.endpoint, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                  jsonrpc: '2.0',
+                  id: Date.now(),
+                  method: 'tools/call',
+                  params: { name: toolDef?.name ?? slug, arguments: args },
+                }),
+                signal: AbortSignal.timeout(15_000),
+              })
+              const text = await res.text()
+              return {
+                ok: res.ok,
+                summary: `${server.name} · ${toolDef?.name ?? slug} (HTTP ${res.status})`,
+                raw: truncate(text, 4000),
+                display: { kind: 'text', text: truncate(text, 1200) },
+              }
+            }
+
             const out = await chatText(
               [
                 {

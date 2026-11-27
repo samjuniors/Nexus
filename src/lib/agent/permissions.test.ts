@@ -46,15 +46,48 @@ function attachMockUiClient() {
 }
 
 describe('Permission vault, fail-closed audit, and replay/expiry enforcement', () => {
-  it('defaults desktop_bridge to ask and rejects standing Always policy', async () => {
+  it('defaults desktop_bridge and workspace_shell to ask, permits Allow Always once approved, and rejects Always on single-use capabilities', async () => {
     const grants = await listPermissionGrants()
     const desktop = grants.find((g) => g.capability === 'desktop_bridge')
+    const shell = grants.find((g) => g.capability === 'workspace_shell')
     assert.ok(desktop)
+    assert.ok(shell)
     assert.equal(desktop.policy, 'ask')
+    assert.equal(shell.policy, 'ask')
     await assert.rejects(
-      setPermissionPolicy('desktop_bridge', 'always'),
+      setPermissionPolicy('self_code_edit', 'always'),
       /requires per-action approval/i
     )
+
+    try {
+      await setPermissionPolicy('desktop_bridge', 'always')
+      await setPermissionPolicy('workspace_shell', 'always')
+
+      const desktopRes = await requireCapabilityPermission({
+        capability: 'desktop_bridge',
+        actionSummary: 'Launch Chrome after Allow Always',
+        actor: 'Eva',
+        actionName: 'desktop.open_app',
+        target: 'local_host',
+        payload: { app: 'chrome.exe' },
+      })
+      assert.equal(desktopRes.allowed, true)
+      assert.equal(desktopRes.decision, 'always')
+
+      const shellRes = await requireCapabilityPermission({
+        capability: 'workspace_shell',
+        actionSummary: 'Run shell command after Allow Always',
+        actor: 'Eva',
+        actionName: 'terminal.exec',
+        target: 'host',
+        payload: { command: 'echo ok' },
+      })
+      assert.equal(shellRes.allowed, true)
+      assert.equal(shellRes.decision, 'always')
+    } finally {
+      await setPermissionPolicy('desktop_bridge', 'ask')
+      await setPermissionPolicy('workspace_shell', 'ask')
+    }
   })
 
   it('enforces single-flight resolution, hash binding, expiry, and fail-closed audit', async () => {
@@ -168,16 +201,16 @@ describe('Permission vault, fail-closed audit, and replay/expiry enforcement', (
     const autoId = 'auto_durable_' + Date.now()
     const runId = 'run_durable_' + Date.now()
     const binding = {
-      actionName: 'workspace.shell',
-      target: 'host',
-      payload: { command: 'git status --short', nonce: Date.now() },
+      actionName: 'self_heal.patch',
+      target: 'src/app/page.tsx',
+      payload: { patchId: 'p1', nonce: Date.now() },
     }
 
     // 1. Offline background automation call defers instead of hanging, while failing closed
     const deferred = await runWithPermissionContext({ automationId: autoId, runId }, () =>
       requireCapabilityPermission({
-        capability: 'workspace_shell',
-        actionSummary: 'Deferred git status check',
+        capability: 'self_code_edit',
+        actionSummary: 'Deferred self-heal patch',
         actor: 'Scheduler',
         ...binding,
       })
@@ -195,7 +228,7 @@ describe('Permission vault, fail-closed audit, and replay/expiry enforcement', (
     assert.ok(listed, 'expected deferred approval to appear in /api/permissions')
     assert.equal(listed.automationId, autoId)
 
-    // 3. Sensitive capability cannot be resolved as "always" even via durable path
+    // 3. Single-use capability cannot be resolved as "always" even via durable path
     const alwaysRejected = await resolvePermissionDecision(deferred.requestId!, 'always', deferred.actionHash)
     assert.equal(alwaysRejected.ok, false)
 
@@ -231,19 +264,19 @@ describe('Permission vault, fail-closed audit, and replay/expiry enforcement', (
 
     // 6. Tampered payload (different actionHash) is NOT authorized by that lease
     const tampered = await requireCapabilityPermission({
-      capability: 'workspace_shell',
-      actionSummary: 'Tampered command',
+      capability: 'self_code_edit',
+      actionSummary: 'Tampered patch',
       actor: 'Scheduler',
-      actionName: 'workspace.shell',
-      target: 'host',
-      payload: { command: 'rm -rf /', nonce: binding.payload.nonce },
+      actionName: 'self_heal.patch',
+      target: 'src/app/page.tsx',
+      payload: { patchId: 'malicious', nonce: binding.payload.nonce },
     })
     assert.equal(tampered.allowed, false)
 
     // 7. Exact matching action consumes the durable lease once
     const firstUse = await requireCapabilityPermission({
-      capability: 'workspace_shell',
-      actionSummary: 'Deferred git status check',
+      capability: 'self_code_edit',
+      actionSummary: 'Deferred self-heal patch',
       actor: 'Scheduler',
       ...binding,
     })
@@ -252,8 +285,8 @@ describe('Permission vault, fail-closed audit, and replay/expiry enforcement', (
 
     // 8. Replay of the same exact action is blocked (lease already consumed)
     const replayUse = await requireCapabilityPermission({
-      capability: 'workspace_shell',
-      actionSummary: 'Deferred git status check',
+      capability: 'self_code_edit',
+      actionSummary: 'Deferred self-heal patch',
       actor: 'Scheduler',
       ...binding,
     })
@@ -265,7 +298,7 @@ describe('Permission vault, fail-closed audit, and replay/expiry enforcement', (
       data: {
         requestId: expiredId,
         actionHash: deferred.actionHash,
-        capability: 'workspace_shell',
+        capability: 'self_code_edit',
         actionSummary: 'Expired durable request',
         status: 'pending',
         expiresAt: new Date(Date.now() - 5000),

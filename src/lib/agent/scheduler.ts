@@ -1,7 +1,14 @@
 import { db } from '@/lib/db'
 import { ensureSeeded } from '@/lib/agent/seed'
-import { stepRun } from '@/lib/agent/orchestrator'
+import { executeRunLoop } from '@/lib/agent/orchestrator'
 import { chatText } from '@/lib/agent/zai'
+import {
+  findNextQueuedTicketForAgent,
+  getCompanyScopedEmployees,
+  isAgentOverBudget,
+  loadCompanyRegistry,
+  runAgentHeartbeat,
+} from '@/lib/agent/paperclip-company'
 import {
   hasPendingPermissionForAutomation,
   runWithPermissionContext,
@@ -11,11 +18,16 @@ const globalScheduler = globalThis as unknown as {
   __nexusSchedulerStarted?: boolean
   __nexusSchedulerTimer?: ReturnType<typeof setInterval>
   __nexusRunningAutomations?: Set<string>
+  __nexusRunningHeartbeats?: Set<string>
 }
 
 const runningAutomations =
   globalScheduler.__nexusRunningAutomations ??
   (globalScheduler.__nexusRunningAutomations = new Set<string>())
+
+const runningHeartbeats =
+  globalScheduler.__nexusRunningHeartbeats ??
+  (globalScheduler.__nexusRunningHeartbeats = new Set<string>())
 
 // Parse a cron field expression (e.g. "*", step/15, "0,30", "1-5") against a number.
 function matchCronField(expr: string, value: number, min: number, max: number): boolean {
@@ -141,37 +153,7 @@ export async function executeAutomation(automationId: string): Promise<{
 
     const loopResult = await runWithPermissionContext(
       { automationId: auto.id, runId: run.id },
-      async (): Promise<{
-        finalAnswer: string
-        stepErr: string
-        status: 'success' | 'error'
-      }> => {
-        let finalAnswer = ''
-        let stepErr = ''
-        let stepStatus: 'success' | 'error' = 'success'
-        for (let guard = 0; guard < 36; guard++) {
-          const step = await stepRun(run.id)
-          for (const ev of step.events) {
-            if (ev.type === 'final' && typeof ev.data.answer === 'string') {
-              finalAnswer = ev.data.answer
-            }
-          }
-          if (!step.ok && step.error) {
-            stepErr = step.error
-            stepStatus = 'error'
-            break
-          }
-          if (step.busy) {
-            await new Promise((r) => setTimeout(r, 500))
-            continue
-          }
-          if (['done', 'error', 'stopped'].includes(step.status)) {
-            if (step.status === 'error') stepStatus = 'error'
-            break
-          }
-        }
-        return { finalAnswer, stepErr, status: stepStatus }
-      }
+      () => executeRunLoop(run.id, { maxSteps: 36, pollMs: 500 })
     )
 
     let { finalAnswer, stepErr } = loopResult
@@ -285,13 +267,61 @@ export async function tickDueAutomations(): Promise<number> {
   }
 }
 
+/** Wake company employees whose heartbeat interval is due and have eligible queued tickets. */
+export async function tickDueCompanyHeartbeats(): Promise<number> {
+  try {
+    await ensureSeeded()
+    const registry = loadCompanyRegistry()
+    const activeEmployees = await db.aiEmployee.findMany({ where: { status: 'active' } })
+    if (activeEmployees.length === 0) return 0
+
+    const nowMs = Date.now()
+    let triggered = 0
+
+    for (const company of registry.companies) {
+      const scopedEmployees = getCompanyScopedEmployees(registry, company, activeEmployees)
+
+      for (const emp of scopedEmployees) {
+        const lockKey = `${company.id}:${emp.id}`
+        if (runningHeartbeats.has(lockKey)) continue
+
+        const cfg = company.agentConfigs[emp.id]
+        if (cfg && !cfg.heartbeatEnabled) continue
+        if (cfg && isAgentOverBudget(cfg, company).over) continue
+
+        const intervalMin = Math.max(1, cfg?.heartbeatIntervalMin ?? 30)
+        const lastRunMs = cfg?.lastHeartbeatAt ? Date.parse(cfg.lastHeartbeatAt) : 0
+        if (Number.isFinite(lastRunMs) && lastRunMs > 0 && nowMs - lastRunMs < intervalMin * 60_000) {
+          continue
+        }
+
+        const nextTicket = findNextQueuedTicketForAgent(company.tickets, emp)
+        if (!nextTicket) continue
+
+        triggered++
+        runningHeartbeats.add(lockKey)
+        void runAgentHeartbeat(emp.id, company.id)
+          .catch(() => undefined)
+          .finally(() => {
+            runningHeartbeats.delete(lockKey)
+          })
+      }
+    }
+    return triggered
+  } catch {
+    return 0
+  }
+}
+
 /** Start the background scheduler loop (idempotent across hot reloads). */
 export function startScheduler() {
   if (globalScheduler.__nexusSchedulerStarted) return
   globalScheduler.__nexusSchedulerStarted = true
   // Initial check shortly after boot, then every 30s
-  setTimeout(() => void tickDueAutomations(), 5000)
-  globalScheduler.__nexusSchedulerTimer = setInterval(() => {
+  const runTick = () => {
     void tickDueAutomations()
-  }, 30_000)
+    void tickDueCompanyHeartbeats()
+  }
+  setTimeout(runTick, 5000)
+  globalScheduler.__nexusSchedulerTimer = setInterval(runTick, 30_000)
 }

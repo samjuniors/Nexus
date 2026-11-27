@@ -452,6 +452,53 @@ export async function stepRun(runId: string): Promise<StepResponse> {
   }
 }
 
+/** Drive a mission run from planning through tool execution and final synthesis. */
+export async function executeRunLoop(
+  runId: string,
+  opts: { maxSteps?: number; pollMs?: number } = {}
+): Promise<{
+  finalAnswer: string
+  stepErr: string
+  status: 'success' | 'error'
+  toolCallCount: number
+}> {
+  const maxSteps = opts.maxSteps ?? 36
+  const pollMs = opts.pollMs ?? 500
+  let finalAnswer = ''
+  let stepErr = ''
+  let status: 'success' | 'error' = 'success'
+
+  for (let guard = 0; guard < maxSteps; guard++) {
+    const step = await stepRun(runId)
+    for (const ev of step.events) {
+      if (ev.type === 'final' && typeof ev.data.answer === 'string') {
+        finalAnswer = ev.data.answer
+      }
+    }
+    if (!step.ok && step.error) {
+      stepErr = step.error
+      status = 'error'
+      break
+    }
+    if (step.busy) {
+      await new Promise((r) => setTimeout(r, pollMs))
+      continue
+    }
+    if (['done', 'error', 'stopped'].includes(step.status)) {
+      if (step.status === 'error') status = 'error'
+      break
+    }
+  }
+
+  const latest = await db.run.findUnique({ where: { id: runId } }).catch(() => null)
+  return {
+    finalAnswer,
+    stepErr,
+    status,
+    toolCallCount: latest?.toolCallCount ?? 0,
+  }
+}
+
 // ---------- planning ----------
 
 async function doPlan(run: { id: string; conversationId: string; userMessage: string }): Promise<StepResponse> {

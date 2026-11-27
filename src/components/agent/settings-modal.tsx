@@ -14,6 +14,7 @@ import {
   Moon,
   Network,
   PanelLeft,
+  Plug,
   RotateCcw,
   Server,
   Settings,
@@ -28,6 +29,7 @@ import {
 } from 'lucide-react'
 import { useEva } from '@/components/agent/eva-provider'
 import { AnimatedCaptionText } from '@/components/agent/animated-caption-text'
+import { SettingsConnectTab } from '@/components/agent/settings-connect-tab'
 import { useEvaControl } from '@/lib/agent/eva-control-store'
 import { useApp } from '@/lib/agent/store'
 import { CAPTION_ANIMATION_OPTIONS } from '@/lib/agent/caption-animation'
@@ -43,10 +45,11 @@ import {
 import { usePWAInstall } from '@/lib/platform/use-pwa-install'
 import { cn } from '@/lib/utils'
 
-type SettingsSection = 'workspace' | 'voice' | 'companion' | 'brain'
+type SettingsSection = 'workspace' | 'connect' | 'voice' | 'companion' | 'brain'
 
 const SECTIONS: { id: SettingsSection; label: string; icon: typeof Settings }[] = [
   { id: 'workspace', label: 'Workspace', icon: PanelLeft },
+  { id: 'connect', label: 'Connect', icon: Plug },
   { id: 'voice', label: 'Voice & Ear', icon: Mic },
   { id: 'companion', label: 'Companion', icon: Sparkles },
   { id: 'brain', label: 'Brain & Safety', icon: BrainCog },
@@ -1004,6 +1007,8 @@ export function SettingsModal() {
                 </div>
               </div>
             )}
+
+            {section === 'connect' && <SettingsConnectTab />}
           </div>
         </div>
       </div>

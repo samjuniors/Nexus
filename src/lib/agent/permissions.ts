@@ -9,6 +9,7 @@ import { controlBus, type PermissionDecision, type PermissionRequestPayload } fr
 export interface PermissionExecutionContext {
   automationId?: string
   runId?: string
+  deferWhenOffline?: boolean
 }
 
 const permissionContextStorage = new AsyncLocalStorage<PermissionExecutionContext>()
@@ -123,18 +124,27 @@ export interface PermissionAuditDTO {
   createdAt: string
 }
 
+function resolveEffectivePolicy(capability: CapabilityKey, storedPolicy?: string | null): PermissionPolicy {
+  const defaultPolicy: PermissionPolicy = capability === 'app_ui' ? 'always' : 'ask'
+  const configuredPolicy: PermissionPolicy =
+    storedPolicy && isValidPolicy(storedPolicy) ? storedPolicy : defaultPolicy
+  return requiresSingleUseApproval(capability) && configuredPolicy === 'always'
+    ? 'ask'
+    : configuredPolicy
+}
+
+/** Returns the effective server-side policy for a capability, failing closed to 'ask'. */
+export async function getCapabilityPolicy(capability: CapabilityKey): Promise<PermissionPolicy> {
+  const row = await db.permissionGrant.findUnique({ where: { capability } })
+  return resolveEffectivePolicy(capability, row?.policy)
+}
+
 export async function listPermissionGrants(): Promise<PermissionGrantDTO[]> {
   const rows = await db.permissionGrant.findMany()
   const byKey = new Map(rows.map((r) => [r.capability, r]))
   return CAPABILITY_SPECS.map((spec) => {
     const row = byKey.get(spec.capability)
-    const defaultPolicy: PermissionPolicy =
-      spec.capability === 'app_ui' ? 'always' : 'ask'
-    const configuredPolicy: PermissionPolicy =
-      row && isValidPolicy(row.policy) ? row.policy : defaultPolicy
-    const policy: PermissionPolicy = requiresSingleUseApproval(spec.capability) && configuredPolicy === 'always'
-      ? 'ask'
-      : configuredPolicy
+    const policy = resolveEffectivePolicy(spec.capability, row?.policy)
     return {
       ...spec,
       policy,
@@ -250,16 +260,25 @@ export async function listPendingPermissionRequests(): Promise<PermissionRequest
   return Array.from(byId.values())
 }
 
-/** Returns true when an automation currently has at least one unexpired pending approval request. */
-export async function hasPendingPermissionForAutomation(automationId: string): Promise<boolean> {
+async function hasPendingPermissionForScope(where: { automationId?: string; runId?: string }): Promise<boolean> {
   const now = new Date()
   await expireStalePermissionRequests(now)
   const row = await db.permissionRequest
     .findFirst({
-      where: { automationId, status: 'pending', expiresAt: { gt: now } },
+      where: { ...where, status: 'pending', expiresAt: { gt: now } },
     })
     .catch(() => null)
   return Boolean(row)
+}
+
+/** Returns true when an automation currently has at least one unexpired pending approval request. */
+export async function hasPendingPermissionForAutomation(automationId: string): Promise<boolean> {
+  return hasPendingPermissionForScope({ automationId })
+}
+
+/** Returns true when a mission run currently has at least one unexpired pending approval request. */
+export async function hasPendingPermissionForRun(runId: string): Promise<boolean> {
+  return hasPendingPermissionForScope({ runId })
 }
 
 async function consumeApprovedLease(opts: {
@@ -506,13 +525,7 @@ export async function requireCapabilityPermission(opts: {
     payload: opts.payload ?? null,
   })
   const spec = SPEC_BY_KEY.get(opts.capability)!
-  const row = await db.permissionGrant.findUnique({ where: { capability: opts.capability } })
-  const defaultPolicy: PermissionPolicy =
-    opts.capability === 'app_ui' ? 'always' : 'ask'
-  const configuredPolicy: PermissionPolicy = row && isValidPolicy(row.policy) ? row.policy : defaultPolicy
-  const policy: PermissionPolicy = requiresSingleUseApproval(opts.capability) && configuredPolicy === 'always'
-    ? 'ask'
-    : configuredPolicy
+  const policy = await getCapabilityPolicy(opts.capability)
 
   if (policy === 'always') {
     // Fail-closed durable audit even for standing non-sensitive grants.
@@ -561,7 +574,7 @@ export async function requireCapabilityPermission(opts: {
   }
 
   const ctx = permissionContextStorage.getStore()
-  const shouldDeferOffline = Boolean(ctx?.automationId || opts.deferWhenOffline)
+  const shouldDeferOffline = Boolean(ctx?.automationId || ctx?.deferWhenOffline || opts.deferWhenOffline)
 
   // Policy is 'ask' -> request interactive one-time decision or queue a deferred approval for unattended runs
   if (!controlBus.hasUiClients()) {
